@@ -9,13 +9,13 @@ type Heard = { at: number; e: LiveEvent };
 type BridgeStatus = { state: "idle" | "connecting" | "live" | "waiting" | "error"; user: string | null; error: string | null; version?: string };
 
 /** where the bridge's downloads live: the latest GitHub release */
-const BRIDGE_REPO = process.env.NEXT_PUBLIC_BRIDGE_REPO || "r6snmkwsgg-web/hookline";
+const BRIDGE_REPO = process.env.NEXT_PUBLIC_BRIDGE_REPO || "r6snmkwsgg-web/hookline-bridge";
 const download = (file: string) => `https://github.com/${BRIDGE_REPO}/releases/latest/download/${file}`;
 const DOWNLOADS = [
   { label: "Windows", file: "hookline-bridge-win-x64.exe" },
-  { label: "Mac (Apple chip)", file: "hookline-bridge-mac-arm64" },
-  { label: "Mac (Intel)", file: "hookline-bridge-mac-x64" },
-  { label: "Linux", file: "hookline-bridge-linux-x64" },
+  { label: "Mac (Apple chip)", file: "hookline-bridge-mac-arm64.zip" },
+  { label: "Mac (Intel)", file: "hookline-bridge-mac-x64.zip" },
+  { label: "Linux", file: "hookline-bridge-linux-x64.tar.gz" },
 ];
 
 function describe(e: LiveEvent): string {
@@ -203,7 +203,7 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
                 </a>
               ))}
             </div>
-            <p className="text-[12px] text-muted">On a Mac, the first time: right-click it and pick Open. Windows may ask if you trust it: More info, then Run anyway.</p>
+            <p className="text-[12px] text-muted">On a Mac, open the zip, then the program inside. The first time, macOS stops it: in System Settings, Privacy &amp; Security, click Open Anyway. Windows may ask if you trust it: More info, then Run anyway.</p>
           </div>
         )}
       </div>

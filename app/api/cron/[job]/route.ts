@@ -10,8 +10,8 @@ export const maxDuration = 60;
 /**
  * The worker's periodic jobs, for a scheduler to call instead (Vercel Cron
  * sends CRON_SECRET as a bearer token): post, stats, shorts, trends,
- * earnings. Safe to run
- * alongside the worker; each job locks what it works on.
+ * earnings. Safe to run alongside the worker; each job locks what it
+ * works on.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {
   const secret = env().CRON_SECRET;

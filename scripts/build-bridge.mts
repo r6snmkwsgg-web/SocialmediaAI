@@ -43,6 +43,13 @@ await inject(exe, "NODE_SEA_BLOB", readFileSync(`${out}/bridge.blob`), {
   sentinelFuse: "NODE_SEA_FUSE_fce680ab2cc467b6e072b8b5df1996b2",
   ...(plat === "mac" ? { machoSegmentName: "NODE_SEA" } : {}),
 });
-// macOS won't run an unsigned program at all; an ad-hoc signature lets it, after a right-click Open
+// macOS won't run an unsigned program at all; an ad-hoc signature lets it, once it's allowed in Privacy & Security
 if (plat === "mac") execFileSync("codesign", ["--sign", "-", exe]);
 console.log(`Built ${exe}`);
+
+// a browser drops a program's "can run" permission when it downloads it, so the Mac
+// and Linux downloads are archives, which keep it
+const name = exe.slice(out.length + 1);
+if (plat === "mac") execFileSync("ditto", ["-c", "-k", "--keepParent", exe, `${exe}.zip`]);
+if (plat === "linux") execFileSync("tar", ["-czf", `${exe}.tar.gz`, "-C", out, name]);
+if (plat !== "win") console.log(`Packed ${exe}${plat === "mac" ? ".zip" : ".tar.gz"}`);

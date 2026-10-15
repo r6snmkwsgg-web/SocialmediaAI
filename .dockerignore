@@ -1,0 +1,10 @@
+# kept out of the worker image: the image installs its own dependencies
+node_modules
+.next
+out
+dist-bridge
+.data
+docs
+.git
+.env*
+*.tsbuildinfo

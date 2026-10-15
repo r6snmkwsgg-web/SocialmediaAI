@@ -1,6 +1,11 @@
 # Builds Hookline Bridge for Windows, macOS and Linux and attaches the
 # downloads to a GitHub release. Push a tag like bridge-v1.0.0 to run it,
 # or run it by hand from the Actions tab.
+#
+# A private repo's release files can't be downloaded by streamers, so the
+# release can go to a public repo instead: set the repository variable
+# BRIDGE_RELEASE_REPO (owner/name) and the secret BRIDGE_RELEASE_TOKEN (a
+# token that can write that repo's contents). Without them it releases here.
 name: bridge
 
 on:
@@ -16,7 +21,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-14, macos-13, ubuntu-latest]
+        # macos-latest is Apple silicon; macos-15-intel is the last Intel Mac runner
+        os: [windows-latest, macos-latest, macos-15-intel, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +36,10 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-${{ matrix.os }}
-          path: dist-bridge/hookline-bridge-*
+          path: |
+            dist-bridge/hookline-bridge-*.exe
+            dist-bridge/hookline-bridge-*.zip
+            dist-bridge/hookline-bridge-*.tar.gz
 
   release:
     needs: build
@@ -45,3 +54,5 @@ jobs:
         with:
           tag_name: ${{ github.ref_type == 'tag' && github.ref_name || 'bridge-latest' }}
           files: out/*
+          repository: ${{ vars.BRIDGE_RELEASE_REPO || github.repository }}
+          token: ${{ secrets.BRIDGE_RELEASE_TOKEN || github.token }}
