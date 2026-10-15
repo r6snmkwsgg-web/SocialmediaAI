@@ -62,7 +62,8 @@ export type SessionStats = {
 };
 
 type Pending =
-  | { kind: "gift"; viewer: Viewer; side: Team | null; each: number; count: number; gift: string }
+  /** `tier` when the game routed the gift itself (Rivals); otherwise it's worked out from the price */
+  | { kind: "gift"; viewer: Viewer; side: Team | null; each: number; count: number; gift: string; tier?: Tier }
   | { kind: "heal"; viewer: Viewer; side: Team | null; hp: number }
   | { kind: "share"; viewer: Viewer; side: Team | null }
   | { kind: "enter"; viewer: Viewer };
@@ -146,8 +147,10 @@ export class Show {
     this.startRound();
   }
 
+  /** the two teams as they stand this round: a game with a new rivalry each round names them itself, red and blue */
   get teams(): LiveSettings["teams"] {
-    return this.settings.teams;
+    const n = this.game.names?.();
+    return n ? [{ name: n[0], color: "#FF3B30" }, { name: n[1], color: "#0A84FF" }] : this.settings.teams;
   }
 
   /** seconds into the current part of the round */
@@ -191,7 +194,11 @@ export class Show {
 
   private startRound() {
     this.round++;
+    const before = this.game.names?.();
     this.game.start({ round: this.round, option: this.next, rand: this.rand });
+    // new sides, new picks: a Messi fan isn't on PlayStation's side because both were red
+    const after = this.game.names?.();
+    if (before && after && (before[0] !== after[0] || before[1] !== after[1])) for (const m of this.members.values()) m.side = null;
     this.next = null;
     this.result = null;
     this.speed = 1;
@@ -326,7 +333,8 @@ export class Show {
         }
       }
       if (g.teams) {
-        const side = sideFromChat(e.text, [this.teams[0].name, this.teams[1].name]);
+        // where the sides have a rivalry's names, red and blue still say which is which
+        const side = sideFromChat(e.text, [this.teams[0].name, this.teams[1].name]) ?? (g.names ? sideFromChat(e.text) : null);
         if (side !== null) this.join(e.viewer, side);
       } else if (joinFromChat(e.text)) {
         this.join(e.viewer, null);
@@ -370,8 +378,11 @@ export class Show {
       return;
     }
 
-    // a gift counts for the giver's team, and puts them on it if they hadn't picked
-    const m = this.join(e.viewer, side);
+    // a gift counts for the giver's team, and puts them on it if they hadn't picked; where each
+    // side has its own gifts (Rivals), the gift itself is the pick
+    const routed = g.route?.(e.gift, e.coins) ?? null;
+    const team = routed ? routed.side : side;
+    const m = this.join(e.viewer, team);
     const coins = e.coins * e.count;
     m.coins += coins;
     if (!e.viewer.pretend) {
@@ -387,9 +398,9 @@ export class Show {
       const add = Math.min(GIFT_VOTES_MAX, coins);
       this.vote.extra.set(e.viewer.id, (this.vote.extra.get(e.viewer.id) ?? 0) + add);
       const picked = this.vote.picks.has(e.viewer.id);
-      this.toast(side, m.viewer, picked ? `+${add} VOTES` : `+${add} VOTES · TYPE A, B OR C TO USE THEM`);
+      this.toast(team, m.viewer, picked ? `+${add} VOTES` : `+${add} VOTES · TYPE A, B OR C TO USE THEM`);
     }
-    this.act({ kind: "gift", viewer: m.viewer, side, each: e.coins, count: e.count, gift: e.count > 1 ? `${e.count}x ${e.gift}` : e.gift });
+    this.act({ kind: "gift", viewer: m.viewer, side: team, each: e.coins, count: e.count, gift: e.count > 1 ? `${e.count}x ${e.gift}` : e.gift, tier: routed?.tier });
   }
 
   /** Do it now if the game's taking it; otherwise it waits for the next round. */
@@ -417,8 +428,11 @@ export class Show {
     }
 
     const { viewer, side, each, count, gift } = p;
-    const tier = tierIn(g.menu, each);
+    // where each side has its own menu, any other gift goes by its price on the giver's side's
+    const tier = p.tier ?? tierIn(side !== null && g.sideMenu ? g.sideMenu(side) : g.menu, each);
     this.lit.set(tier.effect, this.now);
+    // and on its own side's menu, where each side has one
+    if (side !== null) this.lit.set(`${side}:${tier.effect}`, this.now);
     const total = (this.roundCoins.get(viewer.id) ?? 0) + each * count;
     this.roundCoins.set(viewer.id, total);
     // the crown goes to whoever's given the most this round

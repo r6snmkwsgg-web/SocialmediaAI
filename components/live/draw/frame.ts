@@ -7,6 +7,7 @@ import {
   type Ctx, type View,
 } from "./kit";
 import { raceDraw } from "./race";
+import { rivalsDraw } from "./rivals";
 import { royaleDraw } from "./royale";
 import type { GameDraw } from "./types";
 
@@ -21,19 +22,24 @@ import type { GameDraw } from "./types";
 export { W, H };
 export type { View };
 
-const DRAWS: Record<Show["game"]["id"], GameDraw> = { battle: battleDraw, race: raceDraw, royale: royaleDraw };
+const DRAWS: Record<Show["game"]["id"], GameDraw> = { battle: battleDraw, race: raceDraw, royale: royaleDraw, rivals: rivalsDraw };
+/** the game's name, top right, where a battle has the score */
+const TITLES: Record<Show["game"]["id"], string> = { battle: "BALL BATTLE", race: "BALL RACE", royale: "LAST ONE STANDING", rivals: "RIVALS" };
+/** what the vote between rounds picks */
+const NEXT: Record<Show["game"]["id"], string> = { battle: "MATCHUP", race: "BOARD", royale: "ARENA", rivals: "RIVALRY" };
 
 function drawTop(ctx: Ctx, show: Show, view: View) {
   const y = 150;
   text(ctx, `ROUND ${show.round}`, M, y, { size: 32, color: DIM, spacing: 3 });
-  if (show.game.teams) {
+  // a score only means something while the sides stay the same
+  if (show.game.teams && !show.game.names) {
     const s0 = String(show.series[0]), s1 = String(show.series[1]);
     const w1 = measure(ctx, s1, 32, 2), wd = measure(ctx, "  –  ", 32, 2);
     text(ctx, s1, W - M, y, { size: 32, color: show.teams[1].color, align: "right", spacing: 2 });
     text(ctx, "  –  ", W - M - w1, y, { size: 32, color: DIM, align: "right", spacing: 2 });
     text(ctx, s0, W - M - w1 - wd, y, { size: 32, color: show.teams[0].color, align: "right", spacing: 2 });
   } else {
-    text(ctx, show.game.id === "race" ? "BALL RACE" : "LAST ONE STANDING", W - M, y, { size: 32, color: DIM, align: "right", spacing: 3 });
+    text(ctx, TITLES[show.game.id], W - M, y, { size: 32, color: DIM, align: "right", spacing: 3 });
   }
   if (view.demo) text(ctx, "DEMO · PRETEND VIEWERS", W / 2, y, { size: 26, color: SIGNAL, align: "center", spacing: 3 });
   else if (view.status) text(ctx, view.status, W / 2, y, { size: 24, color: DIM, align: "center", spacing: 3 });
@@ -183,7 +189,7 @@ function drawIntro(ctx: Ctx, show: Show, d: GameDraw) {
     ctx.translate(cx, cy + 70);
     const s = 0.6 + 0.4 * pop(k * 2.2);
     ctx.scale(s, s);
-    text(ctx, show.game.id === "battle" ? "FIGHT!" : "GO!", 0, 0, { size: 230, color: PAPER, align: "center", stroke: 16, spacing: 4 });
+    text(ctx, show.game.teams ? "FIGHT!" : "GO!", 0, 0, { size: 230, color: PAPER, align: "center", stroke: 16, spacing: 4 });
     ctx.restore();
   }
 }
@@ -245,8 +251,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
 
   const left = Math.max(1, Math.ceil(show.winFor - t));
   if (vote) {
-    const what = show.game.id === "battle" ? "MATCHUP" : show.game.id === "race" ? "BOARD" : "ARENA";
-    text(ctx, `VOTE THE NEXT ${what}`, cx, 860, { size: 60, align: "center", spacing: 3 });
+    text(ctx, `VOTE THE NEXT ${NEXT[show.game.id]}`, cx, 860, { size: 60, align: "center", spacing: 3 });
     text(ctx, "TYPE A, B OR C · GIFTS ADD VOTES", cx, 916, { size: 34, color: GOLD, align: "center", spacing: 2 });
     const tally = show.tally();
     const total = tally.reduce((a, b) => a + b, 0);
@@ -278,7 +283,8 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
     text(ctx, `NEXT ROUND IN ${left}`, cx, 1462, { size: 50, align: "center", spacing: 4 });
   } else {
     text(ctx, `NEXT ROUND IN ${left}`, cx, 1460, { size: 56, align: "center", spacing: 4 });
-    text(ctx, show.game.teams ? "TYPE 1 OR 2 TO PICK YOUR TEAM" : "TYPE GO TO GET IN", cx, 1530, { size: 38, color: DIM, align: "center", spacing: 3 });
+    const next = show.game.names ? "A NEW RIVALRY IS UP NEXT" : show.game.teams ? "TYPE 1 OR 2 TO PICK YOUR TEAM" : "TYPE GO TO GET IN";
+    text(ctx, next, cx, 1530, { size: 38, color: DIM, align: "center", spacing: 3 });
   }
 
   if (show.mvp) {
@@ -301,7 +307,8 @@ export function draw(ctx: Ctx, show: Show, view: View) {
   ctx.fillRect(0, 0, W, H);
   drawTop(ctx, show, view);
   d.header(ctx, show, view);
-  drawMenu(ctx, show, d);
+  if (d.menu) d.menu(ctx, show);
+  else drawMenu(ctx, show, d);
   d.arena(ctx, show, view, turn);
   if (!drawBlast(ctx, show, view, d)) drawToast(ctx, show, view);
   d.rules(ctx, show);

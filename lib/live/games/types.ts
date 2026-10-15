@@ -93,6 +93,16 @@ export interface Game {
   teamHp?(t: Team): number;
   /** how many are in the arena right now */
   count(): number;
+
+  /** games whose sides change name each round (Rivals): this round's two names */
+  names?(): [string, string];
+  /**
+   * games where the gift picks the side (Rivals): which side a gift is for
+   * and what it does there, or null for a gift on neither side's menu
+   */
+  route?(gift: string, each: number): { side: Team; tier: Tier } | null;
+  /** games where each side has its own gifts: that side's menu, cheapest first, for any gift that isn't one of them */
+  sideMenu?(side: Team): Tier[];
 }
 
 export type GameMaker = (s: LiveSettings) => Game;

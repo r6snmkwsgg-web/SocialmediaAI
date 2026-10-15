@@ -18,7 +18,7 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
  * The screen a streamer puts on their TikTok LIVE. Settings come in the
  * address, so it can be pasted straight into OBS or LIVE Studio:
  * ?key=… (a streamer's own settings, and saves their stats),
- * ?src=tikfinity|bridge, ?game=battle|race|royale (without a key),
+ * ?src=tikfinity|bridge, ?game=battle|race|royale|rivals (without a key),
  * ?demo=1, ?clean=1, ?ws=ws://… for a custom port.
  */
 export default async function LivePlay({ searchParams }: { searchParams: Search }) {

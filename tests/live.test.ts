@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 import { normalize, parseMessage, type Streaks } from "@/lib/live/events";
 import { battleSteps, BATTLE_MENU, MAX_SIDE } from "@/lib/live/games/battle";
 import { buildBoard, FINISH, RaceGame, radiusOf as raceRadius, speedOf } from "@/lib/live/games/race";
+import { RivalsGame } from "@/lib/live/games/rivals";
 import { RoyaleGame } from "@/lib/live/games/royale";
 import { DEFAULT_GIFTS, DEFAULT_PRICES, tierIn, withGifts } from "@/lib/live/menu";
+import { DEFAULT_SIDE_GIFTS, giftKey, NAME_MAX, namesPeople, ownRivalryProblem, priceGaps, RIVALRIES, rotation, routeGift, validSideGifts } from "@/lib/live/rivals";
 import { plausible, sessionPayload, sessionSchema } from "@/lib/live/session";
+import { PLANS } from "@/lib/billing/plans";
 import { allowedBy, DEFAULT_SETTINGS, parseSettings } from "@/lib/live/settings";
 import { GIFT_VOTES_MAX, INTRO, joinFromChat, KO_HOLD, LIKES_PER_HP, Show, sideFromChat, VOTE, voteFromChat } from "@/lib/live/show";
 import { METEOR_HIT, rng, World } from "@/lib/battle/sim";
@@ -327,6 +330,131 @@ describe("the vote between rounds", () => {
     toWin(s);
     expect(s.vote).toBeNull();
     expect(s.winFor).toBeLessThan(VOTE);
+  });
+});
+
+describe("Rivals", () => {
+  const rivals = (seed: number) => {
+    const s = new Show({ seed, settings: { game: "rivals" } });
+    const g = s.game as RivalsGame;
+    return { s, g, w: () => g.world };
+  };
+
+  it("knows each side's gifts by name, however TikTok spells them", () => {
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Perfume")).toMatchObject({ side: 0, tier: { effect: "ball", price: 20 } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "money gun")).toMatchObject({ side: 0, tier: { effect: "meteor" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Gem-Gun")).toMatchObject({ side: 1, tier: { effect: "meteor", gift: "Gem Gun" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Donut")).toMatchObject({ side: 1, tier: { effect: "ball" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Rose")).toBeNull();
+    expect(giftKey(" Hand-Hearts! ")).toBe("handhearts");
+  });
+
+  it("keeps religion, race, where people are from and who they love out of it", () => {
+    for (const [a, b] of [["Christians", "Muslims"], ["Jews", "Muslims"], ["Black people", "White people"], ["Mexicans", "Americans"], ["Gays", "Straight people"], ["catholic", "protestant"]]) {
+      expect(ownRivalryProblem(a, b)).toContain("religion");
+    }
+    expect(namesPeople("Team Islam")).toBe(true);
+    // choices are fine, even ones with a team's colour in them
+    for (const [a, b] of [["Messi", "Ronaldo"], ["Cats", "Dogs"], ["Black Ops", "Halo"], ["Tacos", "Burritos"]]) expect(ownRivalryProblem(a, b)).toBeNull();
+    expect(ownRivalryProblem("Pizza", "pizza")).toContain("different");
+    expect(ownRivalryProblem("A very long name", "B")).toContain(`${NAME_MAX} letters`);
+    expect(ownRivalryProblem(" ", "Dogs")).toContain("both sides");
+    // Hookline's own pass its own rules
+    expect(RIVALRIES.every((r) => ownRivalryProblem(r.red, r.blue) === null)).toBe(true);
+  });
+
+  it("checks each side's gifts make a fair game", () => {
+    expect(validSideGifts(DEFAULT_SIDE_GIFTS)).toBe(true);
+    const red = DEFAULT_SIDE_GIFTS.red;
+    expect(validSideGifts({ red, blue: [{ name: "Perfume", coins: 20 }, ...DEFAULT_SIDE_GIFTS.blue.slice(1)] })).toBe(false);
+    expect(validSideGifts({ red: [red[1], red[0], red[2]], blue: DEFAULT_SIDE_GIFTS.blue })).toBe(false);
+    expect(validSideGifts({ red: red.slice(0, 2), blue: DEFAULT_SIDE_GIFTS.blue })).toBe(false);
+    // the one power that costs one side more, with Hookline's gifts
+    expect(priceGaps(DEFAULT_SIDE_GIFTS)).toEqual([{ power: "Your ball", red: 20, blue: 30 }]);
+  });
+
+  it("starts with politics off, drops rivalries it won't run, and keeps a rotation going", () => {
+    expect(DEFAULT_SETTINGS.rivals.groups).not.toContain("politics");
+    const s = parseSettings({
+      game: "rivals",
+      rivals: {
+        groups: ["sports", "politics"],
+        own: [{ red: "Christians", blue: "Muslims" }, { red: "Tacos", blue: "Burritos" }],
+        gifts: { red: DEFAULT_SIDE_GIFTS.red, blue: DEFAULT_SIDE_GIFTS.red },
+      },
+    });
+    expect(s.rivals.own).toEqual([{ red: "Tacos", blue: "Burritos" }]);
+    expect(s.rivals.gifts).toBeNull();
+    const r = rotation(s.rivals.groups, s.rivals.own);
+    expect(r.some((x) => x.id === "republicans-democrats") && r.some((x) => x.red === "Tacos")).toBe(true);
+    expect(r.every((x) => x.group === "sports" || x.group === "politics" || x.group === "own")).toBe(true);
+    // one isn't a rotation: the everyday ones join in
+    expect(rotation(["politics"], []).length).toBeGreaterThan(2);
+    expect(rotation([], []).every((x) => x.group !== "politics")).toBe(true);
+    // Pro plays Rivals with Hookline's gifts; Creator can pick its own
+    const own = { ...s, rivals: { ...s.rivals, gifts: { red: DEFAULT_SIDE_GIFTS.blue, blue: DEFAULT_SIDE_GIFTS.red } } };
+    expect(allowedBy(own, PLANS.free).game).toBe("battle");
+    expect(allowedBy(own, PLANS.pro)).toMatchObject({ game: "rivals", rivals: { gifts: null } });
+    expect(allowedBy(own, PLANS.creator).rivals.gifts).toEqual(own.rivals.gifts);
+  });
+
+  it("puts a gifter on the side their gift is for, and sets off that side's power", () => {
+    const { s, w } = rivals(31);
+    toPlay(s);
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "2" });
+    // Perfume is red's: it moves them to red and drops their ball in there
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
+    expect(s.sideOf("a")).toBe(0);
+    expect(w().balls.find((b) => b.tag?.id === "a")).toMatchObject({ team: 0 });
+    // Hearts is blue's rage, at the same price as red's Sunglasses
+    s.handle({ kind: "gift", viewer: viewer("b"), gift: "Hearts", coins: 199, count: 1 });
+    expect(s.sideOf("b")).toBe(1);
+    expect(w().rage[1]).toBeGreaterThan(w().clock);
+    expect(w().rage[0]).toBeLessThanOrEqual(w().clock);
+    expect(s.blasts.at(-1)).toMatchObject({ side: 1, tier: { effect: "rage", gift: "Hearts" } });
+    // and the Gem Gun is blue's meteor, onto red
+    s.handle({ kind: "gift", viewer: viewer("b"), gift: "Gem Gun", coins: 500, count: 1 });
+    expect(w().meteors.at(-1)).toMatchObject({ team: 1 });
+    expect(["0:ball", "1:rage", "1:meteor"].every((k) => s.lit.has(k))).toBe(true);
+  });
+
+  it("lets any other gift help the giver's side, by what it costs", () => {
+    const { s, w } = rivals(32);
+    toPlay(s);
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "1" });
+    const hp = w().hp(0);
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Rose", coins: 1, count: 5 });
+    expect(w().hp(0)).toBe(hp + 5);
+    expect(s.sideOf("a")).toBe(0);
+    // a Galaxy is on neither side, and costs more than a meteor: a meteor for red
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
+    expect(w().meteors.at(-1)).toMatchObject({ team: 0 });
+    expect(s.sideOf("a")).toBe(0);
+  });
+
+  it("plays a new rivalry every round, the one chat votes for, and everyone picks again", () => {
+    const { s, g } = rivals(33);
+    const first = g.rivalry;
+    expect(s.teams).toEqual([{ name: first.red, color: "#FF3B30" }, { name: first.blue, color: "#0A84FF" }]);
+    // the same champion on both sides, and a new one next round
+    expect(g.a).toBe(g.b);
+    const champion = g.a;
+    // a side's name picks it, and so do red and blue
+    s.handle({ kind: "chat", viewer: viewer("a"), text: first.blue.toLowerCase() });
+    s.handle({ kind: "chat", viewer: viewer("b"), text: "red" });
+    expect([s.sideOf("a"), s.sideOf("b")]).toEqual([1, 0]);
+    toWin(s);
+    const v = s.vote!;
+    expect(v.options).toHaveLength(3);
+    expect(v.options.some((o) => o.key === first.id)).toBe(false);
+    s.handle({ kind: "chat", viewer: viewer("c"), text: "c" });
+    for (let t = 0; t < VOTE + 0.5; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("intro");
+    expect(g.rivalry.id).toBe(v.options[2].key);
+    expect(s.teams[0].name).toBe(g.rivalry.red);
+    expect(g.a).toBe(g.b);
+    expect(g.a).not.toBe(champion);
+    expect([s.sideOf("a"), s.sideOf("b")]).toEqual([null, null]);
   });
 });
 

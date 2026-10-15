@@ -1,4 +1,5 @@
 import type { LiveEvent, Viewer } from "./events";
+import type { MenuGift } from "./menu";
 
 /**
  * Pretend viewers, for trying the show out before going live and for the
@@ -30,7 +31,7 @@ export function demoViewer(i: number): Viewer {
  * liking, now and then a gift, rarely a big one. Each one sticks with a
  * side, like real viewers do.
  */
-export function demoTick(dt: number, rand: () => number, teams = true, voting = false): LiveEvent[] {
+export function demoTick(dt: number, rand: () => number, teams = true, voting = false, sides?: [MenuGift[], MenuGift[]]): LiveEvent[] {
   const out: LiveEvent[] = [];
   const pick = () => Math.floor(rand() * NAMES.length);
   const chance = (perSecond: number) => rand() < perSecond * dt;
@@ -42,6 +43,18 @@ export function demoTick(dt: number, rand: () => number, teams = true, voting = 
   }
   if (chance(2)) out.push({ kind: "like", viewer: demoViewer(pick()), count: 1 + Math.floor(rand() * 15) });
   if (chance(0.12)) out.push({ kind: "gift", viewer: demoViewer(pick()), gift: "Rose", coins: 1, count: 1 + Math.floor(rand() * 3) });
+  if (sides) {
+    // where each side has its own gifts, each viewer sends their side's
+    const odds = [0.05, 0.008, 0.003];
+    sides[0].forEach((_, tier) => {
+      if (!chance(odds[tier] ?? 0.002)) return;
+      const i = pick();
+      const g = sides[i % 2][tier];
+      out.push({ kind: "gift", viewer: demoViewer(i), gift: g.name, coins: g.coins, count: 1 });
+    });
+    if (chance(0.015)) out.push({ kind: "follow", viewer: demoViewer(pick()) });
+    return out;
+  }
   if (chance(0.06)) out.push({ kind: "gift", viewer: demoViewer(pick()), gift: "Finger Heart", coins: 5, count: 1 });
   if (chance(0.03)) out.push({ kind: "gift", viewer: demoViewer(pick()), gift: "Perfume", coins: 20, count: 1 });
   if (chance(0.008)) out.push({ kind: "gift", viewer: demoViewer(pick()), gift: "Hand Hearts", coins: 100, count: 1 });

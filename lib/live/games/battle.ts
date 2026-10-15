@@ -1,8 +1,8 @@
 import { ABILITIES, type AbilityId } from "../../battle/abilities";
 import { ARENA, World, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_GIFTS, DEFAULT_PRICES, tierIn, withGifts, type Tier } from "../menu";
-import type { LiveSettings } from "../settings";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, RAGE_SECONDS, tierIn, withGifts, type Tier } from "../menu";
+import type { GameId, LiveSettings } from "../settings";
 import type { Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
 /**
@@ -12,7 +12,7 @@ import type { Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./type
  * rage, a shield, a meteor. A team is out when all its balls are.
  */
 
-export const RAGE_SECONDS = 8;
+export { RAGE_SECONDS };
 export const SHIELD_SECONDS = 6;
 export const SHIELD_HEAL = 10;
 /** the most balls a team can have at once, champion included, so it stays readable */
@@ -58,17 +58,17 @@ const matchupKey = (a: AbilityId, b: AbilityId) => `${a}:${b}`;
 const matchupLabel = (a: AbilityId, b: AbilityId) => `${ABILITIES[a].name} vs ${ABILITIES[b].name}`;
 
 export class BattleGame implements Game {
-  readonly id = "battle" as const;
+  readonly id: GameId = "battle";
   readonly teams = true;
   readonly liveInIntro = false;
   readonly menu: Tier[];
   world!: World;
   a: AbilityId = "spike";
   b: AbilityId = "sword";
-  private readonly pool: AbilityId[];
-  private readonly fightMax: number;
-  private readonly sudden: number;
-  private names: [string, string];
+  protected readonly pool: AbilityId[];
+  protected readonly fightMax: number;
+  protected readonly sudden: number;
+  protected teamNames: [string, string];
 
   constructor(s: LiveSettings) {
     this.menu = withGifts(BATTLE_MENU, s.gifts);
@@ -76,7 +76,7 @@ export class BattleGame implements Game {
     this.fightMax = s.roundSeconds;
     // the walls start closing in a little past halfway, so every fight ends
     this.sudden = Math.max(20, Math.round(s.roundSeconds * 0.55));
-    this.names = [s.teams[0].name, s.teams[1].name];
+    this.teamNames = [s.teams[0].name, s.teams[1].name];
   }
 
   get events(): BattleEvent[] {
@@ -107,6 +107,11 @@ export class BattleGame implements Game {
         b = this.pool[Math.floor(rand() * this.pool.length)];
       } while (a === b || (a === last[0] && b === last[1] && this.pool.length > 2));
     }
+    this.arena(a, b, rand);
+  }
+
+  /** A fresh arena with each team's champion in it. */
+  protected arena(a: AbilityId, b: AbilityId, rand: () => number) {
     this.a = a;
     this.b = b;
     const w = new World(Math.floor(rand() * 2 ** 31), { suddenDeath: this.sudden, maxTeam: MAX_SIDE });
@@ -180,7 +185,7 @@ export class BattleGame implements Game {
       else for (let i = 0; i < n; i++) w.meteor(team, i, i * 0.4);
     }
     if (tier.big) return { blast: true };
-    if (full > 0) return { toast: `${gift} → +${full} HP, ${this.names[team].toUpperCase()} IS FULL` };
+    if (full > 0) return { toast: `${gift} → +${full} HP, ${this.teamNames[team].toUpperCase()} IS FULL` };
     if (tier.effect === "heal") return each * count >= 5 ? { toast: `${gift} → +${each * count} HP` } : {};
     return { toast: `${gift} → ${tier.name.toUpperCase()}` };
   }

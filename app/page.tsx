@@ -102,9 +102,9 @@ export default function Home() {
             </Eyebrow>
             <h2 className="max-w-3xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Your chat plays. Every gift does something.</h2>
             <p className="max-w-xl text-lg leading-relaxed text-paper/75">
-              Three games your viewers join with a word. Gifts heal, drop in fighters with the gifter&rsquo;s face, call down meteors. Between rounds, chat votes for what&rsquo;s next.
+              Four games your viewers join with a word. Gifts heal, drop in fighters with the gifter&rsquo;s face, call down meteors. Between rounds, chat votes for what&rsquo;s next.
             </p>
-            <ul className="grid max-w-2xl gap-px bg-line sm:grid-cols-3">
+            <ul className="grid max-w-2xl gap-px bg-line sm:grid-cols-2">
               {GAMES.map((g) => (
                 <li key={g.id} className="flex flex-col gap-1.5 bg-ink p-4">
                   <span className="font-display text-2xl uppercase tracking-wide">{g.name}</span>

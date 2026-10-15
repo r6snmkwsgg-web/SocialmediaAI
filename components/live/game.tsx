@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { rng } from "@/lib/battle/sim";
 import { demoTick, demoViewer } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
+import type { MenuGift, Tier } from "@/lib/live/menu";
 import type { LiveSettings } from "@/lib/live/settings";
 import { LETTERS, LIKES_PER_HP, Show } from "@/lib/live/show";
 import { draw, H, W } from "./draw/frame";
@@ -117,6 +118,9 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     const s = show.current!;
     const snd = sound.current!;
     const rand = rng(Date.now() % 100_000);
+    // where each side has its own gifts, pretend viewers send their side's
+    const sm = s.game.sideMenu?.bind(s.game);
+    const sides = sm ? ([0, 1] as const).map((t) => sm(t).filter((x) => x.effect !== "heal").map((x): MenuGift => ({ name: x.gift, coins: x.price ?? x.min }))) as [MenuGift[], MenuGift[]] : undefined;
     let round = -1;
     let seen = 0;
     let cues = s.cueCount;
@@ -126,7 +130,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     const step = (now: number) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      if (demo.current) for (const e of demoTick(dt, rand, s.game.teams, s.phase === "win" && !!s.vote)) s.handle(e);
+      if (demo.current) for (const e of demoTick(dt, rand, s.game.teams, s.phase === "win" && !!s.vote, sides)) s.handle(e);
       s.update(dt);
       // sounds for whatever happened since the last frame
       if (s.round !== round) {
@@ -227,6 +231,10 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   };
   const btn = "border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10";
   const groups: (0 | 1 | null)[] = teams ? [0, 1] : [null];
+  /** a side's own menu where it has one (Rivals), or the game's */
+  const items = (side: 0 | 1 | null): Tier[] => (side !== null && s0.game.sideMenu ? s0.game.sideMenu(side) : s0.game.menu);
+  /** what "same viewer again" sends: a ball with their face on it */
+  const again = (side: 0 | 1 | null): Tier => items(side).find((t) => t.effect === "ball") ?? items(side)[2];
   const voting = s0.phase === "win" && s0.vote;
 
   return (
@@ -278,15 +286,15 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
                 {side === null ? "Viewers · type go" : `${s0.teams[side].name} · type ${side + 1}`}
               </p>
               <div className="grid grid-cols-2 gap-1.5">
-                {s0.game.menu.map((t) => (
+                {items(side).map((t) => (
                   <button key={t.effect} type="button" onClick={() => handle({ kind: "gift", viewer: newcomer(side), gift: t.gift, coins: t.min, count: 1 })} className={btn}>
                     <span className="block text-paper">{t.gift}</span>
                     <span className="block text-[10px] text-dim">{t.min} · {t.name}</span>
                   </button>
                 ))}
-                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: s0.game.menu[2].gift, coins: s0.game.menu[2].min, count: 1 })} className={btn}>
+                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: again(side).gift, coins: again(side).min, count: 1 })} className={btn}>
                   <span className="block text-paper">Same viewer again</span>
-                  <span className="block text-[10px] text-dim">{s0.game.menu[2].gift} from {tester(side).name}</span>
+                  <span className="block text-[10px] text-dim">{again(side).gift} from {tester(side).name}</span>
                 </button>
                 <button type="button" onClick={() => handle({ kind: "like", viewer: tester(side), count: LIKES_PER_HP })} className={btn}>
                   <span className="block text-paper">{LIKES_PER_HP} likes</span>

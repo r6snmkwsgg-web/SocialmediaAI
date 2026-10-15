@@ -34,6 +34,9 @@ export function tierIn(menu: Tier[], coins: number): Tier {
   return t;
 }
 
+/** how long rage lasts, in seconds, in every game that has it */
+export const RAGE_SECONDS = 8;
+
 /** where each item of a default menu starts: a little under the gift's price, so gifts that cost 99 or 999 count too */
 export const DEFAULT_PRICES = [1, 5, 20, 99, 299, 999];
 

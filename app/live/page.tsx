@@ -8,6 +8,7 @@ import { ROYALE_MENU } from "@/lib/live/games/royale";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
 import { BATTLE_MENU as TIERS } from "@/lib/live/games/battle";
+import { DEFAULT_SIDE_GIFTS, RIVAL_POWERS } from "@/lib/live/rivals";
 import { DEFAULT_SETTINGS } from "@/lib/live/settings";
 import { FOLLOW_HP, LIKES_PER_HP } from "@/lib/live/show";
 
@@ -15,7 +16,7 @@ const TEAMS = DEFAULT_SETTINGS.teams;
 
 export const metadata: Metadata = {
   title: "Games for TikTok LIVE",
-  description: "Ball Battle, Ball Race and Last One Standing: games your TikTok LIVE chat joins with a word, where every gift does something on screen. Free to start.",
+  description: "Ball Battle, Rivals, Ball Race and Last One Standing: games your TikTok LIVE chat joins with a word, where every gift does something on screen. Free to start.",
   openGraph: { images: ["/og/live.png"] },
 };
 
@@ -57,7 +58,7 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              Three games for your stream. In Ball Battle it&rsquo;s red against blue: viewers type 1 or 2 to pick a team, and every gift does something in the fight. A rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
+              Four games for your stream. In Ball Battle it&rsquo;s red against blue: viewers type 1 or 2 to pick a team, and every gift does something in the fight. A rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
@@ -135,6 +136,48 @@ export default function Live() {
         </div>
       </section>
 
+      {/* rivals */}
+      <section className="border-b border-line">
+        <div className="mx-auto grid max-w-7xl items-center gap-14 px-4 py-20 sm:px-8 lg:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] lg:py-28">
+          <div className="flex flex-col gap-6">
+            <Eyebrow>Rivals · with Pro</Eyebrow>
+            <h2 className="max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">A new rivalry every round.</h2>
+            <p className="max-w-2xl text-lg leading-relaxed text-paper/75">
+              Messi or Ronaldo. PlayStation or Xbox. Pizza or burgers. Red against blue, with the same champion on both sides, so the gifts decide it. Each side has its own three gifts for the same three powers, so the gift someone sends is the side they&rsquo;re on. Between rounds, chat votes the next rivalry.
+            </p>
+            <div className="max-w-2xl border-2 border-line">
+              <div className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-px bg-line font-mono text-[10px] uppercase tracking-[0.14em] text-dim">
+                <span className="bg-ink px-4 py-2.5">Power</span>
+                <span className="flex items-center gap-2 bg-ink px-4 py-2.5"><span aria-hidden className="h-2.5 w-2.5 rounded-full bg-[#FF3B30]" />Red side</span>
+                <span className="flex items-center gap-2 bg-ink px-4 py-2.5"><span aria-hidden className="h-2.5 w-2.5 rounded-full bg-[#0A84FF]" />Blue side</span>
+              </div>
+              <ul className="grid gap-px bg-line">
+                {RIVAL_POWERS.map((t, i) => (
+                  <li key={t.effect} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)] gap-px">
+                    <span className="bg-ink px-4 py-3 font-display text-xl uppercase leading-tight tracking-wide sm:text-2xl" style={{ color: t.color }}>{t.name}</span>
+                    {[DEFAULT_SIDE_GIFTS.red[i], DEFAULT_SIDE_GIFTS.blue[i]].map((g) => (
+                      <span key={g.name} className="flex flex-col justify-center bg-ink px-4 py-3">
+                        <span className="text-[15px] leading-tight">{g.name}</span>
+                        <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-dim">{g.coins.toLocaleString("en-US")} coins</span>
+                      </span>
+                    ))}
+                  </li>
+                ))}
+              </ul>
+            </div>
+            <p className="max-w-2xl text-[14px] leading-relaxed text-paper/60">
+              Any other gift helps the side its sender is on. The rivalries come from sports, games, food and places, plus your own. Politics is there too, switched off until you turn it on. Matchups about religion, race, where people are from or who they love never come up, and can&rsquo;t be added.
+            </p>
+            <a href="/live/play?demo=1&game=rivals" className="w-fit font-display text-xl uppercase tracking-wider underline decoration-signal decoration-[3px] underline-offset-[6px] hover:text-signal">Try Rivals →</a>
+          </div>
+          <div className="relative mx-auto w-full max-w-[340px]">
+            <Phone className="relative w-full -rotate-2">
+              <iframe src="/live/play?demo=1&clean=1&game=rivals" title="Rivals, with pretend viewers" className="block aspect-[9/16] w-full border-0" loading="lazy" />
+            </Phone>
+          </div>
+        </div>
+      </section>
+
       {/* the other games */}
       <section className="border-b border-line">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
@@ -185,7 +228,7 @@ export default function Live() {
             It never asks for your TikTok password. It only reads your LIVE&rsquo;s public events, the same chats, likes and gifts anyone watching can see.
           </p>
           <div className="tokens-dark mt-12">
-            <Setup locked={["race", "royale"]} />
+            <Setup locked={["race", "royale", "rivals"]} />
           </div>
         </div>
       </section>

@@ -6,6 +6,8 @@ import type { Ctx, View } from "./kit";
 export type GameDraw = {
   /** the strip under the round line: how to join, and who's ahead */
   header(ctx: Ctx, show: Show, view: View): void;
+  /** a game whose menu isn't the usual six (Rivals, a menu for each side) draws its own */
+  menu?(ctx: Ctx, show: Show): void;
   arena(ctx: Ctx, show: Show, view: View, turn: number): void;
   /** the lines under the arena */
   rules(ctx: Ctx, show: Show): void;

@@ -8,6 +8,7 @@ import { GAMES } from "@/lib/live/games";
 import { BATTLE_MENU } from "@/lib/live/games/battle";
 import { RACE_MENU } from "@/lib/live/games/race";
 import { ROYALE_MENU } from "@/lib/live/games/royale";
+import { RIVAL_POWERS } from "@/lib/live/rivals";
 import { allowedBy, LIVE_ABILITIES } from "@/lib/live/settings";
 import { account } from "@/lib/server/account";
 import { liveSettingsOf, overlayKeyOf, sessionsOf, type LiveSession } from "@/lib/server/live";
@@ -15,7 +16,7 @@ import { newKey, saveLive } from "./actions";
 
 export const metadata: Metadata = { title: "Live" };
 
-const menus = { battle: BATTLE_MENU, race: RACE_MENU, royale: ROYALE_MENU };
+const menus = { battle: BATTLE_MENU, race: RACE_MENU, royale: ROYALE_MENU, rivals: RIVAL_POWERS };
 const labels = Object.fromEntries(Object.entries(menus).map(([k, m]) => [k, m.map((t) => ({ name: t.name, line: t.line }))])) as Record<keyof typeof menus, { name: string; line: string }[]>;
 
 const n = (v: number) => v.toLocaleString("en-US");

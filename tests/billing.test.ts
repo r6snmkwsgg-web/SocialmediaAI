@@ -32,7 +32,7 @@ describe("plans", () => {
     expect(PLANS.free.games).toEqual(["battle"]);
     expect(PLANS.free.tag).toBe(true);
     for (const p of [PLANS.pro, PLANS.creator]) {
-      expect(p.games).toEqual(["battle", "race", "royale"]);
+      expect(p.games).toEqual(["battle", "race", "royale", "rivals"]);
       expect(p.tag).toBe(false);
       expect(p.scheduling).toBe(true);
     }
