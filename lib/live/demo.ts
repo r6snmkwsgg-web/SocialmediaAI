@@ -30,13 +30,15 @@ export function demoViewer(i: number): Viewer {
  * liking, now and then a gift, rarely a big one. Each one sticks with a
  * side, like real viewers do.
  */
-export function demoTick(dt: number, rand: () => number): LiveEvent[] {
+export function demoTick(dt: number, rand: () => number, teams = true, voting = false): LiveEvent[] {
   const out: LiveEvent[] = [];
   const pick = () => Math.floor(rand() * NAMES.length);
   const chance = (perSecond: number) => rand() < perSecond * dt;
   if (chance(0.6)) {
     const i = pick();
-    out.push({ kind: "chat", viewer: demoViewer(i), text: rand() < 0.8 ? String((i % 2) + 1) : i % 2 ? "blue" : "red" });
+    // pick a team (or type GO), and vote while there's a vote on
+    const text = voting && rand() < 0.7 ? "ABC"[(i + Math.floor(rand() * 2)) % 3] : teams ? (rand() < 0.8 ? String((i % 2) + 1) : i % 2 ? "blue" : "red") : "go";
+    out.push({ kind: "chat", viewer: demoViewer(i), text });
   }
   if (chance(2)) out.push({ kind: "like", viewer: demoViewer(pick()), count: 1 + Math.floor(rand() * 15) });
   if (chance(0.12)) out.push({ kind: "gift", viewer: demoViewer(pick()), gift: "Rose", coins: 1, count: 1 + Math.floor(rand() * 3) });

@@ -3,7 +3,11 @@ import Link from "next/link";
 import { Eyebrow, Wordmark } from "@/components/brand";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
-import { FOLLOW_HP, LIKES_PER_HP, TEAMS, TIERS } from "@/lib/live/rules";
+import { BATTLE_MENU as TIERS } from "@/lib/live/games/battle";
+import { DEFAULT_SETTINGS } from "@/lib/live/settings";
+import { FOLLOW_HP, LIKES_PER_HP } from "@/lib/live/show";
+
+const TEAMS = DEFAULT_SETTINGS.teams;
 
 export const metadata: Metadata = {
   title: "Live ball battles for TikTok LIVE · Hookline",

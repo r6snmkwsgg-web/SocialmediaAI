@@ -78,9 +78,9 @@ export type BattleEvent =
   | { f: number; type: "boom"; x: number; y: number; dmg: number; to: Team }
   | { f: number; type: "spawn"; x: number; y: number; team: Team; n: number }
   | { f: number; type: "heal"; x: number; y: number; team: Team; n?: number }
-  | { f: number; type: "ko"; x: number; y: number; team: Team; last: boolean }
+  | { f: number; type: "ko"; x: number; y: number; team: Team; last: boolean; color?: string }
   /** only live: a viewer's ball dropping in */
-  | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; small: boolean }
+  | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; small: boolean; color?: string }
   /** only live: a team raging (hits twice as hard) or shielded (can't be hurt) */
   | { f: number; type: "power"; team: Team; power: "rage" | "shield" }
   | { f: number; type: "meteor"; x: number; y: number; team: Team; target: number };

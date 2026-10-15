@@ -1,6 +1,6 @@
 import type { BattleEvent } from "@/lib/battle/sim";
 import { MELODIES } from "@/lib/battle/sound";
-import type { Cue } from "@/lib/live/round";
+import type { Cue } from "@/lib/live/show";
 
 /**
  * The live show's sound, made as it happens with the browser's synth: the

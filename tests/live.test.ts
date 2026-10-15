@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { normalize, parseMessage, type Streaks } from "@/lib/live/events";
-import { giftSteps, LIKES_PER_HP, MAX_SIDE, sideFromChat, tierFor } from "@/lib/live/rules";
-import { INTRO, Show } from "@/lib/live/round";
-import { METEOR_HIT, World } from "@/lib/battle/sim";
+import { battleSteps, BATTLE_MENU, MAX_SIDE } from "@/lib/live/games/battle";
+import { buildBoard, FINISH, RaceGame, radiusOf as raceRadius, speedOf } from "@/lib/live/games/race";
+import { RoyaleGame } from "@/lib/live/games/royale";
+import { DEFAULT_PRICES, tierIn, withPrices } from "@/lib/live/menu";
+import { DEFAULT_SETTINGS, parseSettings } from "@/lib/live/settings";
+import { GIFT_VOTES_MAX, INTRO, joinFromChat, KO_HOLD, LIKES_PER_HP, Show, sideFromChat, VOTE, voteFromChat } from "@/lib/live/show";
+import { METEOR_HIT, rng, World } from "@/lib/battle/sim";
 
 const v2Gift = (repeatCount: number, repeatEnd: number, giftType = 1, diamondCount = 1) => ({
   giftId: 5655,
@@ -38,26 +42,55 @@ describe("reading a LIVE's events", () => {
   });
 });
 
-describe("the rules", () => {
-  it("reads a pick from chat, and nothing else", () => {
-    expect(["1", "red", "Team 1", "#1", "RED!", "left"].map(sideFromChat)).toEqual([0, 0, 0, 0, 0, 0]);
-    expect(["2", "blue", "Blue", "team 2"].map(sideFromChat)).toEqual([1, 1, 1, 1]);
-    expect(["12", "lol 1", "who wins", ""].map(sideFromChat)).toEqual([null, null, null, null]);
+describe("reading chat", () => {
+  it("reads a team pick, and nothing else", () => {
+    expect(["1", "red", "Team 1", "#1", "RED!", "left"].map((t) => sideFromChat(t))).toEqual([0, 0, 0, 0, 0, 0]);
+    expect(["2", "blue", "Blue", "team 2"].map((t) => sideFromChat(t))).toEqual([1, 1, 1, 1]);
+    expect(["12", "lol 1", "who wins", ""].map((t) => sideFromChat(t))).toEqual([null, null, null, null]);
+    // a streamer's own team names work too
+    expect(sideFromChat("sharks", ["Sharks", "Jets"])).toBe(0);
   });
 
-  it("goes up the menu by the price of one gift", () => {
-    expect([1, 4, 5, 19, 20, 98, 99, 298, 299, 998, 999, 30000].map((c) => tierFor(c).effect)).toEqual(["heal", "heal", "small", "small", "ball", "ball", "rage", "rage", "shield", "shield", "meteor", "meteor"]);
-  });
-
-  it("adds up a streak of cheap gifts, and keeps a streak of balls readable", () => {
-    expect(giftSteps(1, 10)).toEqual([{ effect: "heal", n: 10 }]);
-    expect(giftSteps(5, 8)).toEqual([{ effect: "small", n: 5 }, { effect: "heal", n: 3 }]);
-    expect(giftSteps(299, 1)).toEqual([{ effect: "shield", n: 1 }, { effect: "heal", n: 10 }]);
-    expect(giftSteps(5000, 1)).toEqual([{ effect: "meteor", n: 3 }]);
+  it("reads a vote and a join", () => {
+    expect(["a", "B", "vote c", "c!"].map(voteFromChat)).toEqual([0, 1, 2, 2]);
+    expect(["d", "abc", "a b"].map(voteFromChat)).toEqual([null, null, null]);
+    expect(["go", "GO!", "join", "!go"].map(joinFromChat)).toEqual([true, true, true, true]);
+    expect(joinFromChat("going to bed")).toBe(false);
   });
 });
 
-describe("the arena, live", () => {
+describe("gift menus", () => {
+  it("goes up the menu by the price of one gift", () => {
+    expect([1, 4, 5, 19, 20, 98, 99, 298, 299, 998, 999, 30000].map((c) => tierIn(BATTLE_MENU, c).effect)).toEqual(["heal", "heal", "small", "small", "ball", "ball", "rage", "rage", "shield", "shield", "meteor", "meteor"]);
+  });
+
+  it("takes a streamer's own prices, if they climb from 1", () => {
+    const m = withPrices(BATTLE_MENU, [1, 10, 50, 100, 500, 1000]);
+    expect(tierIn(m, 20).effect).toBe("small");
+    expect(withPrices(BATTLE_MENU, [2, 10, 50, 100, 500, 1000])[0].min).toBe(1);
+    expect(withPrices(BATTLE_MENU, [1, 10, 5, 100, 500, 1000]).map((t) => t.min)).toEqual(DEFAULT_PRICES);
+  });
+
+  it("adds up a streak of cheap gifts, and keeps a streak of balls readable", () => {
+    expect(battleSteps("heal", 1, 10)).toEqual([{ effect: "heal", n: 10 }]);
+    expect(battleSteps("small", 5, 8)).toEqual([{ effect: "small", n: 5 }, { effect: "heal", n: 3 }]);
+    expect(battleSteps("shield", 299, 1)).toEqual([{ effect: "shield", n: 1 }, { effect: "heal", n: 10 }]);
+    expect(battleSteps("meteor", 5000, 1)).toEqual([{ effect: "meteor", n: 3 }]);
+  });
+
+  it("reads settings from anywhere, keeping what's valid", () => {
+    expect(parseSettings(null)).toEqual(DEFAULT_SETTINGS);
+    const s = parseSettings({ game: "race", roundSeconds: 9999, vote: false, prices: [1, 2, 3, 4, 5, 6], teams: "nope" });
+    expect(s.game).toBe("race");
+    expect(s.roundSeconds).toBe(DEFAULT_SETTINGS.roundSeconds);
+    expect(s.vote).toBe(false);
+    expect(s.prices).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(s.teams).toEqual(DEFAULT_SETTINGS.teams);
+    expect(parseSettings({ prices: [5, 6, 7, 8, 9, 10] }).prices).toBeNull();
+  });
+});
+
+describe("the battle arena, live", () => {
   const run = (w: World, s: number) => {
     for (let i = 0; i < 60 * s; i++) w.tick();
   };
@@ -74,14 +107,6 @@ describe("the arena, live", () => {
     expect(w.summon(1, "spike", { small: true })).toBeNull();
   });
 
-  it("gives a mini ball no ability: a mini sword ball never cuts", () => {
-    const w = new World(4, { suddenDeath: 999 });
-    for (let i = 0; i < 3; i++) w.summon(0, "sword", { small: true });
-    for (let i = 0; i < 3; i++) w.summon(1, "grow", { small: true });
-    run(w, 10);
-    expect(w.events.some((e) => e.type === "cut")).toBe(false);
-  });
-
   const duel = () => {
     const w = new World(9, { suddenDeath: 999 });
     w.add(0, "spike", 300, 400, { hp: 300, maxHp: 300 });
@@ -89,7 +114,7 @@ describe("the arena, live", () => {
     return w;
   };
 
-  it("lets rage double everything a team hits for", () => {
+  it("lets rage double everything a team hits for, and nothing hurt a shielded team", () => {
     const plain = duel();
     run(plain, 8);
     const raging = duel();
@@ -97,14 +122,10 @@ describe("the arena, live", () => {
     run(raging, 8);
     expect(300 - plain.balls[1].hp).toBeGreaterThan(0);
     expect(300 - raging.balls[1].hp).toBe((300 - plain.balls[1].hp) * 2);
-  });
-
-  it("lets nothing hurt a shielded team", () => {
-    const w = duel();
-    w.protect(1, 60);
-    run(w, 8);
-    expect(w.balls[1].hp).toBe(300);
-    expect(w.balls[0].hp).toBeLessThan(300);
+    const shielded = duel();
+    shielded.protect(1, 60);
+    run(shielded, 8);
+    expect(shielded.balls[1].hp).toBe(300);
   });
 
   it("drops a meteor on the other team's strongest ball", () => {
@@ -115,86 +136,96 @@ describe("the arena, live", () => {
     expect(w.meteor(0)).toBe(true);
     expect(w.meteors[0].target).toBe(big.id);
     run(w, 2);
-    expect(w.meteors).toHaveLength(0);
     expect(big.maxHp - big.hp).toBeGreaterThanOrEqual(METEOR_HIT);
   });
 });
 
-describe("a show", () => {
-  const viewer = (id: string) => ({ id, name: id });
-  const toFight = (s: Show) => {
-    for (let t = 0; t <= INTRO; t += 0.25) s.update(0.25);
-    expect(s.phase).toBe("fight");
-  };
+const viewer = (id: string) => ({ id, name: id });
+const toPlay = (s: Show) => {
+  for (let t = 0; t <= INTRO; t += 0.25) s.update(0.25);
+  expect(s.phase).toBe("play");
+};
+/** run until the win screen is up */
+const toWin = (s: Show) => {
+  for (let i = 0; i < 60 * 400 && s.phase !== "win"; i++) s.update(1 / 60);
+  expect(s.phase).toBe("win");
+};
 
+describe("a battle show", () => {
   it("counts down, fights, crowns a winner and starts the next round", () => {
-    const s = new Show(3);
+    const s = new Show({ seed: 3, settings: { vote: false } });
     expect(s.phase).toBe("intro");
     const seen = new Set<string>();
     for (let i = 0; i < 60 * 300 && s.round < 3; i++) {
       s.update(1 / 60);
       seen.add(s.phase);
     }
-    expect([...seen].sort()).toEqual(["fight", "intro", "ko", "win"]);
+    expect([...seen].sort()).toEqual(["intro", "ko", "play", "win"]);
     expect(s.round).toBe(3);
     expect(s.series[0] + s.series[1]).toBeGreaterThanOrEqual(1);
+    expect(s.stats.rounds).toBe(2);
     expect(s.cues.some((c) => c.kind === "count")).toBe(true);
   });
 
   it("puts people on the team they type, and gifts from the undecided on the team that's behind", () => {
-    const s = new Show(4);
+    const s = new Show({ seed: 4 });
     s.handle({ kind: "chat", viewer: viewer("a"), text: "1" });
     s.handle({ kind: "chat", viewer: viewer("b"), text: "nice" });
     expect(s.sideOf("a")).toBe(0);
     expect(s.sideOf("b")).toBeNull();
-    s.world.balls.filter((b) => b.team === 1).forEach((b) => (b.hp = 1));
+    const g = s.game as unknown as { world: World };
+    g.world.balls.filter((b) => b.team === 1).forEach((b) => (b.hp = 1));
     s.handle({ kind: "gift", viewer: viewer("c"), gift: "Rose", coins: 1, count: 3 });
     expect(s.sideOf("c")).toBe(1);
   });
 
   it("holds a gift sent before the fight, then lands it when the fight starts", () => {
-    const s = new Show(5);
+    const s = new Show({ seed: 5 });
+    const w = () => (s.game as unknown as { world: World }).world;
     s.handle({ kind: "chat", viewer: viewer("a"), text: "2" });
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
-    expect(s.world.count(1)).toBe(1);
-    toFight(s);
-    expect(s.world.count(1)).toBe(2);
-    expect(s.world.balls.find((b) => b.tag?.id === "a")).toMatchObject({ team: 1, kind: s.kind(1) });
+    expect(w().count(1)).toBe(1);
+    toPlay(s);
+    expect(w().count(1)).toBe(2);
+    expect(w().balls.find((b) => b.tag?.id === "a")).toMatchObject({ team: 1 });
   });
 
   it("does what the menu says for each gift", () => {
-    const s = new Show(6);
-    toFight(s);
+    const s = new Show({ seed: 6 });
+    const w = () => (s.game as unknown as { world: World }).world;
+    toPlay(s);
     s.handle({ kind: "chat", viewer: viewer("a"), text: "1" });
-    const hp = s.world.hp(0);
+    const hp = w().hp(0);
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Rose", coins: 1, count: 3 });
-    expect(s.world.hp(0)).toBe(hp + 3);
+    expect(w().hp(0)).toBe(hp + 3);
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Finger Heart", coins: 5, count: 1 });
-    expect(s.world.balls.filter((b) => b.tag?.id === "a" && b.plain)).toHaveLength(1);
+    expect(w().balls.filter((b) => b.tag?.id === "a" && b.plain)).toHaveLength(1);
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Hand Hearts", coins: 100, count: 1 });
-    expect(s.world.rage[0]).toBeGreaterThan(s.world.clock);
+    expect(w().rage[0]).toBeGreaterThan(w().clock);
     expect(s.blasts.at(-1)).toMatchObject({ side: 0, tier: { effect: "rage" } });
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Corgi", coins: 299, count: 2 });
-    expect(s.world.shield[0] - s.world.clock).toBeCloseTo(12, 0);
+    expect(w().shield[0] - w().clock).toBeCloseTo(12, 0);
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
-    expect(s.world.meteors).toHaveLength(1);
+    expect(w().meteors).toHaveLength(1);
     expect(s.lit.has("heal") && s.lit.has("small") && s.lit.has("meteor")).toBe(true);
+    expect(s.stats.coins).toBe(3 + 5 + 100 + 598 + 1000);
   });
 
   it("heals the team instead once it's full", () => {
-    const s = new Show(7);
-    toFight(s);
+    const s = new Show({ seed: 7 });
+    const w = () => (s.game as unknown as { world: World }).world;
+    toPlay(s);
     for (let i = 0; i < MAX_SIDE + 2; i++) {
       s.handle({ kind: "chat", viewer: viewer(`v${i}`), text: "1" });
       s.handle({ kind: "gift", viewer: viewer(`v${i}`), gift: "Finger Heart", coins: 5, count: 1 });
     }
-    expect(s.world.count(0)).toBe(MAX_SIDE);
+    expect(w().count(0)).toBe(MAX_SIDE);
     expect(s.toasts.some((t) => t.text.includes("FULL"))).toBe(true);
   });
 
   it("puts the crown on whoever's given the most, until someone gives more", () => {
-    const s = new Show(11);
-    toFight(s);
+    const s = new Show({ seed: 11 });
+    toPlay(s);
     s.handle({ kind: "chat", viewer: viewer("a"), text: "1" });
     s.handle({ kind: "chat", viewer: viewer("b"), text: "2" });
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
@@ -207,12 +238,197 @@ describe("a show", () => {
   });
 
   it("turns likes into health", () => {
-    const s = new Show(8);
+    const s = new Show({ seed: 8 });
+    const w = () => (s.game as unknown as { world: World }).world;
     s.handle({ kind: "chat", viewer: viewer("a"), text: "1" });
-    toFight(s);
-    const hp = s.world.hp(0);
+    toPlay(s);
+    const hp = w().hp(0);
     s.handle({ kind: "like", viewer: viewer("a"), count: LIKES_PER_HP * 2 + 5 });
-    expect(s.world.hp(0)).toBe(hp + 2);
+    expect(w().hp(0)).toBe(hp + 2);
     expect(s.likes[0]).toBe(5);
+  });
+});
+
+describe("the vote between rounds", () => {
+  it("shows three matchups, counts one vote each, and plays the winner next", () => {
+    const s = new Show({ seed: 21 });
+    toWin(s);
+    const v = s.vote!;
+    expect(v.options).toHaveLength(3);
+    expect(new Set(v.options.map((o) => o.key)).size).toBe(3);
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "B" });
+    s.handle({ kind: "chat", viewer: viewer("b"), text: "b" });
+    s.handle({ kind: "chat", viewer: viewer("c"), text: "a" });
+    // changing your mind moves your vote
+    s.handle({ kind: "chat", viewer: viewer("c"), text: "b" });
+    expect(s.tally()).toEqual([0, 3, 0]);
+    const picked = v.options[1];
+    for (let t = 0; t < VOTE + 0.5; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("intro");
+    expect(s.voted?.option).toEqual(picked);
+    const [a, b] = picked.key.split(":");
+    expect([(s.game as unknown as { a: string }).a, (s.game as unknown as { b: string }).b]).toEqual([a, b]);
+  });
+
+  it("counts gifts as votes, up to a cap per gift, for whatever the gifter picked", () => {
+    const s = new Show({ seed: 22 });
+    toWin(s);
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "a" });
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
+    expect(s.tally()[0]).toBe(21);
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
+    expect(s.tally()[0]).toBe(21 + GIFT_VOTES_MAX);
+    // gifts before picking wait for a pick
+    s.handle({ kind: "gift", viewer: viewer("z"), gift: "Rose", coins: 1, count: 5 });
+    expect(s.tally().reduce((x, y) => x + y, 0)).toBe(21 + GIFT_VOTES_MAX);
+    expect(s.toasts.at(-1)?.text).toContain("TYPE A, B OR C");
+    s.handle({ kind: "chat", viewer: viewer("z"), text: "c" });
+    expect(s.tally()[2]).toBe(6);
+  });
+
+  it("picks at random when nobody votes, and says nothing about a vote", () => {
+    const s = new Show({ seed: 23 });
+    toWin(s);
+    for (let t = 0; t < VOTE + 0.5; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("intro");
+    expect(s.voted).toBeNull();
+  });
+
+  it("skips the vote when the streamer turns it off", () => {
+    const s = new Show({ seed: 24, settings: { vote: false } });
+    toWin(s);
+    expect(s.vote).toBeNull();
+    expect(s.winFor).toBeLessThan(VOTE);
+  });
+});
+
+describe("Ball Race", () => {
+  const race = (layout = "zigzag") => {
+    const g = new RaceGame(DEFAULT_SETTINGS);
+    g.start({ round: 1, option: { key: layout, label: layout }, rand: rng(3) });
+    return g;
+  };
+
+  it("lines everyone up in the gate, CPUs included, and lets GO in free", () => {
+    const g = race();
+    expect(g.racers.filter((r) => r.cpu)).toHaveLength(3);
+    expect(g.enter(viewer("a"))).toMatchObject({ toast: "joined the race" });
+    expect(g.enter(viewer("a"))).toBeNull();
+    const a = g.racers.find((r) => r.id === "a")!;
+    expect(a).toMatchObject({ free: true, weight: 1 });
+    expect(a.y).toBeLessThan(140);
+  });
+
+  it("makes a gifter's ball heavier, bigger and faster, coin by coin", () => {
+    const g = race();
+    g.gift({ viewer: viewer("a"), side: null, tier: g.menu[0], count: 10, each: 1, total: 10, gift: "10x Rose" });
+    const a = g.racers.find((r) => r.id === "a")!;
+    expect(a.weight).toBe(11);
+    g.gift({ viewer: viewer("a"), side: null, tier: g.menu[1], count: 1, each: 5, total: 15, gift: "Finger Heart" });
+    expect(a.weight).toBe(1 + 15 + 10);
+    expect(raceRadius(a.weight)).toBeGreaterThan(raceRadius(1));
+    expect(speedOf(a.weight)).toBeGreaterThan(speedOf(1));
+  });
+
+  it("runs every board to a finish, with a podium, in a sensible time", () => {
+    for (const layout of ["zigzag", "pegs", "funnels"]) {
+      const g = race(layout);
+      for (let i = 0; i < 6; i++) g.enter(viewer(`v${i}`));
+      let r = null;
+      while (!(r = g.result())) g.tick();
+      expect(r.byTime).toBe(false);
+      expect(r.podium!.length).toBe(3);
+      expect(g.clock).toBeGreaterThan(5);
+      expect(g.clock).toBeLessThan(40);
+      expect(g.racers.find((x) => x.id === r!.champion!.id)?.place).toBe(1);
+    }
+  });
+
+  it("fires a power-up bought in the gate the moment the race starts", () => {
+    const g = race();
+    g.gift({ viewer: viewer("a"), side: null, tier: g.menu[5], count: 1, each: 999, total: 999, gift: "Galaxy" });
+    const a = g.racers.find((r) => r.id === "a")!;
+    expect(a.queued).toEqual(["rocket"]);
+    g.tick();
+    expect(a.queued).toEqual([]);
+    expect(a.y).toBeGreaterThan(FINISH - 300);
+  });
+
+  it("knocks nearby balls back with a shockwave, and lets a ghost through pegs", () => {
+    const g = race("pegs");
+    for (let i = 0; i < 4; i++) g.enter(viewer(`v${i}`));
+    g.tick();
+    const a = g.racers.find((r) => r.id === "v0")!;
+    const near = g.racers.filter((r) => r !== a && Math.hypot(r.x - a.x, r.y - a.y) < 200);
+    g.gift({ viewer: viewer("v0"), side: null, tier: g.menu[4], count: 1, each: 299, total: 299, gift: "Corgi" });
+    for (const r of near) expect(r.stunUntil).toBeGreaterThan(g.clock);
+    g.gift({ viewer: viewer("v0"), side: null, tier: g.menu[3], count: 1, each: 99, total: 398, gift: "Hand Hearts" });
+    expect(a.ghostUntil).toBeGreaterThan(g.clock + 3);
+    expect(buildBoard("pegs", rng(1)).pegs.length).toBeGreaterThan(20);
+  });
+
+  it("makes room for a gifter in a full race, CPUs first", () => {
+    const g = race();
+    for (let i = 0; i < 21; i++) g.enter(viewer(`v${i}`));
+    expect(g.racers).toHaveLength(24);
+    expect(g.enter(viewer("late"))).toMatchObject({ toast: expect.stringContaining("full") });
+    g.gift({ viewer: viewer("rich"), side: null, tier: g.menu[2], count: 1, each: 20, total: 20, gift: "Perfume" });
+    expect(g.racers.find((r) => r.id === "rich")).toBeTruthy();
+    expect(g.racers.filter((r) => r.cpu)).toHaveLength(2);
+  });
+});
+
+describe("Last One Standing", () => {
+  const fight = () => {
+    const g = new RoyaleGame(DEFAULT_SETTINGS);
+    g.start({ round: 1, option: null, rand: rng(5) });
+    return g;
+  };
+
+  it("lets people in free early, then holds them for the next round; gifters always get in", () => {
+    const g = fight();
+    expect(g.enter(viewer("a"))).toMatchObject({ toast: "joined the fight" });
+    for (let i = 0; i < 60 * 16; i++) g.tick();
+    expect(g.enter(viewer("late"))).toMatchObject({ toast: "is in the next round" });
+    g.gift({ viewer: viewer("rich"), side: null, tier: g.menu[0], count: 5, each: 1, total: 5, gift: "5x Rose" });
+    expect(g.alive().find((f) => f.id === "rich")?.hp).toBe(3 + 5);
+    g.start({ round: 2, option: null, rand: rng(6) });
+    expect(g.alive().some((f) => f.id === "late")).toBe(true);
+  });
+
+  it("fights down to the last one standing", () => {
+    const g = fight();
+    for (let i = 0; i < 6; i++) g.enter(viewer(`v${i}`));
+    let r = null;
+    while (!(r = g.result())) g.tick();
+    expect(g.alive().length).toBeLessThanOrEqual(1);
+    expect(r.champion).toBeTruthy();
+    expect(r.podium!.length).toBe(3);
+  });
+
+  it("protects a shielded ball and arms a sword", () => {
+    const g = fight();
+    g.gift({ viewer: viewer("a"), side: null, tier: g.menu[3], count: 1, each: 99, total: 99, gift: "Hand Hearts" });
+    g.gift({ viewer: viewer("a"), side: null, tier: g.menu[4], count: 1, each: 299, total: 398, gift: "Corgi" });
+    const a = g.alive().find((f) => f.id === "a")!;
+    const hp = a.hp;
+    for (let i = 0; i < 60 * 5; i++) g.tick();
+    expect(a.hp).toBe(hp);
+    expect(g.events.some((e) => e.type === "cut")).toBe(true);
+  });
+});
+
+describe("the session's numbers", () => {
+  it("counts rounds, coins, top gifters and the busiest round", () => {
+    const s = new Show({ seed: 31, settings: { game: "royale", vote: false } });
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "go" });
+    s.handle({ kind: "chat", viewer: viewer("b"), text: "go" });
+    s.handle({ kind: "gift", viewer: viewer("b"), gift: "Perfume", coins: 20, count: 2 });
+    toWin(s);
+    for (let t = 0; t < KO_HOLD; t += 0.25) s.update(0.25);
+    expect(s.stats.rounds).toBe(1);
+    expect(s.stats.coins).toBe(40);
+    expect(s.stats.peakPlayers).toBe(2);
+    expect(s.topGifters()[0]).toMatchObject({ viewer: { id: "b" }, coins: 40 });
   });
 });

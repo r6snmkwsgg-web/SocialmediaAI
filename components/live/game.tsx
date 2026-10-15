@@ -1,11 +1,11 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { rng, type BattleEvent, type World } from "@/lib/battle/sim";
-import { demoTick, demoViewer, GIFTS } from "@/lib/live/demo";
+import { rng } from "@/lib/battle/sim";
+import { demoTick, demoViewer } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
-import { Show } from "@/lib/live/round";
-import { LIKES_PER_HP, TEAMS, tierFor } from "@/lib/live/rules";
-import { draw, H, W } from "./draw";
+import type { LiveSettings } from "@/lib/live/settings";
+import { LETTERS, LIKES_PER_HP, Show } from "@/lib/live/show";
+import { draw, H, W } from "./draw/frame";
 import { LiveSound } from "./sound";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
 
@@ -17,6 +17,12 @@ type Props = {
   demo: boolean;
   /** hide the hints around the canvas, for capturing it */
   clean: boolean;
+  /** the streamer's settings, or the defaults */
+  settings?: Partial<LiveSettings>;
+  /** the free plan's "made with Hookline" line */
+  tag?: boolean;
+  /** reports the session's numbers now and then, for the streamer's stats */
+  onStats?: (show: Show, final: boolean) => void;
 };
 
 const TESTERS: [Viewer, Viewer] = [
@@ -43,11 +49,11 @@ function useImages() {
 }
 
 /**
- * The live show on a canvas, for the streamer to put on their stream. It
- * runs the fight in real time, listens to TikFinity or the bridge, and has
+ * The live game on a canvas, for the streamer to put on their stream. It
+ * runs the game in real time, listens to TikFinity or the bridge, and has
  * a test panel (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
+export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, onStats }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -58,10 +64,17 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
   const [state, setState] = useState<SourceState>("closed");
   const [soundOn, setSoundOn] = useState(false);
   const [muted, setMuted] = useState(false);
+  const [, redraw] = useState(0);
   const stateRef = useRef<SourceState>("closed");
+  const stats = useRef(onStats);
+  stats.current = onStats;
 
-  if (!show.current) show.current = new Show();
-  if (!sound.current) sound.current = new LiveSound();
+  if (!show.current) show.current = new Show({ settings });
+  if (!sound.current) {
+    sound.current = new LiveSound();
+    sound.current.setVolume(show.current.settings.volume);
+  }
+  const s0 = show.current;
 
   // in development, the show is reachable from the console and from tests
   useEffect(() => {
@@ -81,6 +94,20 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
     return () => s.stop();
   }, [src, url, handle]);
 
+  // the session's numbers, every half minute and when the page closes
+  useEffect(() => {
+    const send = (final: boolean) => {
+      if (show.current && stats.current) stats.current(show.current, final);
+    };
+    const every = setInterval(() => send(false), 30_000);
+    const bye = () => send(true);
+    window.addEventListener("pagehide", bye);
+    return () => {
+      clearInterval(every);
+      window.removeEventListener("pagehide", bye);
+    };
+  }, []);
+
   // the loop: run the show, play its sounds, draw it
   useEffect(() => {
     const ctx = canvas.current?.getContext("2d");
@@ -88,7 +115,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
     const s = show.current!;
     const snd = sound.current!;
     const rand = rng(Date.now() % 100_000);
-    let world: World | null = null;
+    let round = -1;
     let seen = 0;
     let cues = s.cueCount;
     let last = performance.now();
@@ -97,14 +124,15 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
     const step = (now: number) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      if (demo.current) for (const e of demoTick(dt, rand)) s.handle(e);
+      if (demo.current) for (const e of demoTick(dt, rand, s.game.teams, s.phase === "win" && !!s.vote)) s.handle(e);
       s.update(dt);
       // sounds for whatever happened since the last frame
-      if (s.world !== world) {
-        world = s.world;
+      if (s.round !== round) {
+        round = s.round;
         seen = 0;
       }
-      const evs: BattleEvent[] = world.events;
+      const evs = s.game.events;
+      if (evs.length < seen) seen = 0;
       if (evs.length > seen) snd.battle(evs.slice(seen));
       seen = evs.length;
       const fresh = Math.min(s.cueCount - cues, s.cues.length);
@@ -114,18 +142,20 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
 
     const status = () => {
       if (src === "none") return undefined;
-      const name = SOURCES[src].name.toUpperCase();
       if (stateRef.current === "open") return undefined;
-      return `WAITING FOR ${name}…`;
+      return `WAITING FOR ${SOURCES[src].name.toUpperCase()}…`;
     };
 
+    let ticks = 0;
     const frame = (now: number) => {
       step(now);
-      draw(ctx, s, { demo: demo.current, image, status: status() });
+      draw(ctx, s, { demo: demo.current, image, status: status(), tag });
+      // the test panel shows the vote's buttons only while there's a vote
+      if (++ticks % 15 === 0) redraw((n) => n + 1);
       raf = requestAnimationFrame(frame);
     };
     raf = requestAnimationFrame(frame);
-    // a hidden tab gets no animation frames; keep the fight going anyway
+    // a hidden tab gets no animation frames; keep the game going anyway
     const keepGoing = setInterval(() => {
       if (performance.now() - last > 300) step(performance.now());
     }, 250);
@@ -133,7 +163,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
       cancelAnimationFrame(raf);
       clearInterval(keepGoing);
     };
-  }, [image, src]);
+  }, [image, src, tag]);
 
   // the font, before anything that matters is drawn
   useEffect(() => {
@@ -161,7 +191,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
         setDemoOn(demo.current);
       } else if (k === "m") {
         setMuted((m) => {
-          sound.current?.setVolume(m ? 0.7 : 0);
+          sound.current?.setVolume(m ? (show.current?.settings.volume ?? 0.7) : 0);
           return !m;
         });
       } else if (k === "f") {
@@ -173,23 +203,29 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
     return () => window.removeEventListener("keydown", key);
   }, [startSound]);
 
-  // the test panel's buttons: as if a viewer on that side did it
+  // the test panel's buttons: as if a viewer did it
   const fresh = useRef(0);
-  const newcomer = (side: 0 | 1): Viewer => {
+  const teams = s0.game.teams;
+  const newcomer = (side: 0 | 1 | null): Viewer => {
     const i = fresh.current++;
-    const v = { ...demoViewer(i * 2 + side), id: `test-new-${i}` };
-    show.current!.join(v, side);
+    const v = { ...demoViewer(i * 2 + (side ?? 0)), id: `test-new-${i}` };
+    if (side !== null) show.current!.join(v, side);
     return v;
   };
-  const tester = (side: 0 | 1) => {
-    show.current!.join(TESTERS[side], side);
-    return TESTERS[side];
+  const tester = (side: 0 | 1 | null) => {
+    const v = TESTERS[side ?? 0];
+    if (side !== null) show.current!.join(v, side);
+    return v;
   };
-  const gift = (viewer: Viewer, g: (typeof GIFTS)[number]) => handle({ kind: "gift", viewer, gift: g.name, coins: g.coins, count: 1 });
-  const crowd = (side: 0 | 1) => {
-    for (let i = 0; i < 6; i++) handle({ kind: "chat", viewer: { ...demoViewer(i * 2 + side), id: `test-crowd-${side}-${fresh.current++}` }, text: String(side + 1) });
+  const crowd = (side: 0 | 1 | null) => {
+    for (let i = 0; i < 6; i++) handle({ kind: "chat", viewer: { ...demoViewer(i * 2 + (side ?? 0)), id: `test-crowd-${fresh.current++}` }, text: side === null ? "go" : String(side + 1) });
+  };
+  const votes = (i: number) => {
+    for (let n = 0; n < 5; n++) handle({ kind: "chat", viewer: { ...demoViewer(n), id: `test-voter-${fresh.current++}` }, text: LETTERS[i] });
   };
   const btn = "border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10";
+  const groups: (0 | 1 | null)[] = teams ? [0, 1] : [null];
+  const voting = s0.phase === "win" && s0.vote;
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-[#050506]" onClick={startSound}>
@@ -199,7 +235,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
         height={H}
         className="block h-full max-h-[100dvh] w-auto max-w-[100vw] object-contain"
         style={{ aspectRatio: "9 / 16" }}
-        aria-label="The live ball battle"
+        aria-label="The live game"
       />
 
       {!clean && (
@@ -221,31 +257,46 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
             <button type="button" onClick={() => setPanel(false)} className="text-paper/60 hover:text-paper" aria-label="Close the test panel">✕</button>
           </div>
           <p className="mt-1 leading-relaxed text-paper/55">Every button acts like a viewer did it. Nothing is sent to TikTok.</p>
-          {([0, 1] as const).map((side) => (
-            <div key={side} className="mt-4">
-              <p className="mb-2 uppercase tracking-[0.16em]" style={{ color: TEAMS[side].color }}>{TEAMS[side].name} · type {side + 1}</p>
-              <div className="grid grid-cols-2 gap-1.5">
-                {GIFTS.map((g) => (
-                  <button key={g.name} type="button" onClick={() => gift(newcomer(side), g)} className={btn}>
-                    <span className="block text-paper">{g.name}</span>
-                    <span className="block text-[10px] text-dim">{g.coins} · {tierFor(g.coins).name}</span>
+          {voting && (
+            <div className="mt-4">
+              <p className="mb-2 uppercase tracking-[0.16em] text-[#FFD60A]">The vote</p>
+              <div className="grid grid-cols-3 gap-1.5">
+                {s0.vote!.options.map((o, i) => (
+                  <button key={o.key} type="button" onClick={() => votes(i)} className={btn}>
+                    <span className="block text-paper">5 × {LETTERS[i]}</span>
+                    <span className="block truncate text-[10px] text-dim">{o.label}</span>
                   </button>
                 ))}
-                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: "Rose", coins: 1, count: 10 })} className={btn}>
-                  <span className="block text-paper">10 roses</span>
-                  <span className="block text-[10px] text-dim">a streak · +10 HP</span>
-                </button>
-                <button type="button" onClick={() => handle({ kind: "share", viewer: newcomer(side) })} className={btn}>
-                  <span className="block text-paper">Share</span>
-                  <span className="block text-[10px] text-dim">mini ball</span>
+              </div>
+            </div>
+          )}
+          {groups.map((side) => (
+            <div key={String(side)} className="mt-4">
+              <p className="mb-2 uppercase tracking-[0.16em]" style={{ color: side === null ? "#FFD60A" : s0.teams[side].color }}>
+                {side === null ? "Viewers · type go" : `${s0.teams[side].name} · type ${side + 1}`}
+              </p>
+              <div className="grid grid-cols-2 gap-1.5">
+                {s0.game.menu.map((t) => (
+                  <button key={t.effect} type="button" onClick={() => handle({ kind: "gift", viewer: newcomer(side), gift: t.gift, coins: t.min, count: 1 })} className={btn}>
+                    <span className="block text-paper">{t.gift}</span>
+                    <span className="block text-[10px] text-dim">{t.min} · {t.name}</span>
+                  </button>
+                ))}
+                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: s0.game.menu[2].gift, coins: s0.game.menu[2].min, count: 1 })} className={btn}>
+                  <span className="block text-paper">Same viewer again</span>
+                  <span className="block text-[10px] text-dim">{s0.game.menu[2].gift} from {tester(side).name}</span>
                 </button>
                 <button type="button" onClick={() => handle({ kind: "like", viewer: tester(side), count: LIKES_PER_HP })} className={btn}>
                   <span className="block text-paper">{LIKES_PER_HP} likes</span>
-                  <span className="block text-[10px] text-dim">+1 HP</span>
+                  <span className="block text-[10px] text-dim">from {tester(side).name}</span>
                 </button>
                 <button type="button" onClick={() => crowd(side)} className={btn}>
                   <span className="block text-paper">6 join</span>
-                  <span className="block text-[10px] text-dim">type {side + 1} in chat</span>
+                  <span className="block text-[10px] text-dim">type {side === null ? "go" : side + 1} in chat</span>
+                </button>
+                <button type="button" onClick={() => handle({ kind: "share", viewer: newcomer(side) })} className={btn}>
+                  <span className="block text-paper">Share</span>
+                  <span className="block text-[10px] text-dim">a new viewer</span>
                 </button>
               </div>
             </div>
