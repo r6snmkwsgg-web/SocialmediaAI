@@ -1,5 +1,7 @@
 import "server-only";
-import type { FormatId } from "../../shorts/types";
+import { tiktokChoices, tiktokReason } from "../../shorts/tiktok";
+import { seconds } from "../../shorts/timing";
+import type { FormatId, Spec } from "../../shorts/types";
 import { admin } from "../db";
 import { getVideo } from "../storage";
 import { TikTokError, tiktokPost } from "../tiktok";
@@ -9,9 +11,9 @@ import { configured } from "../env";
 /**
  * Posting what's ready, on plans that post for you. YouTube gets each
  * Short as soon as it's rendered, set to go public at its time; TikTok
- * (once approved) gets it at its time, since TikTok can't schedule. A
- * lock on each video means two posters running at once never post the
- * same one twice.
+ * gets it at its time, since TikTok can't schedule, with the choices the
+ * creator made for it. A lock on each video means two posters running at
+ * once never post the same one twice.
  */
 
 /** YouTube's category for each format */
@@ -22,8 +24,6 @@ async function claim(id: string): Promise<boolean> {
     update public.videos set posting_at = now() where id = ${id} and (posting_at is null or posting_at < now() - interval '30 minutes') returning id`);
   return rows.length > 0;
 }
-
-const release = (id: string) => admin((tx) => tx`update public.videos set posting_at = null where id = ${id}`);
 
 export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
   const log: string[] = [];
@@ -60,24 +60,38 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
     }
   }
 
-  if (configured().tiktokPosting) {
-    const tiktok = await admin((tx) => tx<{ id: string; title: string; description: string; file_path: string; channel_id: string }[]>`
-      select v.id, v.title, v.description, v.file_path, c.id as channel_id
+  if (configured().tiktokDirect) {
+    const tiktok = await admin((tx) => tx<{ id: string; title: string; description: string; format: FormatId; params: Spec["params"]; file_path: string; tiktok_post: unknown; status: string; channel_id: string; youtube: boolean }[]>`
+      select v.id, v.title, v.description, v.format, v.params, v.file_path, v.tiktok_post, v.status, c.id as channel_id,
+        exists (select 1 from public.channels y where y.user_id = v.user_id and y.platform = 'youtube' and y.status = 'connected') as youtube
       from public.videos v
       join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
       join lateral (select id from public.channels where user_id = v.user_id and platform = 'tiktok' and status = 'connected' order by connected_at limit 1) c on true
-      where v.status in ('ready', 'scheduled', 'posted') and v.tiktok_publish_id is null and v.file_path is not null
-        and v.scheduled_for is not null and v.scheduled_for <= ${now} and v.scheduled_for > ${new Date(now.getTime() - 86400_000)}
-      limit ${limit}`);
+      where v.status in ('ready', 'scheduled', 'posted') and v.file_path is not null
+        and v.tiktok_post is not null and v.tiktok_publish_id is null and v.tiktok_error is null
+        and v.tiktok_at <= ${now} and v.tiktok_at > ${new Date(now.getTime() - 86400_000)}
+      order by v.tiktok_at limit ${limit}`);
     for (const v of tiktok) {
       if (!(await claim(v.id))) continue;
       try {
-        const id = await tiktokPost(v.channel_id, await getVideo(v.file_path), `${v.title}\n\n${v.description}`);
-        await admin((tx) => tx`update public.videos set tiktok_publish_id = ${id}, posting_at = null where id = ${v.id}`);
+        const choices = tiktokChoices.safeParse(v.tiktok_post);
+        if (!choices.success) throw new TikTokError("The TikTok choices for this Short need making again.", 400, "choices");
+        const length = seconds({ format: v.format, params: v.params } as Spec);
+        const id = await tiktokPost(v.channel_id, await getVideo(v.file_path), `${v.title}\n\n${v.description}`, choices.data, length);
+        // with no YouTube to post it to, TikTok is where it's posted
+        const done = !v.youtube && v.status === "ready";
+        await admin((tx) => tx`
+          update public.videos set tiktok_publish_id = ${id}, tiktok_error = null, posting_at = null,
+            status = case when ${done} then 'posted' else status end, posted_at = case when ${done} then ${now} else posted_at end
+          where id = ${v.id}`);
         log.push(`${v.id} → TikTok ${id}`);
       } catch (err) {
-        await release(v.id);
-        log.push(`${v.id} TikTok failed: ${err instanceof TikTokError || err instanceof Error ? err.message : String(err)}`);
+        const e = err instanceof TikTokError ? err : null;
+        const msg = e ? tiktokReason(e.code, e.message) : err instanceof Error ? err.message : String(err);
+        // TikTok said no: it waits for the creator. Anything passing (an outage, a limit, the
+        // network) keeps its lock, so it's tried again in half an hour, for up to a day.
+        if (e && !e.retry) await admin((tx) => tx`update public.videos set tiktok_error = ${msg}, posting_at = null where id = ${v.id}`);
+        log.push(`${v.id} TikTok failed: ${msg}`);
       }
     }
   }

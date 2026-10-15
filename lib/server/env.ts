@@ -42,8 +42,8 @@ const schema = z.object({
 
   TIKTOK_CLIENT_KEY: optional,
   TIKTOK_CLIENT_SECRET: optional,
-  /** set once TikTok has approved the app for posting to people's accounts */
-  TIKTOK_POSTING_APPROVED: optional,
+  /** "1" posts straight to creators' TikTok; until TikTok's audit passes, only to private accounts, as private posts */
+  TIKTOK_DIRECT_POST: optional,
 });
 
 export type Env = z.infer<typeof schema>;
@@ -67,7 +67,7 @@ export function configured() {
     youtube: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET),
     youtubeTrends: !!e.YOUTUBE_API_KEY,
     tiktok: !!(e.TIKTOK_CLIENT_KEY && e.TIKTOK_CLIENT_SECRET),
-    tiktokPosting: e.TIKTOK_POSTING_APPROVED === "1",
+    tiktokDirect: e.TIKTOK_DIRECT_POST === "1",
     tokens: !!e.TOKEN_KEY,
   };
 }

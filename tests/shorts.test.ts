@@ -10,6 +10,7 @@ import { proposeTexts, STORIES } from "@/lib/shorts/formats/texts";
 import { PAIRS, proposeWyr } from "@/lib/shorts/formats/wyr";
 import { chooseFormats, lift, median, odds, updated } from "@/lib/shorts/learn";
 import { soundFor } from "@/lib/shorts/sound";
+import { labelOf, postSettings, problemWith, tiktokChoices, tiktokReason, type Creator, type TikTokChoices } from "@/lib/shorts/tiktok";
 import { atLocal, bestHours, localParts, nextSlots, offsetMinutes } from "@/lib/shorts/times";
 import { FPS, frames, storyTimes } from "@/lib/shorts/timing";
 import { FORMAT_IDS, type FormatId } from "@/lib/shorts/types";
@@ -192,5 +193,44 @@ describe("posting times", () => {
     expect(bestHours([{ hour: 18, lift: 2 }])).toBeNull();
     const r = [18, 18, 12, 12, 9, 9].map((hour, i) => ({ hour, lift: hour === 18 ? 3 : hour === 12 ? 1 + i * 0.01 : 0.5 }));
     expect(bestHours(r)).toEqual([18, 12, 9]);
+  });
+});
+
+describe("TikTok's questions", () => {
+  const creator: Creator = { nickname: "Matt", privacy: ["PUBLIC_TO_EVERYONE", "FOLLOWER_OF_CREATOR", "SELF_ONLY"], commentOff: false, duetOff: true, stitchOff: false, maxSeconds: 60 };
+  const pick: TikTokChoices = { privacy: "PUBLIC_TO_EVERYONE", comment: true, duet: true, stitch: false, disclose: false, yourBrand: false, branded: false };
+
+  it("posts only what the creator picked, from what TikTok offers their account", () => {
+    expect(problemWith(pick, creator, 30)).toBeNull();
+    expect(problemWith({ ...pick, privacy: "MUTUAL_FOLLOW_FRIENDS" }, creator, 30)).toMatch(/choices TikTok gives/);
+    expect(problemWith(pick, creator, 75)).toMatch(/up to 60 seconds/);
+    expect(tiktokChoices.safeParse({ ...pick, privacy: "EVERYONE" }).success).toBe(false);
+  });
+
+  it("asks what a promotion is for, and never lets branded content be private", () => {
+    expect(problemWith({ ...pick, disclose: true }, creator, 30)).toMatch(/promotes you, someone else, or both/);
+    expect(problemWith({ ...pick, disclose: true, yourBrand: true }, creator, 30)).toBeNull();
+    expect(problemWith({ ...pick, disclose: true, branded: true, privacy: "SELF_ONLY" }, creator, 30)).toMatch(/can't be private/);
+    expect(labelOf({ disclose: false, yourBrand: true, branded: true })).toBeNull();
+    expect(labelOf({ disclose: true, yourBrand: true, branded: false })).toBe("Promotional content");
+    expect(labelOf({ disclose: true, yourBrand: true, branded: true })).toBe("Paid partnership");
+  });
+
+  it("keeps off whatever the creator has switched off on TikTok", () => {
+    expect(postSettings(pick, creator)).toEqual({
+      privacy_level: "PUBLIC_TO_EVERYONE",
+      disable_comment: false,
+      disable_duet: true,
+      disable_stitch: true,
+      brand_content_toggle: false,
+      brand_organic_toggle: false,
+    });
+    expect(postSettings({ ...pick, disclose: true, branded: true }, creator)).toMatchObject({ brand_content_toggle: true, brand_organic_toggle: false });
+  });
+
+  it("says why TikTok turned a post down in words a creator can act on", () => {
+    expect(tiktokReason("spam_risk_too_many_posts", "TikTok: x")).toMatch(/more posts from this account today/);
+    expect(tiktokReason("something_new", "TikTok: something new")).toBe("TikTok: something new");
+    expect(tiktokReason(null, "TikTok: 500")).toBe("TikTok: 500");
   });
 });

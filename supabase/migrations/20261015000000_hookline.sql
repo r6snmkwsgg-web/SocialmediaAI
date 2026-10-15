@@ -137,6 +137,12 @@ create table public.videos (
   file_path text,
   youtube_id text,
   tiktok_publish_id text,
+  -- the creator's own choices for TikTok (who can see it, comments, Duet,
+  -- Stitch, brand disclosure), made each time, as TikTok requires; when
+  -- it goes there, and why it didn't if TikTok turned it down
+  tiktok_post jsonb,
+  tiktok_at timestamptz,
+  tiktok_error text,
   error text,
   -- set while something is uploading it, so two posters never post it twice
   posting_at timestamptz,

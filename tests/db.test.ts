@@ -200,6 +200,27 @@ describe.skipIf(!safe)("the database", () => {
     expect(failed.error).toMatch(/chrome went away/);
   });
 
+  it("keeps the creator's TikTok choices with a Short, and lets them choose again", async () => {
+    const { PLANS } = await import("@/lib/billing/plans");
+    const [v] = await db.admin((tx) => tx<{ id: string }[]>`
+      insert into public.videos (user_id, format, params, key, title, status, suggested_for)
+      values (${A}, 'wyr', '{"pairs":[]}', 'wyr:mixed', 'Would you rather', 'review', now() + interval '3 hours') returning id`);
+    const choices = { privacy: "FOLLOWER_OF_CREATOR", comment: true, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false } as const;
+    expect(await queue.approve(A, v.id, PLANS.pro, new Date(), choices)).toBe(true);
+    const coming = async () => (await queue.queueOf(A)).coming.find((x) => x.id === v.id)!;
+    const c = await coming();
+    // it goes to TikTok when it goes to YouTube
+    expect(c.tiktok).toEqual({ at: c.scheduledFor, error: null });
+    const [row] = await db.admin((tx) => tx<{ tiktok_post: unknown }[]>`select tiktok_post from public.videos where id = ${v.id}`);
+    expect(row.tiktok_post).toEqual(choices);
+    // TikTok turned it down: the creator sees why, and choosing again clears it
+    await db.admin((tx) => tx`update public.videos set tiktok_error = 'No' where id = ${v.id}`);
+    expect((await coming()).tiktok?.error).toBe("No");
+    expect(await queue.chooseTikTok(A, v.id, { ...choices, privacy: "SELF_ONLY" })).toBe(true);
+    expect((await coming()).tiktok?.error).toBeNull();
+    expect(await queue.chooseTikTok(B, v.id, choices)).toBe(false);
+  });
+
   it("puts scheduled Shorts live when their time comes", async () => {
     const [v] = await db.admin((tx) => tx<{ id: string }[]>`
       insert into public.videos (user_id, format, params, key, title, status, scheduled_for, youtube_id)

@@ -44,7 +44,7 @@ export function ShortPlayer({ spec, tag, autoPlay = true, className = "" }: { sp
   };
 
   return (
-    <div className={className}>
+    <div className={`@container ${className}`}>
       <Player
         ref={ref}
         component={ShortVideo}
@@ -71,9 +71,9 @@ export function ShortPlayer({ spec, tag, autoPlay = true, className = "" }: { sp
             <path d="M4 9v6h4l5 4V5L8 9H4z" fill="currentColor" />
             {muted ? <path d="M17 9l5 6M22 9l-5 6" /> : <path d="M17 8a5 5 0 0 1 0 8M19.5 5.5a9 9 0 0 1 0 13" />}
           </svg>
-          {muted ? "Tap for sound" : "Sound on"}
+          <span className="@max-[240px]:hidden">{muted ? "Tap for sound" : "Sound on"}</span>
         </button>
-        <span className="font-mono text-[9px] uppercase tracking-wider text-dim">{Math.round(duration / FPS)}s · drawn live</span>
+        <span className="font-mono text-[9px] uppercase tracking-wider text-dim @max-[240px]:hidden">{Math.round(duration / FPS)}s · drawn live</span>
       </div>
     </div>
   );

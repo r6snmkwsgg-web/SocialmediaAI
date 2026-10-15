@@ -1,12 +1,14 @@
 import "server-only";
+import { PRIVACY, postSettings, problemWith, type Creator, type Privacy, type TikTokChoices } from "../shorts/tiktok";
 import { markExpired, tokensOf, updateTokens, type Tokens } from "./channels-store";
 import { configured, env } from "./env";
 
 /**
  * TikTok: connecting an account, then either posting for the creator
- * (once TikTok has approved the app for direct posting) or sending the
- * video to their TikTok drafts, where they finish it in the app. TikTok
- * has no way to schedule a post, so posting happens at the chosen time.
+ * with the choices they made for that Short (when direct posting is on)
+ * or sending the video to their TikTok drafts, where they finish it in
+ * the app. TikTok has no way to schedule a post, so posting happens at
+ * the chosen time.
  */
 
 const AUTH = "https://www.tiktok.com/v2/auth/authorize/";
@@ -27,9 +29,9 @@ function creds() {
   return { key: e.TIKTOK_CLIENT_KEY, secret: e.TIKTOK_CLIENT_SECRET };
 }
 
-/** what we ask TikTok for: who they are, their videos' views, and uploading; posting only once approved */
+/** what we ask TikTok for: who they are, their videos' views, and uploading; posting only when direct posting is on */
 export function tiktokScopes(): string[] {
-  return ["user.info.basic", "video.list", "video.upload", ...(configured().tiktokPosting ? ["video.publish"] : [])];
+  return ["user.info.basic", "video.list", "video.upload", ...(configured().tiktokDirect ? ["video.publish"] : [])];
 }
 
 export function tiktokAuthUrl(state: string, redirectUri: string): string {
@@ -113,15 +115,46 @@ export async function tiktokToDrafts(channelId: string, bytes: Buffer): Promise<
   return d.publish_id;
 }
 
-/** Posted straight to their profile: only once TikTok has approved the app for it. */
-export async function tiktokPost(channelId: string, bytes: Buffer, caption: string): Promise<string> {
-  if (!configured().tiktokPosting) throw new TikTokError("Direct posting isn't approved yet", 403, "not_approved");
+type CreatorReply = {
+  creator_nickname?: string;
+  creator_username?: string;
+  privacy_level_options?: string[];
+  comment_disabled?: boolean;
+  duet_disabled?: boolean;
+  stitch_disabled?: boolean;
+  max_video_post_duration_sec?: number;
+};
+
+async function creatorWith(access: string): Promise<Creator> {
+  const d = await call<CreatorReply>("/post/publish/creator_info/query/", access);
+  return {
+    nickname: d.creator_nickname || d.creator_username || "your TikTok",
+    privacy: (d.privacy_level_options ?? []).filter((p): p is Privacy => (PRIVACY as readonly string[]).includes(p)),
+    commentOff: !!d.comment_disabled,
+    duetOff: !!d.duet_disabled,
+    stitchOff: !!d.stitch_disabled,
+    maxSeconds: d.max_video_post_duration_sec || 60,
+  };
+}
+
+/** Who the creator is on TikTok right now and what they can post, for the choices shown before each Short. */
+export async function tiktokCreator(channelId: string): Promise<Creator> {
+  return creatorWith(await tiktokAccess(channelId));
+}
+
+/**
+ * Posted straight to their profile with the choices they made for it,
+ * checked again against what TikTok allows the account right now.
+ */
+export async function tiktokPost(channelId: string, bytes: Buffer, caption: string, choices: TikTokChoices, seconds: number): Promise<string> {
+  if (!configured().tiktokDirect) throw new TikTokError("Direct posting isn't on", 403, "not_on");
   const access = await tiktokAccess(channelId);
-  const info = await call<{ privacy_level_options: string[] }>("/post/publish/creator_info/query/", access);
-  const privacy = info.privacy_level_options.includes("PUBLIC_TO_EVERYONE") ? "PUBLIC_TO_EVERYONE" : info.privacy_level_options[0];
+  const creator = await creatorWith(access);
+  const problem = problemWith(choices, creator, seconds);
+  if (problem) throw new TikTokError(problem, 400, "choices");
   const d = await call<{ publish_id: string; upload_url: string }>("/post/publish/video/init/", access, {
     body: {
-      post_info: { title: caption.slice(0, 2200), privacy_level: privacy, disable_duet: false, disable_comment: false, disable_stitch: false, video_cover_timestamp_ms: 1000 },
+      post_info: { title: caption.slice(0, 2200), ...postSettings(choices, creator), video_cover_timestamp_ms: 1000 },
       source_info: source(bytes),
     },
   });

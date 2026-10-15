@@ -4,15 +4,17 @@ import { ActionButton, AutoRefresh, CopyButton } from "@/components/app/client-b
 import { LocalTime } from "@/components/app/local-time";
 import { button, Card, CardHead, Empty, PageHead, Pill } from "@/components/app/ui";
 import { SwipeQueue } from "@/components/shorts/swipe";
+import { TikTokLater } from "@/components/shorts/tiktok";
 import { FORMATS } from "@/lib/shorts/formats";
 import { validTimezone } from "@/lib/shorts/times";
+import { seconds } from "@/lib/shorts/timing";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
 import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { allowanceOf, makeShorts } from "@/lib/server/shorts/generate";
 import { queueOf, type Coming } from "@/lib/server/shorts/queue";
-import { decide, editCopy, makeMore, posted, sendToTikTok, tryAgain } from "./actions";
+import { decide, editCopy, makeMore, posted, postToTikTok, sendToTikTok, tiktokAccount, tryAgain } from "./actions";
 
 export const metadata: Metadata = { title: "Shorts" };
 
@@ -42,7 +44,9 @@ export default async function Shorts() {
   const channels = await channelsOf(me.id);
   const youtube = channels.find((c) => c.platform === "youtube" && c.status === "connected");
   const tiktok = channels.find((c) => c.platform === "tiktok" && c.status === "connected");
-  const schedules = me.plan.scheduling && !!youtube;
+  // straight to TikTok too: on a plan that posts, once direct posting is on
+  const tiktokDirect = me.plan.scheduling && !!tiktok && configured().tiktokDirect;
+  const schedules = me.plan.scheduling && (!!youtube || tiktokDirect);
   const working = q.coming.some((c) => c.status === "approved" || c.status === "rendering");
   const per = allow.per === "week" ? "this week" : "today";
 
@@ -54,7 +58,7 @@ export default async function Shorts() {
         line={`${allow.made} of ${allow.limit} made ${per}. Swipe right to ${schedules ? "post" : "keep"} one, left for a different one.`}
       />
 
-      {me.plan.scheduling && !youtube && (
+      {me.plan.scheduling && !youtube && !tiktokDirect && (
         <p className="mb-6 border-2 border-dashed border-edge-strong px-4 py-3 text-[14px]">
           Connect YouTube and the Shorts you approve post themselves at the right time.{" "}
           <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Connect it</Link>
@@ -66,6 +70,7 @@ export default async function Shorts() {
           items={q.waiting.map((w) => ({ id: w.id, spec: w.spec, format: FORMATS[w.spec.format].name, title: w.title, description: w.description, why: w.why, suggestedFor: w.suggestedFor?.toISOString() ?? null }))}
           tag={me.plan.tag}
           schedules={schedules}
+          creator={tiktokDirect ? tiktokAccount : undefined}
           decide={decide}
           edit={editCopy}
         />
@@ -117,15 +122,39 @@ export default async function Shorts() {
                       </div>
                     )}
                     {c.error && <p className="text-[13px] text-signal">{c.error}</p>}
+                    {c.tiktok && !c.tiktokId && (
+                      c.tiktok.error ? (
+                        <p className="text-[13px] text-signal">TikTok didn&rsquo;t take it: {c.tiktok.error}</p>
+                      ) : (
+                        <p className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+                          TikTok {c.tiktok.at ? <>at <LocalTime iso={c.tiktok.at.toISOString()} /></> : "once it's made"}
+                        </p>
+                      )
+                    )}
                     <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
                       {c.hasFile && <a href={`/api/videos/${c.id}/file?download=1`} className={button.quiet}>Download</a>}
                       {c.hasFile && <CopyButton text={`${c.title}\n\n${c.description}`} className={button.quiet} />}
-                      {c.hasFile && tiktok && !c.tiktokId && !configured().tiktokPosting && (
+                      {c.hasFile && tiktok && !c.tiktokId && !configured().tiktokDirect && (
                         <form action={sendToTikTok}><input type="hidden" name="id" value={c.id} /><button type="submit" className={button.quiet}>Send to TikTok drafts</button></form>
                       )}
-                      {c.tiktokId && <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Sent to TikTok</span>}
+                      {c.tiktokId && (
+                        <span className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
+                          {c.tiktok ? "On TikTok · it can take a few minutes to show on your profile" : "In your TikTok drafts"}
+                        </span>
+                      )}
                       {c.status === "failed" && <form action={tryAgain}><input type="hidden" name="id" value={c.id} /><button type="submit" className={button.quiet}>Try again</button></form>}
                     </div>
+                    {tiktokDirect && !c.tiktokId && c.status !== "failed" && (!c.tiktok || c.tiktok.error) && (
+                      <TikTokLater
+                        id={c.id}
+                        spec={c.spec}
+                        seconds={seconds(c.spec)}
+                        tag={me.plan.tag}
+                        label={c.tiktok ? "Choose again for TikTok" : "Post to TikTok too"}
+                        load={tiktokAccount}
+                        choose={postToTikTok}
+                      />
+                    )}
                     {c.hasFile && !c.youtubeId && (
                       <form action={posted} className="flex flex-wrap items-center gap-2">
                         <input type="hidden" name="id" value={c.id} />

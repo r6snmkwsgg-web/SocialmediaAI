@@ -55,7 +55,7 @@ Every setting is in [.env.example](.env.example), with what it's for. Locally th
 | Claude | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Titles and descriptions. Without them, each format writes its own plain title. |
 | Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Connecting YouTube channels: posting, views and analytics. |
 | YouTube data | `YOUTUBE_API_KEY` | Trends. |
-| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_POSTING_APPROVED` | Connecting TikTok: drafts now, direct posting once TikTok approves it. |
+| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_DIRECT_POST` | Connecting TikTok: Shorts to the creator's drafts, or posted straight to their TikTok. |
 | Scheduler | `CRON_SECRET` | The `/api/cron/*` routes, for a scheduler running the background jobs. |
 | Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY` | Where the bridge downloads come from, and a signing key if TikTok starts refusing it. |
 | Rendering | `CHROME_PATH` | The Chrome the worker renders with, if not Remotion's own. |
@@ -96,7 +96,7 @@ Until Google verifies the app and YouTube audits it, only test users can connect
 
 1. At developers.tiktok.com, an app with **Login Kit** and the **Content Posting API**, and the redirect URI `https://<site>/api/connect/tiktok/callback`.
 2. The scopes `user.info.basic`, `video.list` and `video.upload`, plus `video.publish` once direct posting is approved.
-3. The client key and secret go in `TIKTOK_CLIENT_*`. Set `TIKTOK_POSTING_APPROVED=1` only once TikTok approves direct posting; until then, Shorts go to the creator's TikTok drafts.
+3. The client key and secret go in `TIKTOK_CLIENT_*`. Without `TIKTOK_DIRECT_POST`, Shorts go to the creator's TikTok drafts. With `TIKTOK_DIRECT_POST=1` they post straight to TikTok, after the creator answers TikTok's questions for each one; until TikTok's Direct Post audit passes, that only works for private accounts and the posts stay private.
 
 ### Claude
 

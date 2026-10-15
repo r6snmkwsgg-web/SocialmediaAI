@@ -1,6 +1,7 @@
 import "server-only";
 import type { Plan } from "../../billing/plans";
 import { nextSlots, STARTING_HOURS, validTimezone } from "../../shorts/times";
+import type { TikTokChoices } from "../../shorts/tiktok";
 import type { FormatId, Spec } from "../../shorts/types";
 import { admin, asUser } from "../db";
 
@@ -23,6 +24,8 @@ export type Coming = {
   error: string | null;
   youtubeId: string | null;
   tiktokId: string | null;
+  /** going to TikTok directly: when, and why it didn't if TikTok turned it down */
+  tiktok: { at: Date | null; error: string | null } | null;
   hasFile: boolean;
 };
 
@@ -33,8 +36,9 @@ export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; com
     const waiting = await tx<{ id: string; format: FormatId; params: Spec["params"]; key: string; title: string; description: string; why: string[]; suggested_for: Date | null; origin: string }[]>`
       select id, format, params, key, title, description, why, suggested_for, origin from public.videos
       where status = 'review' order by suggested_for nulls last, created_at`;
-    const coming = await tx<{ id: string; format: FormatId; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null; error: string | null; youtube_id: string | null; tiktok_publish_id: string | null; file_path: string | null }[]>`
+    const coming = await tx<{ id: string; format: FormatId; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null; error: string | null; youtube_id: string | null; tiktok_publish_id: string | null; tiktok_chosen: boolean; tiktok_at: Date | null; tiktok_error: string | null; file_path: string | null }[]>`
       select v.id, v.format, v.params, v.title, v.description, v.status, v.scheduled_for, v.error, v.youtube_id, v.tiktok_publish_id, v.file_path,
+        v.tiktok_post is not null as tiktok_chosen, v.tiktok_at, v.tiktok_error,
         j.progress, j.status as job
       from public.videos v
       left join lateral (select progress, status from public.render_jobs where video_id = v.id order by id desc limit 1) j on true
@@ -57,6 +61,7 @@ export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; com
         error: r.error,
         youtubeId: r.youtube_id,
         tiktokId: r.tiktok_publish_id,
+        tiktok: r.tiktok_chosen ? { at: r.tiktok_at, error: r.tiktok_error } : null,
         hasFile: !!r.file_path,
       })),
       posted: posted.map((r) => ({
@@ -74,9 +79,10 @@ export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; com
 /**
  * A yes: it goes in the render queue, ahead of free accounts on the paid
  * plans. On a plan that posts for you, it keeps its suggested time (or
- * the next free one if that's passed).
+ * the next free one if that's passed), and goes to TikTok then too if
+ * the creator made their TikTok choices for it.
  */
-export async function approve(userId: string, id: string, plan: Plan, now = new Date()): Promise<boolean> {
+export async function approve(userId: string, id: string, plan: Plan, now = new Date(), tiktok: TikTokChoices | null = null): Promise<boolean> {
   const done = await asUser(userId, async (tx) => {
     const [v] = await tx<{ suggested_for: Date | null; timezone: string }[]>`
       select v.suggested_for, p.timezone from public.videos v join public.profiles p on p.id = v.user_id where v.id = ${id} and v.status = 'review'`;
@@ -89,11 +95,29 @@ export async function approve(userId: string, id: string, plan: Plan, now = new 
         at = nextSlots(1, now, validTimezone(v.timezone), STARTING_HOURS, taken.map((r) => r.t))[0] ?? null;
       }
     }
-    await tx`update public.videos set status = 'approved', decided_at = now(), scheduled_for = ${at}, error = null where id = ${id}`;
+    const post = plan.scheduling && tiktok ? tiktok : null;
+    await tx`
+      update public.videos set status = 'approved', decided_at = now(), scheduled_for = ${at}, error = null,
+        tiktok_post = ${post ? tx.json(post) : null}, tiktok_at = ${post ? at : null}, tiktok_error = null
+      where id = ${id}`;
     return true;
   });
   if (done) await admin((tx) => tx`insert into public.render_jobs (video_id, priority) values (${id}, ${plan.priority}) on conflict do nothing`);
   return done;
+}
+
+/**
+ * TikTok choices made later: for a Short approved before TikTok was
+ * connected, or one TikTok turned down. It goes at its time, or now if
+ * that's passed.
+ */
+export async function chooseTikTok(userId: string, id: string, choices: TikTokChoices, now = new Date()): Promise<boolean> {
+  const rows = await asUser(userId, (tx) => tx`
+    update public.videos set tiktok_post = ${tx.json(choices)}, tiktok_error = null,
+      tiktok_at = greatest(coalesce(scheduled_for, ${now}), ${now})
+    where id = ${id} and status in ('approved', 'rendering', 'ready', 'scheduled', 'posted') and tiktok_publish_id is null
+    returning id`);
+  return rows.length > 0;
 }
 
 export async function reject(userId: string, id: string): Promise<boolean> {
