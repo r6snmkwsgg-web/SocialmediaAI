@@ -62,3 +62,12 @@ export function TimezoneField({ name = "tz" }: { name?: string }) {
   useEffect(() => setTz(Intl.DateTimeFormat().resolvedOptions().timeZone ?? ""), []);
   return <input type="hidden" name={name} value={tz} />;
 }
+
+/** Marks everything seen once the page showing it is open, and tells the bell. */
+export function MarkSeen({ action, when }: { action: () => Promise<void>; when: boolean }) {
+  useEffect(() => {
+    if (!when) return;
+    void action().then(() => window.dispatchEvent(new Event("hl:seen")));
+  }, [action, when]);
+  return null;
+}

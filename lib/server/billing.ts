@@ -1,9 +1,10 @@
 import "server-only";
 import Stripe from "stripe";
 import { PLANS, type Interval, type Plan, type PlanId } from "../billing/plans";
-import { HANDLED, subscriptionRow, type PriceMap } from "../billing/webhook";
+import { HANDLED, planNote, subscriptionRow, type PriceMap } from "../billing/webhook";
 import { admin, asUser } from "./db";
 import { env } from "./env";
+import { notify } from "./notify";
 
 /**
  * Stripe: checkout, the billing portal, and the webhook that keeps each
@@ -135,5 +136,7 @@ export async function handleWebhook(body: string, signature: string): Promise<st
       stripe_customer_id = excluded.stripe_customer_id, stripe_subscription_id = excluded.stripe_subscription_id,
       plan = excluded.plan, "interval" = excluded."interval", status = excluded.status,
       current_period_end = excluded.current_period_end, cancel_at_period_end = excluded.cancel_at_period_end, updated_at = now()`);
+  const note = planNote(row);
+  if (note) await notify(userId, { ...note, href: "/app/settings/billing" });
   return `${userId} is on ${row.plan} (${row.status})`;
 }

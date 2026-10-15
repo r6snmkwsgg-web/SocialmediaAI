@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checklist, nextStep, type Facts } from "@/lib/app/checklist";
 import { PLANS, yearSaving } from "@/lib/billing/plans";
-import { HANDLED, subscriptionRow, type PriceMap, type SubLike } from "@/lib/billing/webhook";
+import { HANDLED, planNote, subscriptionRow, type PriceMap, type SubLike } from "@/lib/billing/webhook";
 
 const prices: PriceMap = {
   price_pro_m: { plan: "pro", interval: "month" },
@@ -76,6 +76,27 @@ describe("what a Stripe subscription means", () => {
   it("only listens for the events that change a subscription", () => {
     expect(HANDLED.has("customer.subscription.updated")).toBe(true);
     expect(HANDLED.has("invoice.paid")).toBe(false);
+  });
+});
+
+describe("what someone's told when their plan changes", () => {
+  const note = (over: Parameters<typeof sub>[0]) => planNote(subscriptionRow(sub(over), prices));
+
+  it("says the plan they're on, once per state, so a renewal says nothing new", () => {
+    expect(note({})).toMatchObject({ kind: "plan", title: "You're on Pro" });
+    expect(note({}).key).toBe(note({ end: 1_900_000_000 }).key);
+    expect(note({ price: "price_cr_m" })?.title).toBe("You're on Creator");
+  });
+
+  it("warns about a failed card, and says when a plan won't renew or has ended", () => {
+    expect(note({ status: "past_due" })).toMatchObject({ kind: "account", title: "Your payment didn't go through" });
+    expect(note({ cancel_at_period_end: true })?.title).toBe("Pro won't renew");
+    expect(note({ status: "canceled" })?.title).toBe("You're on Free now");
+  });
+
+  it("says nothing about a checkout that never finished", () => {
+    expect(note({ status: "incomplete" })).toBeNull();
+    expect(note({ status: "incomplete_expired" })).toBeNull();
   });
 });
 

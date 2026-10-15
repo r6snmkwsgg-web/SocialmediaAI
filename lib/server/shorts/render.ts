@@ -3,6 +3,7 @@ import type { Spec } from "../../shorts/types";
 import type { PlanId } from "../../billing/plans";
 import { PLANS } from "../../billing/plans";
 import { admin } from "../db";
+import { notify } from "../notify";
 
 /**
  * The render queue as the worker sees it: take the next job (paid plans
@@ -40,7 +41,12 @@ export async function jobProgress(id: number, progress: number): Promise<void> {
 export async function finishJob(job: Job, filePath: string): Promise<void> {
   await admin(async (tx) => {
     await tx`update public.render_jobs set status = 'done', progress = 1, finished_at = now() where id = ${job.id}`;
-    await tx`update public.videos set status = 'ready', file_path = ${filePath}, error = null where id = ${job.videoId}`;
+    const [v] = await tx<{ title: string; posts: boolean }[]>`
+      update public.videos set status = 'ready', file_path = ${filePath}, error = null where id = ${job.videoId}
+      returning title, scheduled_for is not null and (tiktok_post is not null or exists (
+        select 1 from public.channels c where c.user_id = videos.user_id and c.platform = 'youtube' and c.status = 'connected')) as posts`;
+    // one that posts itself says so when it's up; one to post by hand is ready now
+    if (v && !v.posts) await notify(job.userId, { kind: "ready", title: "Ready to download", body: v.title, href: `/app/shorts/${job.videoId}`, key: `ready:${job.videoId}` }, tx);
   });
 }
 
@@ -48,6 +54,8 @@ export async function failJob(job: Job, message: string): Promise<void> {
   const final = job.attempts >= 3;
   await admin(async (tx) => {
     await tx`update public.render_jobs set status = ${final ? "failed" : "queued"}, error = ${message}, finished_at = ${final ? new Date() : null} where id = ${job.id}`;
-    if (final) await tx`update public.videos set status = 'failed', error = ${`Rendering failed: ${message}`} where id = ${job.videoId}`;
+    if (!final) return;
+    const [v] = await tx<{ title: string }[]>`update public.videos set status = 'failed', error = ${`Rendering failed: ${message}`} where id = ${job.videoId} returning title`;
+    if (v) await notify(job.userId, { kind: "failed", title: "A Short couldn't be made", body: `${v.title}. It failed three times; try it again from its page.`, href: `/app/shorts/${job.videoId}`, key: `render-failed:${job.id}` }, tx);
   });
 }

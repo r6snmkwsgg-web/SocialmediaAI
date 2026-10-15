@@ -7,6 +7,7 @@ import { atLocal, bestHours, localParts, nextSlots, STARTING_HOURS, validTimezon
 import { FORMAT_IDS, type Candidate, type FormatId, type Spec } from "../../shorts/types";
 import { billingFor } from "../billing";
 import { admin, asUser, withUserLock } from "../db";
+import { notify } from "../notify";
 import { plainDescription, writeCopy } from "./titles";
 
 /**
@@ -132,6 +133,23 @@ async function make(userId: string, opts: { origin: "daily" | "replacement"; cou
     }
   });
   return made.length;
+}
+
+/** Someone's Shorts for the day, made by the worker or a scheduler, and a note that they're waiting. */
+export async function makeDailyShorts(userId: string, now = new Date()): Promise<number> {
+  const n = await makeShorts(userId, { origin: "daily", now });
+  if (n > 0) {
+    const [p] = await admin((tx) => tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`);
+    const day = localParts(now, validTimezone(p?.timezone));
+    await notify(userId, {
+      kind: "ready",
+      title: `${n} new Short${n === 1 ? "" : "s"} to swipe`,
+      body: "Swipe right on the ones you want, left for something else.",
+      href: "/app/shorts",
+      key: `daily:${day.y}-${day.m}-${day.d}`,
+    });
+  }
+  return n;
 }
 
 /** Everyone whose morning it is and who hasn't had today's Shorts yet: the worker's daily run. */

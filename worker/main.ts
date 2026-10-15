@@ -17,11 +17,12 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { soundFor, wav } from "../lib/shorts/sound";
 import { claimJob, failJob, finishJob, jobProgress, type Job } from "../lib/server/shorts/render";
-import { dueForShorts, makeShorts } from "../lib/server/shorts/generate";
+import { dueForShorts, makeDailyShorts } from "../lib/server/shorts/generate";
 import { postDue } from "../lib/server/shorts/post";
 import { collectStats } from "../lib/server/shorts/stats";
 import { syncEarnings } from "../lib/server/earnings";
 import { refreshTrends } from "../lib/server/trends";
+import { recapLives } from "../lib/server/live";
 import { putVideo } from "../lib/server/storage";
 
 if (process.env.NODE_ENV !== "production") {
@@ -121,10 +122,11 @@ async function main() {
   every(15 * 60_000, "stats", () => collectStats());
   every(30 * 60_000, "trends", () => refreshTrends());
   every(6 * 3600_000, "earnings", () => syncEarnings());
+  every(5 * 60_000, "live recaps", () => recapLives());
   every(5 * 60_000, "daily shorts", async () => {
     const out: string[] = [];
     for (const id of await dueForShorts()) {
-      const n = await makeShorts(id, { origin: "daily" });
+      const n = await makeDailyShorts(id);
       if (n) out.push(`${n} for ${id}`);
     }
     return out;

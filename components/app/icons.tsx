@@ -68,4 +68,62 @@ export const Icons = {
       <path d="M5 5l14 14M19 5L5 19" />
     </svg>
   ),
+  bell: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M6 16V10a6 6 0 0 1 12 0v6l2 2H4z" />
+      <path d="M10 21h4" />
+    </svg>
+  ),
+  alert: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M12 3l10 18H2z" />
+      <path d="M12 10v5M12 18v.5" />
+    </svg>
+  ),
+  download: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M12 3v12M6 10l6 6 6-6M4 21h16" />
+    </svg>
+  ),
+  plug: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M8 3v5M16 3v5M5 8h14v4a7 7 0 0 1-14 0zM12 19v3" />
+    </svg>
+  ),
+  card: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <rect x="2.5" y="5" width="19" height="14" />
+      <path d="M2.5 10h19M6 15h4" />
+    </svg>
+  ),
+  search: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <circle cx="10.5" cy="10.5" r="6.5" />
+      <path d="M15.5 15.5L21 21" />
+    </svg>
+  ),
+  calendar: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <rect x="3" y="5" width="18" height="16" />
+      <path d="M3 10h18M8 2.5V7M16 2.5V7" />
+    </svg>
+  ),
+  grid: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <rect x="3.5" y="3.5" width="7" height="7" />
+      <rect x="13.5" y="3.5" width="7" height="7" />
+      <rect x="3.5" y="13.5" width="7" height="7" />
+      <rect x="13.5" y="13.5" width="7" height="7" />
+    </svg>
+  ),
+  external: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M14 4h6v6M20 4l-9 9M18 14v6H4V6h6" />
+    </svg>
+  ),
+  bolt: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <path d="M13 2L4 14h7l-1 8 9-12h-7z" />
+    </svg>
+  ),
 };

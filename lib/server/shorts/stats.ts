@@ -2,6 +2,7 @@ import "server-only";
 import { keyGroups, lift, median, updated, type Weight } from "../../shorts/learn";
 import { admin } from "../db";
 import { configured } from "../env";
+import { notify } from "../notify";
 import { youtubeAccess, youtubeViews } from "../youtube";
 
 /**
@@ -70,6 +71,17 @@ export async function learn(userId: string, videoId: string, format: string, key
     // the first few Shorts have nothing to compare with; they only set the baseline
     if (before.length < 3) return;
     const l = lift(views, median(before.map((b) => Number(b.views)))!);
+    // a clear win is worth hearing about; everything else just steers tomorrow
+    if (l >= 1.5) {
+      const [v] = await tx<{ title: string }[]>`select title from public.videos where id = ${videoId}`;
+      await notify(userId, {
+        kind: "results",
+        title: `${l >= 10 ? Math.round(l) : l.toFixed(1)}× your usual views`,
+        body: `${v?.title ?? "A Short"} beat your typical Short in its first day. Hookline will make more like it.`,
+        href: `/app/shorts/${videoId}`,
+        key: `results:${videoId}`,
+      }, tx);
+    }
     const all: ["format" | "key", string][] = [["format", format], ...keyGroups(key).map((g) => ["key", g] as ["key", string])];
     for (const [kind, name] of all) {
       const [w] = await tx<Pick<Weight, "score" | "samples">[]>`select score, samples from public.weights where user_id = ${userId} and kind = ${kind} and name = ${name}`;

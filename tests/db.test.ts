@@ -198,6 +198,10 @@ describe.skipIf(!safe)("the database", () => {
     const failed = (await queue.queueOf(C)).coming.find((c) => c.id === free.id)!;
     expect(failed.status).toBe("failed");
     expect(failed.error).toMatch(/chrome went away/);
+    // its owner hears about it; a Short that posts itself says nothing until it's up
+    const notes = await import("@/lib/server/notify");
+    expect((await notes.notificationsOf(C)).items.map((n) => n.title)).toContain("A Short couldn't be made");
+    expect((await notes.notificationsOf(A)).items.some((n) => n.title === "Ready to download" && n.href === `/app/shorts/${pro.id}`)).toBe(false);
   });
 
   it("keeps the creator's TikTok choices with a Short, and lets them choose again", async () => {
@@ -219,6 +223,34 @@ describe.skipIf(!safe)("the database", () => {
     expect(await queue.chooseTikTok(A, v.id, { ...choices, privacy: "SELF_ONLY" })).toBe(true);
     expect((await coming()).tiktok?.error).toBeNull();
     expect(await queue.chooseTikTok(B, v.id, choices)).toBe(false);
+  });
+
+  it("tells people what happened once, and only them", async () => {
+    const notes = await import("@/lib/server/notify");
+    await notes.notify(A, { kind: "posted", title: "Live on YouTube", body: "A Short", href: "/app/shorts", key: "test:once" });
+    await notes.notify(A, { kind: "posted", title: "Live on YouTube", body: "A Short", href: "/app/shorts", key: "test:once" });
+    const mine = await notes.notificationsOf(A);
+    expect(mine.items.filter((n) => n.title === "Live on YouTube")).toHaveLength(1);
+    expect(mine.unread).toBeGreaterThan(0);
+    expect((await notes.notificationsOf(B)).items.some((n) => n.title === "Live on YouTube")).toBe(false);
+    // nobody signed in can write one, even for themselves
+    await expect(db.asUser(B, (tx) => tx`insert into public.notifications (user_id, kind, title, key) values (${B}, 'plan', 'Free Pro', 'mine')`)).rejects.toThrow();
+    await notes.markAllRead(A);
+    expect((await notes.notificationsOf(A)).unread).toBe(0);
+  });
+
+  it("recaps a LIVE once nothing has happened in it for 20 minutes", async () => {
+    const notes = await import("@/lib/server/notify");
+    const [s] = await db.admin((tx) => tx<{ id: string }[]>`
+      insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, coins, peak_players, top_gifters)
+      values (gen_random_uuid(), ${B}, 'battle', now() - interval '2 hours', now() - interval '25 minutes', 9, 1234, 17, ${db.sql().json([{ id: "1", name: "mia", coins: 999 }])})
+      returning id`);
+    const quiet = await live.recapLives();
+    expect(quiet).toContain(`recap for ${s.id}`);
+    expect(await live.recapLives()).not.toContain(`recap for ${s.id}`);
+    const recap = (await notes.notificationsOf(B)).items.find((n) => n.kind === "live")!;
+    expect(recap.title).toBe("LIVE recap: 9 rounds, 1,234 coins");
+    expect(recap.body).toMatch(/17 playing at once\. Top gifter: mia with 999 coins/);
   });
 
   it("puts scheduled Shorts live when their time comes", async () => {

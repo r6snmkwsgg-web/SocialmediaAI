@@ -1,4 +1,4 @@
-import type { Interval, PlanId } from "./plans";
+import { PLANS, type Interval, type PlanId } from "./plans";
 
 /**
  * What a Stripe subscription means for an account, worked out without
@@ -54,3 +54,23 @@ export const HANDLED = new Set([
   "customer.subscription.updated",
   "customer.subscription.deleted",
 ]);
+
+/**
+ * What to tell someone when their subscription changes, or nothing. The
+ * key names the state, so a renewal (same plan, same state) says nothing
+ * and a new subscription after cancelling says it all again.
+ */
+export function planNote(row: SubRow): { kind: "plan" | "account"; title: string; body: string; key: string } | null {
+  const key = `plan:${row.stripe_subscription_id}:${row.plan}:${row.status}:${row.cancel_at_period_end}`;
+  const name = PLANS[row.plan].name;
+  if (row.status === "past_due") return { kind: "account", title: "Your payment didn't go through", body: "Stripe will try your card again. Update it in Plan & billing to keep your plan.", key };
+  if (row.plan === "free") {
+    // only an ending says anything: a checkout that never finished was never a plan
+    return row.status === "canceled" || row.status === "unpaid" ? { kind: "plan", title: "You're on Free now", body: "Your paid plan has ended. Pick one again any time in Plan & billing.", key } : null;
+  }
+  if (row.cancel_at_period_end) return { kind: "plan", title: `${name} won't renew`, body: "It stays on until the end of the time you've paid for.", key };
+  if (row.status === "active" || row.status === "trialing") {
+    return { kind: "plan", title: `You're on ${name}`, body: row.plan === "creator" ? "Up to five channels, your own LIVE gift menu, and first in line for rendering." : "Your Shorts now post themselves at your best times.", key };
+  }
+  return null;
+}

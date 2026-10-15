@@ -3,9 +3,13 @@ import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { Hook, Wordmark } from "@/components/brand";
 import { AccountMenu } from "@/components/app/account-menu";
+import { Bell } from "@/components/app/bell";
 import { SectionName, SideNav, TabBar } from "@/components/app/nav";
+import { toView } from "@/components/app/notes";
 import { PLANS } from "@/lib/billing/plans";
 import { account } from "@/lib/server/account";
+import { notificationsOf } from "@/lib/server/notify";
+import { seenAll } from "./notifications/actions";
 
 /**
  * The app around every section: the sections down the left on a wide
@@ -16,6 +20,7 @@ export default async function Shell({ children }: { children: React.ReactNode })
   if (!me.profile.onboardedAt) redirect("/app/welcome");
   const t = (await cookies()).get("hl_theme")?.value;
   const theme = t === "light" || t === "dark" ? t : "system";
+  const notes = await notificationsOf(me.id, { limit: 8 });
 
   return (
     <div className="lg:grid lg:grid-cols-[232px_minmax(0,1fr)]">
@@ -46,7 +51,10 @@ export default async function Shell({ children }: { children: React.ReactNode })
             </Link>
             <SectionName />
           </div>
-          <AccountMenu email={me.email} plan={me.plan.name} theme={theme} />
+          <div className="flex items-center gap-3">
+            <Bell items={notes.items.map(toView)} unread={notes.unread} seen={seenAll} />
+            <AccountMenu email={me.email} plan={me.plan.name} theme={theme} />
+          </div>
         </header>
         <main id="main" className="mx-auto w-full max-w-6xl flex-1 px-4 pb-28 pt-8 sm:px-6 lg:px-10 lg:pb-16 lg:pt-10">
           {children}

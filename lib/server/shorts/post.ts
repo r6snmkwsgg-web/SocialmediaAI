@@ -3,6 +3,7 @@ import { tiktokChoices, tiktokReason } from "../../shorts/tiktok";
 import { seconds } from "../../shorts/timing";
 import type { FormatId, Spec } from "../../shorts/types";
 import { admin } from "../db";
+import { notify } from "../notify";
 import { getVideo } from "../storage";
 import { TikTokError, tiktokPost } from "../tiktok";
 import { YouTubeError, youtubeUpload } from "../youtube";
@@ -29,12 +30,13 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
   const log: string[] = [];
 
   // scheduled ones whose time has come are live now
-  const flipped = await admin((tx) => tx`
-    update public.videos set status = 'posted', posted_at = scheduled_for where status = 'scheduled' and scheduled_for <= ${now} returning id`);
+  const flipped = await admin((tx) => tx<{ id: string; user_id: string; title: string }[]>`
+    update public.videos set status = 'posted', posted_at = scheduled_for where status = 'scheduled' and scheduled_for <= ${now} returning id, user_id, title`);
+  for (const v of flipped) await notify(v.user_id, { kind: "posted", title: "Live on YouTube", body: v.title, href: `/app/shorts/${v.id}`, key: `youtube:${v.id}` });
   if (flipped.length) log.push(`${flipped.length} went public`);
 
-  const youtube = await admin((tx) => tx<{ id: string; title: string; description: string; format: FormatId; file_path: string; scheduled_for: Date; channel_id: string }[]>`
-    select v.id, v.title, v.description, v.format, v.file_path, v.scheduled_for, c.id as channel_id
+  const youtube = await admin((tx) => tx<{ id: string; user_id: string; title: string; description: string; format: FormatId; file_path: string; scheduled_for: Date; channel_id: string }[]>`
+    select v.id, v.user_id, v.title, v.description, v.format, v.file_path, v.scheduled_for, c.id as channel_id
     from public.videos v
     join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
     join lateral (select id from public.channels where user_id = v.user_id and platform = 'youtube' and status = 'connected' order by connected_at limit 1) c on true
@@ -47,22 +49,26 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
       const soon = v.scheduled_for.getTime() <= now.getTime() + 15 * 60_000;
       const ytId = await youtubeUpload(v.channel_id, bytes, { title: v.title, description: v.description, publishAt: soon ? null : v.scheduled_for, categoryId: CATEGORY[v.format] });
       await admin((tx) => tx`
-        update public.videos set youtube_id = ${ytId}, status = ${soon ? "posted" : "scheduled"}, posted_at = ${soon ? now : null}, error = null, posting_at = null
+        update public.videos set youtube_id = ${ytId}, status = ${soon ? "posted" : "scheduled"}, posted_at = ${soon ? now : null}, uploaded_at = ${now}, error = null, posting_at = null
         where id = ${v.id}`);
+      // a scheduled one says so when it goes public
+      if (soon) await notify(v.user_id, { kind: "posted", title: "Live on YouTube", body: v.title, href: `/app/shorts/${v.id}`, key: `youtube:${v.id}` });
       log.push(`${v.id} → YouTube ${ytId}${soon ? "" : `, public at ${v.scheduled_for.toISOString()}`}`);
     } catch (err) {
       const e = err instanceof YouTubeError ? err : null;
       const msg = err instanceof Error ? err.message : String(err);
       // quota and outages pass: leave it ready and try next time; anything else needs a person
+      const failed = !!e && !e.retry && e.status !== 401;
       await admin((tx) => tx`
-        update public.videos set error = ${msg}, status = ${e && !e.retry && e.status !== 401 ? "failed" : "ready"}, posting_at = null where id = ${v.id}`);
+        update public.videos set error = ${msg}, status = ${failed ? "failed" : "ready"}, posting_at = null where id = ${v.id}`);
+      if (failed) await notify(v.user_id, { kind: "failed", title: "YouTube didn't take a Short", body: `${v.title}: ${msg}`, href: `/app/shorts/${v.id}`, key: `youtube-failed:${v.id}:${now.getTime()}` });
       log.push(`${v.id} failed: ${msg}`);
     }
   }
 
   if (configured().tiktokDirect) {
-    const tiktok = await admin((tx) => tx<{ id: string; title: string; description: string; format: FormatId; params: Spec["params"]; file_path: string; tiktok_post: unknown; status: string; channel_id: string; youtube: boolean }[]>`
-      select v.id, v.title, v.description, v.format, v.params, v.file_path, v.tiktok_post, v.status, c.id as channel_id,
+    const tiktok = await admin((tx) => tx<{ id: string; user_id: string; title: string; description: string; format: FormatId; params: Spec["params"]; file_path: string; tiktok_post: unknown; status: string; channel_id: string; youtube: boolean }[]>`
+      select v.id, v.user_id, v.title, v.description, v.format, v.params, v.file_path, v.tiktok_post, v.status, c.id as channel_id,
         exists (select 1 from public.channels y where y.user_id = v.user_id and y.platform = 'youtube' and y.status = 'connected') as youtube
       from public.videos v
       join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
@@ -81,16 +87,20 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
         // with no YouTube to post it to, TikTok is where it's posted
         const done = !v.youtube && v.status === "ready";
         await admin((tx) => tx`
-          update public.videos set tiktok_publish_id = ${id}, tiktok_error = null, posting_at = null,
+          update public.videos set tiktok_publish_id = ${id}, tiktok_error = null, posting_at = null, tiktok_posted_at = ${now},
             status = case when ${done} then 'posted' else status end, posted_at = case when ${done} then ${now} else posted_at end
           where id = ${v.id}`);
+        await notify(v.user_id, { kind: "posted", title: "Sent to TikTok", body: `${v.title}. It can take a few minutes to show on your profile.`, href: `/app/shorts/${v.id}`, key: `tiktok:${v.id}` });
         log.push(`${v.id} → TikTok ${id}`);
       } catch (err) {
         const e = err instanceof TikTokError ? err : null;
         const msg = e ? tiktokReason(e.code, e.message) : err instanceof Error ? err.message : String(err);
         // TikTok said no: it waits for the creator. Anything passing (an outage, a limit, the
         // network) keeps its lock, so it's tried again in half an hour, for up to a day.
-        if (e && !e.retry) await admin((tx) => tx`update public.videos set tiktok_error = ${msg}, posting_at = null where id = ${v.id}`);
+        if (e && !e.retry) {
+          await admin((tx) => tx`update public.videos set tiktok_error = ${msg}, posting_at = null where id = ${v.id}`);
+          await notify(v.user_id, { kind: "failed", title: "TikTok didn't take a Short", body: `${v.title}: ${msg}`, href: `/app/shorts/${v.id}`, key: `tiktok-failed:${v.id}:${now.getTime()}` });
+        }
         log.push(`${v.id} TikTok failed: ${msg}`);
       }
     }

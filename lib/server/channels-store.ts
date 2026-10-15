@@ -1,6 +1,7 @@
 import "server-only";
 import { open, seal } from "./crypto";
 import { admin, asUser } from "./db";
+import { notify } from "./notify";
 import type { Platform } from "./channels";
 
 /**
@@ -50,7 +51,19 @@ export async function updateTokens(channelId: string, t: Pick<Tokens, "access" |
     where channel_id = ${channelId}`);
 }
 
-/** The account stopped letting us in (revoked, or the token died): say so in Settings. */
+/** The account stopped letting us in (revoked, or the token died): say so in Settings, and tell them. */
 export async function markExpired(channelId: string): Promise<void> {
-  await admin((tx) => tx`update public.channels set status = 'expired' where id = ${channelId}`);
+  await admin(async (tx) => {
+    const [c] = await tx<{ user_id: string; platform: Platform; title: string | null; connected_at: Date }[]>`
+      update public.channels set status = 'expired' where id = ${channelId} returning user_id, platform, title, connected_at`;
+    if (!c) return;
+    const name = c.platform === "youtube" ? "YouTube" : "TikTok";
+    await notify(c.user_id, {
+      kind: "account",
+      title: `Reconnect ${name}`,
+      body: `Hookline lost access to ${c.title ?? `your ${name}`}. Connect it again in Settings so your Shorts keep posting.`,
+      href: "/app/settings",
+      key: `expired:${channelId}:${c.connected_at.getTime()}`,
+    }, tx);
+  });
 }

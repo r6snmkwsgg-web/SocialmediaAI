@@ -63,5 +63,6 @@ export function TabBar() {
 export function SectionName() {
   const path = usePathname();
   const s = [...SECTIONS].reverse().find((x) => isOn(path, x.href));
-  return <span>{path.startsWith("/app/settings") ? "Settings" : (s?.label ?? "Hookline")}</span>;
+  const own = path.startsWith("/app/settings") ? "Settings" : path.startsWith("/app/notifications") ? "Notifications" : null;
+  return <span>{own ?? s?.label ?? "Hookline"}</span>;
 }

@@ -5,6 +5,7 @@ import { allowedBy, parseSettings, type GameId, type LiveSettings } from "../liv
 import { token } from "./crypto";
 import { admin, asUser } from "./db";
 import { configured } from "./env";
+import { notify } from "./notify";
 
 /**
  * A streamer's LIVE game on their account: their settings, the private key
@@ -104,4 +105,29 @@ export async function recordSession(p: SessionPayload): Promise<boolean> {
       where live_sessions.user_id = excluded.user_id`;
     return true;
   });
+}
+
+/**
+ * A recap of each LIVE once it's over: when nothing has happened in it for
+ * 20 minutes. Sessions where no real viewer played say nothing.
+ */
+export async function recapLives(now = new Date()): Promise<string[]> {
+  const ended = await admin((tx) => tx<{ id: string; user_id: string; rounds: number; coins: number; peak_players: number; top_gifters: { name: string; coins: number }[] }[]>`
+    select s.id, s.user_id, s.rounds, s.coins, s.peak_players, s.top_gifters from public.live_sessions s
+    where s.last_event_at < ${new Date(now.getTime() - 20 * 60_000)} and s.last_event_at > ${new Date(now.getTime() - 2 * 86400_000)}
+      and (s.rounds > 0 or s.coins > 0)
+      and not exists (select 1 from public.notifications n where n.user_id = s.user_id and n.key = 'live:' || s.id)
+    limit 200`);
+  const n = (v: number) => v.toLocaleString("en-US");
+  for (const s of ended) {
+    const top = s.top_gifters[0];
+    await notify(s.user_id, {
+      kind: "live",
+      title: `LIVE recap: ${n(s.rounds)} round${s.rounds === 1 ? "" : "s"}, ${n(s.coins)} coins`,
+      body: `${n(s.peak_players)} playing at once.${top ? ` Top gifter: ${top.name} with ${n(top.coins)} coins.` : ""}`,
+      href: "/app/live",
+      key: `live:${s.id}`,
+    });
+  }
+  return ended.map((s) => `recap for ${s.id}`);
 }
