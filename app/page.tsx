@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { Icons } from "@/components/app/icons";
 import { Eyebrow } from "@/components/brand";
 import { Phone } from "@/components/phone";
 import { ShortPlayer } from "@/components/shorts/player";
@@ -16,6 +17,15 @@ export const metadata: Metadata = {
   description: "Shorts made and posted for you, games your TikTok LIVE chat plays with gifts, what's rising on Shorts, and what you earned, in one place. Start free.",
   openGraph: { images: ["/og/home.png"] },
 };
+
+const TOOLS = [
+  { icon: Icons.calendar, title: "A calendar", body: "Every Short on the day and hour it goes out, in your timezone, and every one that already did." },
+  { icon: Icons.grid, title: "A library", body: "Everything you've posted, with its views at an hour, a day and three days, and how it did against your usual." },
+  { icon: Icons.trends, title: "What's working", body: "Which formats beat your usual Short. Hookline makes more of those and fewer of the rest, and shows you why." },
+  { icon: Icons.bell, title: "Told when it matters", body: "When a Short goes live, a LIVE ends, a video takes off, or an account needs you. Nothing else." },
+  { icon: Icons.search, title: "Ctrl K", body: "Jump to any screen or do the common things with a few letters, from anywhere in the app." },
+  { icon: Icons.shorts, title: "On your phone", body: "Add it to your home screen and it opens like an app. Swipe your queue on the bus." },
+];
 
 const STEPS = [
   { n: "01", title: "Swipe", body: "Each morning your Shorts are waiting. Right to post, left for a different one. Nothing goes out without your yes.", you: true },
@@ -155,6 +165,23 @@ export default function Home() {
               </li>
             ))}
           </ol>
+        </div>
+      </section>
+
+      {/* the tools around it */}
+      <section className="border-t border-line">
+        <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
+          <Eyebrow>Every day</Eyebrow>
+          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Built to run your channel, not just make a video.</h2>
+          <ul className="mt-14 grid gap-px bg-line sm:grid-cols-2 lg:grid-cols-3">
+            {TOOLS.map((t) => (
+              <li key={t.title} className="flex flex-col gap-3 bg-ink p-6 sm:p-7">
+                <t.icon className="h-7 w-7 text-signal" />
+                <h3 className="font-display text-3xl uppercase tracking-wide">{t.title}</h3>
+                <p className="text-[15px] leading-relaxed text-paper/70">{t.body}</p>
+              </li>
+            ))}
+          </ul>
         </div>
       </section>
 

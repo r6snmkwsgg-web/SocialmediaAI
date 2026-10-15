@@ -52,7 +52,11 @@ export default async function Library({ searchParams }: { searchParams: Search }
 
   return (
     <>
-      <PageHead eyebrow="Library" title="Every Short" line={`${n(lib.total)} Short${lib.total === 1 ? "" : "s"} ${narrowed ? "match" : "you've said yes to"}, newest first.`} />
+      <PageHead
+        eyebrow="Library"
+        title="Every Short"
+        line={lib.total || narrowed ? `${n(lib.total)} Short${lib.total === 1 ? "" : "s"} ${narrowed ? (lib.total === 1 ? "matches" : "match") : "you've said yes to"}, newest first.` : "Every Short you say yes to, with how it did."}
+      />
 
       <Card className="mb-8">
         <CardHead

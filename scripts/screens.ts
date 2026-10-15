@@ -7,6 +7,8 @@
  * Needs the app running with HOOKLINE_DEV_LOGIN=1 (it signs in as a new
  * test account), and a database. The app's screens show that account's
  * real state: a new account's empty states, its first Shorts, and so on.
+ * With SCREENS_ADMIN set to an email in ADMIN_EMAILS, it signs in as that
+ * too and takes the admin page.
  */
 import { mkdirSync } from "node:fs";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
@@ -74,12 +76,41 @@ async function app(browser: Browser) {
   const ctx = await browser.newContext({ viewport: DESKTOP });
   ctx.setDefaultTimeout(90_000);
   const page = await signUp(ctx);
-  const pages: [string, string][] = [["/app", "home"], ["/app/shorts", "shorts"], ["/app/live", "live"], ["/app/trends", "trends"], ["/app/earnings", "earnings"], ["/app/settings", "settings"], ["/app/settings/billing", "billing"]];
+  const pages: [string, string][] = [
+    ["/app", "home"],
+    ["/app/shorts", "shorts"],
+    ["/app/shorts/calendar", "shorts-calendar"],
+    ["/app/shorts/library", "shorts-library"],
+    ["/app/live", "live"],
+    ["/app/trends", "trends"],
+    ["/app/earnings", "earnings"],
+    ["/app/notifications", "notifications"],
+    ["/app/settings", "settings"],
+    ["/app/settings/billing", "billing"],
+  ];
   for (const [path, name] of pages) {
     await page.goto(BASE + path, { waitUntil: "domcontentloaded" });
     await settle(page, 3500);
     await shoot(page, `desktop-app-${name}`);
   }
+  // a Short said yes to, on its own page, and the palette over Home
+  await page.goto(`${BASE}/app/shorts`, { waitUntil: "domcontentloaded" });
+  await settle(page, 3500);
+  await page.keyboard.press("ArrowRight");
+  await settle(page, 2500);
+  const first = page.locator('a[href^="/app/shorts/"]').filter({ hasNotText: /queue|calendar|library/i }).first();
+  if (await first.count()) {
+    await page.goto(BASE + (await first.getAttribute("href")), { waitUntil: "domcontentloaded" });
+    await settle(page, 3500);
+    await shoot(page, "desktop-app-short");
+  }
+  await page.goto(`${BASE}/app`, { waitUntil: "domcontentloaded" });
+  await settle(page, 3000);
+  await page.keyboard.press("Control+k");
+  await settle(page, 600);
+  await shoot(page, "desktop-app-palette", false);
+  await page.keyboard.press("Escape");
+
   const state = await ctx.storageState();
   const phone = await browser.newContext({ viewport: PHONE, deviceScaleFactor: 2, storageState: state });
   const pp = await phone.newPage();
@@ -97,6 +128,20 @@ async function app(browser: Browser) {
     await shoot(dp, `desktop-app-${name}-dark`);
   }
   await Promise.all([ctx.close(), phone.close(), dark.close()]);
+
+  const operator = process.env.SCREENS_ADMIN;
+  if (operator) {
+    const ac = await browser.newContext({ viewport: DESKTOP });
+    const ap = await ac.newPage();
+    await ap.goto(`${BASE}/login`, { waitUntil: "domcontentloaded" });
+    await ap.fill("#dev-email", operator);
+    await ap.click("text=Sign in here");
+    await ap.waitForURL((u) => u.pathname.startsWith("/app"));
+    await ap.goto(`${BASE}/admin`, { waitUntil: "domcontentloaded" });
+    await settle(ap, 3500);
+    await shoot(ap, "desktop-admin");
+    await ac.close();
+  }
 }
 
 /** Each game at the size it's streamed: counting down, mid-round, and the vote between rounds. */

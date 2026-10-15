@@ -135,7 +135,7 @@ export default async function Admin() {
                 <tr key={u.email + u.at.toISOString()} className="border-b border-edge last:border-0">
                   <td className="max-w-[14rem] truncate px-5 py-3">{u.email}</td>
                   <td className="px-3 py-3">{PLANS[u.plan].name}</td>
-                  <td className="hidden px-3 py-3 capitalize sm:table-cell">{u.goal ?? <span className="text-muted">Not yet</span>}</td>
+                  <td className="hidden px-3 py-3 sm:table-cell">{u.goal ? `${u.goal[0].toUpperCase()}${u.goal.slice(1)}` : <span className="text-muted">Not yet</span>}</td>
                   <td className="hidden px-3 py-3 sm:table-cell">{u.onboarded ? "Yes" : <span className="text-muted">No</span>}</td>
                   <td className="whitespace-nowrap px-5 py-3"><LocalTime iso={u.at.toISOString()} style="ago" /></td>
                 </tr>
