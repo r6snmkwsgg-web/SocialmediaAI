@@ -2,27 +2,9 @@ import Link from "next/link";
 import { BattlePlayer } from "@/components/battle-player";
 import { Maker } from "@/components/maker";
 import { Phone } from "@/components/phone";
+import { Eyebrow, Wordmark } from "@/components/brand";
 import { ABILITIES } from "@/lib/battle/abilities";
 import { SHOWCASE } from "@/lib/battle/showcase";
-
-function Hook({ className = "" }: { className?: string }) {
-  return (
-    <svg viewBox="0 0 24 32" className={className} fill="none" stroke="currentColor" strokeWidth="3.2" strokeLinecap="square" aria-hidden="true">
-      <path d="M16 2v17a6.5 6.5 0 0 1-13 0v-3" />
-      <path d="M3 16l4.5 3.5" />
-      <circle cx="16" cy="3" r="1.8" fill="currentColor" stroke="none" />
-    </svg>
-  );
-}
-
-function Wordmark({ className = "" }: { className?: string }) {
-  return (
-    <span className={`flex items-center gap-1.5 font-display uppercase tracking-[0.08em] ${className}`}>
-      <Hook className="h-[1.05em] w-auto text-signal" />
-      Hookline
-    </span>
-  );
-}
 
 /** The matchups scrolling past like a scoreboard. */
 function Ticker() {
@@ -41,10 +23,6 @@ function Ticker() {
       </div>
     </div>
   );
-}
-
-function Eyebrow({ children, dark = false }: { children: React.ReactNode; dark?: boolean }) {
-  return <p className={`font-mono text-[11px] uppercase tracking-[0.22em] ${dark ? "text-ink/55" : "text-dim"}`}>{children}</p>;
 }
 
 const STEPS = [
@@ -79,6 +57,10 @@ export default function Home() {
           <Link href="/" className="text-[26px] leading-none"><Wordmark /></Link>
           <div className="hidden items-center gap-8 font-mono text-[11px] uppercase tracking-[0.18em] text-paper/70 md:flex">
             <a href="#make" className="transition hover:text-paper">Make a battle</a>
+            <Link href="/live" className="flex items-center gap-1.5 text-signal transition hover:text-paper">
+              <span className="h-1.5 w-1.5 animate-blink rounded-full bg-signal" />
+              Live battles
+            </Link>
             <a href="#how" className="transition hover:text-paper">How it works</a>
             <a href="#pricing" className="transition hover:text-paper">Pricing</a>
             <a href="#faq" className="transition hover:text-paper">FAQ</a>
@@ -179,6 +161,34 @@ export default function Home() {
           </div>
           <Phone className="relative mx-auto w-full max-w-[300px] rotate-2 self-center">
             <BattlePlayer a={SHOWCASE[3].a} b={SHOWCASE[3].b} seed={SHOWCASE[3].seed} />
+          </Phone>
+        </div>
+      </section>
+
+      {/* live */}
+      <section className="border-b border-line">
+        <div className="mx-auto grid max-w-7xl items-center gap-12 px-4 py-20 sm:px-8 lg:grid-cols-[minmax(0,1fr)_340px] lg:py-28">
+          <div className="flex flex-col gap-6">
+            <Eyebrow>
+              <span className="mr-2 inline-block h-2 w-2 translate-y-[-1px] animate-blink rounded-full bg-signal align-middle" />
+              New · For TikTok LIVE
+            </Eyebrow>
+            <h2 className="max-w-3xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Now your chat picks the winner.</h2>
+            <p className="max-w-xl text-lg leading-relaxed text-paper/75">
+              Put a ball battle on your LIVE. Viewers type 1 or 2 to pick a side, likes heal, and every gift lands in the fight with the gifter&rsquo;s face on it.
+            </p>
+            <ul className="grid max-w-xl gap-px bg-line sm:grid-cols-3">
+              {[["Rose", "Heals your side"], ["Perfume", "Drops in your ball"], ["Galaxy", "Calls a meteor"]].map(([g, d]) => (
+                <li key={g} className="flex flex-col gap-1 bg-ink p-4">
+                  <span className="font-display text-2xl uppercase tracking-wide">{g}</span>
+                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-dim">{d}</span>
+                </li>
+              ))}
+            </ul>
+            <Link href="/live" className="press mt-2 w-fit bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">See live battles →</Link>
+          </div>
+          <Phone className="relative mx-auto w-full max-w-[320px] -rotate-2">
+            <iframe src="/live/play?demo=1&clean=1" title="A live ball battle with pretend viewers" className="block aspect-[9/16] w-full border-0" loading="lazy" />
           </Phone>
         </div>
       </section>
