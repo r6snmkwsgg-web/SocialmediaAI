@@ -1,6 +1,6 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_PRICES, withPrices, type Tier } from "../menu";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
@@ -38,7 +38,7 @@ export const ROYALE_MENU: Tier[] = ([
   { effect: "shield", min: 99, name: "Shield", gift: "Hand Hearts", line: `Nothing can hurt your ball for ${SHIELD_SECONDS} seconds`, color: "#64D2FF", icon: "shield", big: true },
   { effect: "sword", min: 299, name: "Sword", gift: "Corgi", line: `A blade spins around your ball for ${SWORD_SECONDS} seconds`, color: "#F4F1EA", icon: "sword", big: true },
   { effect: "meteor", min: 999, name: "Meteor", gift: "Galaxy", line: "Smashes your biggest rival", color: "#FF9F0A", icon: "meteor", big: true },
-] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i] }));
+] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i], price: DEFAULT_GIFTS[i].coins }));
 
 export const ARENAS: VoteOption[] = [
   { key: "big", label: "Big arena" },
@@ -88,7 +88,7 @@ export class RoyaleGame implements Game {
   private nextId = 1;
 
   constructor(s: LiveSettings) {
-    this.menu = withPrices(ROYALE_MENU, s.prices);
+    this.menu = withGifts(ROYALE_MENU, s.gifts);
     this.maxSeconds = s.roundSeconds;
   }
 

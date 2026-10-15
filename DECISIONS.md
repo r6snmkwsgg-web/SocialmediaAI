@@ -12,7 +12,11 @@ Defaults picked while building, so nobody has to guess why something is the way 
 - **Abilities in the battle** come from a pool of five (spike, sword, grow, speed, heal). A streamer can switch any off but must keep two.
 - **Ball Race** (`lib/live/games/race.ts`): typing "go" enters free with weight 1. After the gate opens, free entries wait for the next race. Gifters always get in, even when it's full (24 racers); a CPU makes room first, then the newest free entry. Three CPU racers fill an empty board. A race ends when the first ball finishes and the podium fills (3 finishers, or 2.5 seconds), or at 75 seconds.
 - **Last One Standing** (`lib/live/games/royale.ts`): free entry for the first 15 seconds of a round, after that viewers wait for the next one. Gifters always get in and a CPU makes way. Four CPUs at 5 HP fill an empty arena; 24 fighters at most.
-- **Gift prices** default to 1, 5, 20, 99, 299 and 999 coins (Rose, Finger Heart, Perfume, Hand Hearts, Corgi, Galaxy). Custom prices must be whole numbers starting at 1 and going up; anything else falls back to the defaults.
+- **The default gift menu** is Rose (1 coin), Finger Heart (5), Perfume (20), Hand Hearts (100), Corgi (299) and Galaxy (1,000), shown at those prices. Each item starts a coin under for the big ones (99 and 999), so other gifts at those common prices count too.
+- **Custom gift menus** (Creator) are a gift name and its price for each of the six items, not just prices, so the menu on screen always names a gift that really costs that much. The first gift must cost 1 coin and each one after more than the last; otherwise the defaults stand.
+- **Settings and the game address**: the game reads a streamer's settings through a private key in its address (32 random characters). A new key can be made at any time; the old address then shows a bar asking for the new one and plays the free game. Changes reach a game that's already open when it's reloaded.
+- **Without a key** (someone trying it from the website) the game is the free one: the battle, with the tag. Demo mode (`?demo=1`) can show any game, since it's only pretend viewers.
+- **Session numbers count real viewers only.** Demo and test-panel viewers play like anyone but never count, and rounds count from the first thing a real viewer does, so testing before going live doesn't add up. The game sends the whole session so far every 30 seconds and as it closes; numbers only ever go up, and a session dated in the future or more than a week back is turned away.
 
 ## Accounts and billing
 

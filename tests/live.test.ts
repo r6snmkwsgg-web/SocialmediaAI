@@ -3,8 +3,9 @@ import { normalize, parseMessage, type Streaks } from "@/lib/live/events";
 import { battleSteps, BATTLE_MENU, MAX_SIDE } from "@/lib/live/games/battle";
 import { buildBoard, FINISH, RaceGame, radiusOf as raceRadius, speedOf } from "@/lib/live/games/race";
 import { RoyaleGame } from "@/lib/live/games/royale";
-import { DEFAULT_PRICES, tierIn, withPrices } from "@/lib/live/menu";
-import { DEFAULT_SETTINGS, parseSettings } from "@/lib/live/settings";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, tierIn, withGifts } from "@/lib/live/menu";
+import { plausible, sessionPayload, sessionSchema } from "@/lib/live/session";
+import { allowedBy, DEFAULT_SETTINGS, parseSettings } from "@/lib/live/settings";
 import { GIFT_VOTES_MAX, INTRO, joinFromChat, KO_HOLD, LIKES_PER_HP, Show, sideFromChat, VOTE, voteFromChat } from "@/lib/live/show";
 import { METEOR_HIT, rng, World } from "@/lib/battle/sim";
 
@@ -64,11 +65,28 @@ describe("gift menus", () => {
     expect([1, 4, 5, 19, 20, 98, 99, 298, 299, 998, 999, 30000].map((c) => tierIn(BATTLE_MENU, c).effect)).toEqual(["heal", "heal", "small", "small", "ball", "ball", "rage", "rage", "shield", "shield", "meteor", "meteor"]);
   });
 
-  it("takes a streamer's own prices, if they climb from 1", () => {
-    const m = withPrices(BATTLE_MENU, [1, 10, 50, 100, 500, 1000]);
+  it("shows each gift at its own price, while gifts a coin under still count", () => {
+    expect(BATTLE_MENU.map((t) => t.gift)).toEqual(DEFAULT_GIFTS.map((g) => g.name));
+    expect(BATTLE_MENU[3]).toMatchObject({ gift: "Hand Hearts", min: 99, price: 100 });
+  });
+
+  it("takes a streamer's own gifts, if they start at 1 coin and climb", () => {
+    const mine = [
+      { name: "Rose", coins: 1 },
+      { name: "Rosa", coins: 10 },
+      { name: "Doughnut", coins: 30 },
+      { name: "Hand Hearts", coins: 100 },
+      { name: "Money Gun", coins: 500 },
+      { name: "Galaxy", coins: 1000 },
+    ];
+    const m = withGifts(BATTLE_MENU, mine);
+    expect(m.map((t) => t.gift)).toEqual(mine.map((g) => g.name));
     expect(tierIn(m, 20).effect).toBe("small");
-    expect(withPrices(BATTLE_MENU, [2, 10, 50, 100, 500, 1000])[0].min).toBe(1);
-    expect(withPrices(BATTLE_MENU, [1, 10, 5, 100, 500, 1000]).map((t) => t.min)).toEqual(DEFAULT_PRICES);
+    expect(tierIn(m, 30).effect).toBe("ball");
+    expect(m[4]).toMatchObject({ effect: "shield", min: 500, price: 500 });
+    expect(withGifts(BATTLE_MENU, mine.map((g, i) => (i === 0 ? { ...g, coins: 2 } : g)))).toBe(BATTLE_MENU);
+    expect(withGifts(BATTLE_MENU, mine.map((g, i) => (i === 2 ? { ...g, coins: 5 } : g)))).toBe(BATTLE_MENU);
+    expect(withGifts(BATTLE_MENU, mine.map((g, i) => (i === 1 ? { ...g, name: "  " } : g))).map((t) => t.min)).toEqual(DEFAULT_PRICES);
   });
 
   it("adds up a streak of cheap gifts, and keeps a streak of balls readable", () => {
@@ -80,13 +98,24 @@ describe("gift menus", () => {
 
   it("reads settings from anywhere, keeping what's valid", () => {
     expect(parseSettings(null)).toEqual(DEFAULT_SETTINGS);
-    const s = parseSettings({ game: "race", roundSeconds: 9999, vote: false, prices: [1, 2, 3, 4, 5, 6], teams: "nope" });
+    const gifts = DEFAULT_GIFTS.map((g) => ({ ...g }));
+    const s = parseSettings({ game: "race", roundSeconds: 9999, vote: false, gifts, teams: "nope" });
     expect(s.game).toBe("race");
     expect(s.roundSeconds).toBe(DEFAULT_SETTINGS.roundSeconds);
     expect(s.vote).toBe(false);
-    expect(s.prices).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(s.gifts).toEqual(gifts);
     expect(s.teams).toEqual(DEFAULT_SETTINGS.teams);
-    expect(parseSettings({ prices: [5, 6, 7, 8, 9, 10] }).prices).toBeNull();
+    expect(parseSettings({ gifts: gifts.map((g) => ({ ...g, coins: g.coins + 1 })) }).gifts).toBeNull();
+  });
+
+  it("keeps to what the plan allows", () => {
+    const mine = parseSettings({ game: "royale", gifts: DEFAULT_GIFTS });
+    const free = allowedBy(mine, { games: ["battle"], customMenus: false });
+    expect(free.game).toBe("battle");
+    expect(free.gifts).toBeNull();
+    const creator = allowedBy(mine, { games: ["battle", "race", "royale"], customMenus: true });
+    expect(creator.game).toBe("royale");
+    expect(creator.gifts).toEqual(DEFAULT_GIFTS);
   });
 });
 
@@ -163,7 +192,6 @@ describe("a battle show", () => {
     expect([...seen].sort()).toEqual(["intro", "ko", "play", "win"]);
     expect(s.round).toBe(3);
     expect(s.series[0] + s.series[1]).toBeGreaterThanOrEqual(1);
-    expect(s.stats.rounds).toBe(2);
     expect(s.cues.some((c) => c.kind === "count")).toBe(true);
   });
 
@@ -430,5 +458,50 @@ describe("the session's numbers", () => {
     expect(s.stats.coins).toBe(40);
     expect(s.stats.peakPlayers).toBe(2);
     expect(s.topGifters()[0]).toMatchObject({ viewer: { id: "b" }, coins: 40 });
+    expect(s.stats.firstAt).not.toBeNull();
+  });
+
+  it("never counts pretend viewers, or rounds before anyone real shows up", () => {
+    const s = new Show({ seed: 32, settings: { game: "royale", vote: false } });
+    const fake = { id: "demo-1", name: "demo", pretend: true };
+    s.handle({ kind: "chat", viewer: fake, text: "go" });
+    s.handle({ kind: "gift", viewer: fake, gift: "Galaxy", coins: 1000, count: 1 });
+    toWin(s);
+    for (let t = 0; t <= 10; t += 0.25) s.update(0.25);
+    expect(s.round).toBe(2);
+    expect(s.stats).toMatchObject({ rounds: 0, coins: 0, peakPlayers: 0, firstAt: null });
+    expect(s.topGifters()).toEqual([]);
+    s.handle({ kind: "like", viewer: viewer("real"), count: 5 });
+    toWin(s);
+    expect(s.stats.rounds).toBe(1);
+    expect(s.stats.peakPlayers).toBe(1);
+    expect(s.stats.coins).toBe(0);
+  });
+});
+
+describe("saving a session", () => {
+  const KEY = "k".repeat(32);
+
+  it("sends nothing until a real viewer does something, then the whole session so far", () => {
+    const s = new Show({ seed: 40, settings: { game: "royale", vote: false } });
+    s.handle({ kind: "chat", viewer: { id: "demo-1", name: "demo", pretend: true }, text: "go" });
+    expect(sessionPayload(s, KEY)).toBeNull();
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "go" });
+    s.handle({ kind: "gift", viewer: { id: "b", name: "b".repeat(80) }, gift: "Rose", coins: 1, count: 7 });
+    const p = sessionPayload(s, KEY)!;
+    expect(sessionSchema.safeParse(p).success).toBe(true);
+    expect(p).toMatchObject({ key: KEY, game: "royale", coins: 7, peakPlayers: 2 });
+    expect(p.topGifters[0].name).toHaveLength(64);
+    expect(plausible(p)).toBe(true);
+  });
+
+  it("turns away sessions from the future, from long ago, or out of order", () => {
+    const now = Date.now();
+    const base = { key: KEY, id: "6f1c1c1e-6a7b-4c1d-9e3f-0a1b2c3d4e5f", game: "battle" as const, rounds: 1, coins: 1, peakPlayers: 1, topGifters: [] };
+    expect(plausible({ ...base, startedAt: now - 60_000, lastAt: now }, now)).toBe(true);
+    expect(plausible({ ...base, startedAt: now - 60_000, lastAt: now + 3600_000 }, now)).toBe(false);
+    expect(plausible({ ...base, startedAt: now - 30 * 24 * 3600_000, lastAt: now }, now)).toBe(false);
+    expect(plausible({ ...base, startedAt: now, lastAt: now - 60_000 }, now)).toBe(false);
+    expect(sessionSchema.safeParse({ ...base, startedAt: now, lastAt: now, key: "short" }).success).toBe(false);
   });
 });

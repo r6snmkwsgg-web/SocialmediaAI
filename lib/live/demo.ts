@@ -22,7 +22,7 @@ export const GIFTS: { name: string; coins: number }[] = [
 ];
 
 export function demoViewer(i: number): Viewer {
-  return { id: `demo-${i}`, name: NAMES[i % NAMES.length] };
+  return { id: `demo-${i}`, name: NAMES[i % NAMES.length], pretend: true };
 }
 
 /**

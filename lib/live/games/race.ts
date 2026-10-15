@@ -1,6 +1,6 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_PRICES, withPrices, type Tier } from "../menu";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
@@ -32,7 +32,7 @@ export const RACE_MENU: Tier[] = ([
   { effect: "ghost", min: 99, name: "Ghost", gift: "Hand Hearts", line: `Your ball slips through pegs and other balls for ${GHOST_SECONDS} seconds`, color: "#BF5AF2", icon: "ghost", big: true },
   { effect: "shock", min: 299, name: "Shockwave", gift: "Corgi", line: "Knocks every ball near yours back and stuns it", color: "#64D2FF", icon: "wave", big: true },
   { effect: "rocket", min: 999, name: "Rocket", gift: "Galaxy", line: "Blasts your ball down to the last stretch", color: "#FF9F0A", icon: "rocket", big: true },
-] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i] }));
+] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i], price: DEFAULT_GIFTS[i].coins }));
 
 export type Seg = { x1: number; y1: number; x2: number; y2: number };
 export type Peg = { x: number; y: number; r: number };
@@ -133,7 +133,7 @@ export class RaceGame implements Game {
   private readonly waiting = new Map<string, Viewer>();
 
   constructor(s: LiveSettings) {
-    this.menu = withPrices(RACE_MENU, s.prices);
+    this.menu = withGifts(RACE_MENU, s.gifts);
     this.maxSeconds = Math.min(s.roundSeconds, 75);
   }
 

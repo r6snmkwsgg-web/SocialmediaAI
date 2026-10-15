@@ -43,12 +43,20 @@ export type Vote = {
   extra: Map<string, number>;
 };
 
+/**
+ * The session's numbers, from real viewers only: demo and test-panel
+ * viewers play like anyone but never count, and rounds count from the
+ * first thing a real viewer does.
+ */
 export type SessionStats = {
   id: string;
   startedAt: number;
+  /** when a real viewer first and last did something, as epoch ms */
+  firstAt: number | null;
+  lastAt: number | null;
   rounds: number;
   coins: number;
-  /** the most viewers taking part in any one round */
+  /** the most real viewers taking part in any one round */
   peakPlayers: number;
   gifters: Map<string, { viewer: Viewer; coins: number }>;
 };
@@ -120,6 +128,7 @@ export class Show {
   /** what the last vote picked, to announce as the next round starts */
   voted: { option: VoteOption; votes: number } | null = null;
   readonly stats: SessionStats;
+  /** the real viewers taking part this round */
   private readonly roundPlayers = new Set<string>();
   private readonly pending: Pending[] = [];
   private readonly followed = new Set<string>();
@@ -133,7 +142,7 @@ export class Show {
     this.settings = parseSettings({ ...DEFAULT_SETTINGS, ...o.settings });
     this.rand = rng(o.seed ?? Date.now() % 1_000_000_007);
     this.game = makeGame(this.settings);
-    this.stats = { id: newId(this.rand), startedAt: Date.now(), rounds: 0, coins: 0, peakPlayers: 0, gifters: new Map() };
+    this.stats = { id: newId(this.rand), startedAt: Date.now(), firstAt: null, lastAt: null, rounds: 0, coins: 0, peakPlayers: 0, gifters: new Map() };
     this.startRound();
   }
 
@@ -268,8 +277,7 @@ export class Show {
     if (r.champion && !r.champion.cpu) this.wins.set(r.champion.id, (this.wins.get(r.champion.id) ?? 0) + 1);
     const top = this.crown ? this.members.get(this.crown) : undefined;
     this.mvp = top && this.crown ? { viewer: top.viewer, coins: this.roundCoins.get(this.crown) ?? 0 } : null;
-    this.stats.rounds++;
-    this.stats.peakPlayers = Math.max(this.stats.peakPlayers, this.roundPlayers.size);
+    if (this.stats.firstAt !== null) this.stats.rounds++;
     this.go("ko");
     this.cue("ko");
     return true;
@@ -290,8 +298,7 @@ export class Show {
   /** Someone picks a team, or switches. */
   join(viewer: Viewer, side: Team | null): Member {
     const m = this.members.get(viewer.id);
-    this.roundPlayers.add(viewer.id);
-    this.stats.peakPlayers = Math.max(this.stats.peakPlayers, this.roundPlayers.size);
+    this.taking(viewer);
     if (m) {
       m.viewer = { ...m.viewer, ...viewer, avatar: viewer.avatar ?? m.viewer.avatar };
       if (side !== null) m.side = side;
@@ -341,6 +348,7 @@ export class Show {
         hp = Math.floor(n / LIKES_PER_HP);
         this.viewerLikes.set(e.viewer.id, n - hp * LIKES_PER_HP);
       }
+      this.taking(e.viewer);
       if (hp > 0) this.act({ kind: "heal", viewer: e.viewer, side, hp });
       return;
     }
@@ -366,10 +374,12 @@ export class Show {
     const m = this.join(e.viewer, side);
     const coins = e.coins * e.count;
     m.coins += coins;
-    this.stats.coins += coins;
-    const g2 = this.stats.gifters.get(e.viewer.id);
-    if (g2) g2.coins += coins;
-    else this.stats.gifters.set(e.viewer.id, { viewer: m.viewer, coins });
+    if (!e.viewer.pretend) {
+      this.stats.coins += coins;
+      const g2 = this.stats.gifters.get(e.viewer.id);
+      if (g2) g2.coins += coins;
+      else this.stats.gifters.set(e.viewer.id, { viewer: m.viewer, coins });
+    }
     this.cue("gift", coins);
 
     // during the vote, a gift is votes as well
@@ -411,7 +421,6 @@ export class Show {
     this.lit.set(tier.effect, this.now);
     const total = (this.roundCoins.get(viewer.id) ?? 0) + each * count;
     this.roundCoins.set(viewer.id, total);
-    this.roundPlayers.add(viewer.id);
     // the crown goes to whoever's given the most this round
     const top = this.crown ? (this.roundCoins.get(this.crown) ?? 0) : 0;
     const took = this.crown !== viewer.id && total > top;
@@ -423,6 +432,16 @@ export class Show {
       if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
     } else if (took && top > 0) this.toast(side, viewer, `took the crown · ${gift}`);
     else if (said.toast) this.toast(side, viewer, said.toast);
+  }
+
+  /** A viewer taking part: counted toward the session's numbers if they're real. */
+  private taking(viewer: Viewer) {
+    if (viewer.pretend) return;
+    this.roundPlayers.add(viewer.id);
+    this.stats.peakPlayers = Math.max(this.stats.peakPlayers, this.roundPlayers.size);
+    const now = Date.now();
+    this.stats.firstAt ??= now;
+    this.stats.lastAt = now;
   }
 
   /** the session's top gifters, most first */

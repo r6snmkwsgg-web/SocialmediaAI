@@ -4,8 +4,9 @@
  * can use their CLI (`supabase db push`) instead; this does the same job
  * without it.
  *
- *   pnpm db:migrate            the database in .env.local
- *   pnpm db:migrate --local    a plain local Postgres: adds the bits of Supabase the migrations need first
+ *   pnpm db:migrate                    the database in .env.local
+ *   pnpm db:migrate --local            a plain local Postgres: adds the bits of Supabase the migrations need first
+ *   pnpm db:migrate --local --reset    the same, wiping it first (local only: it deletes everything)
  */
 import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,9 +20,18 @@ if (!url) {
 }
 
 const local = process.argv.includes("--local");
+const reset = process.argv.includes("--reset");
+if (reset && (!local || !/@(localhost|127\.0\.0\.1)[:/]/.test(url))) {
+  console.error("--reset wipes the database, so it only works with --local on a database on this machine.");
+  process.exit(1);
+}
 const sql = postgres(url, { max: 1, onnotice: () => {}, prepare: false });
 
 try {
+  if (reset) {
+    await sql.unsafe("drop schema if exists public cascade; drop schema if exists hookline cascade; drop schema if exists auth cascade; create schema public; grant usage on schema public to public;");
+    console.log("Wiped.");
+  }
   if (local) {
     await sql.unsafe(readFileSync("supabase/local.sql", "utf8"));
     console.log("Local Supabase shim in place.");

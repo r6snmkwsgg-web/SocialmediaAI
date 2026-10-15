@@ -13,15 +13,18 @@ const url = process.env.TEST_DATABASE_URL;
 const safe = !!url && /\/[\w-]+_test(\?.*)?$/.test(url);
 
 type Db = typeof import("@/lib/server/db");
+type Live = typeof import("@/lib/server/live");
 
 describe.skipIf(!safe)("row-level security", () => {
   let db: Db;
+  let live: Live;
   let A = "";
   let B = "";
 
   beforeAll(async () => {
     process.env.DATABASE_URL = url;
     db = await import("@/lib/server/db");
+    live = await import("@/lib/server/live");
     await db.admin(async (tx) => {
       await tx.unsafe("drop schema if exists public cascade; drop schema if exists hookline cascade; drop schema if exists auth cascade; create schema public; grant usage on schema public to public;");
       await tx.unsafe(readFileSync("supabase/local.sql", "utf8"));
@@ -98,6 +101,34 @@ describe.skipIf(!safe)("row-level security", () => {
     expect(left[0].n).toBe(0);
     const all = await db.admin((tx) => tx<{ n: number }[]>`select count(*)::int as n from public.channel_tokens`);
     expect(all[0].n).toBe(1);
+  });
+
+  it("a LIVE game reads its streamer's settings through their key, as their plan allows", async () => {
+    const key = await live.overlayKeyOf(A);
+    expect(await live.overlayKeyOf(A)).toBe(key);
+    await live.saveLiveSettings(A, { ...(await live.liveSettingsOf(A)).settings, game: "race", vote: false });
+    const o = await live.overlayFor(key);
+    // A is on Pro: every game, but not their own gifts
+    expect(o?.settings).toMatchObject({ game: "race", vote: false, gifts: null });
+    expect(o?.plan.tag).toBe(false);
+    expect(await live.overlayFor("x".repeat(32))).toBeNull();
+    // B can't see A's key or settings
+    expect(await db.asUser(B, (tx) => tx`select key from public.overlay_keys`)).toHaveLength(0);
+    expect(await db.asUser(B, (tx) => tx`select settings from public.live_settings`)).toHaveLength(0);
+  });
+
+  it("saves a session's numbers, which only ever go up", async () => {
+    const key = await live.overlayKeyOf(A);
+    const id = "0b6e3f8e-5c1a-4d2b-9f3e-7a6b5c4d3e2f";
+    const now = Date.now();
+    const p = { key, id, game: "battle" as const, startedAt: now - 600_000, lastAt: now - 1000, rounds: 4, coins: 120, peakPlayers: 6, topGifters: [{ id: "u1", name: "kayla", coins: 100 }] };
+    expect(await live.recordSession(p)).toBe(true);
+    // an older send arriving late changes nothing
+    expect(await live.recordSession({ ...p, rounds: 2, coins: 50, lastAt: now - 300_000, topGifters: [] })).toBe(true);
+    const s = (await live.sessionsOf(A)).find((x) => x.id === id);
+    expect(s).toMatchObject({ id, rounds: 4, coins: 120, peakPlayers: 6, topGifters: [{ name: "kayla", coins: 100 }] });
+    expect(await live.recordSession({ ...p, key: "y".repeat(32) })).toBe(false);
+    expect(await live.sessionsOf(B)).toHaveLength(1);
   });
 
   it("deleting an account deletes everything that was theirs", async () => {

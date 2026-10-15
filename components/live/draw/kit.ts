@@ -36,6 +36,8 @@ export type View = {
   status?: string;
   /** the free plan's line at the bottom */
   tag?: boolean;
+  /** something the streamer has to fix, in a bar across the top */
+  notice?: string;
 };
 
 export type Ctx = CanvasRenderingContext2D;

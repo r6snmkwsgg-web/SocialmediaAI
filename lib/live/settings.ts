@@ -1,6 +1,6 @@
 import { z } from "zod";
 import { ABILITY_IDS, type AbilityId } from "../battle/abilities";
-import { DEFAULT_PRICES } from "./menu";
+import { validGifts } from "./menu";
 
 /**
  * A streamer's settings for their live game, saved on their account and
@@ -15,8 +15,11 @@ const hex = z.string().regex(/^#[0-9a-fA-F]{6}$/);
 
 export const liveSettingsSchema = z.object({
   game: z.enum(GAME_IDS),
-  /** the six menu prices, cheapest first; null keeps the game's own */
-  prices: z.array(z.number().int().min(1).max(100_000)).length(6).nullable(),
+  /** the streamer's own six gifts, cheapest first; null keeps the game's own */
+  gifts: z
+    .array(z.object({ name: z.string().trim().min(1).max(20), coins: z.number().int().min(1).max(100_000) }))
+    .length(6)
+    .nullable(),
   /** the longest a round runs before it's decided on what's left */
   roundSeconds: z.number().int().min(30).max(300),
   teams: z
@@ -36,7 +39,7 @@ export const LIVE_ABILITIES: AbilityId[] = ["spike", "sword", "grow", "speed", "
 
 export const DEFAULT_SETTINGS: LiveSettings = {
   game: "battle",
-  prices: null,
+  gifts: null,
   roundSeconds: 90,
   teams: [
     { name: "Red", color: "#FF3B30" },
@@ -60,9 +63,16 @@ export function parseSettings(raw: unknown): LiveSettings {
     if (r.success) out[key] = r.data;
   }
   const s = out as LiveSettings;
-  // prices must climb from 1, or the game's own stand
-  if (s.prices && !(s.prices[0] === 1 && s.prices.every((p, i) => i === 0 || p > s.prices![i - 1]))) s.prices = null;
+  // a menu has to start at 1 coin and climb, or the game's own stands
+  if (s.gifts && !validGifts(s.gifts)) s.gifts = null;
   return s;
 }
 
-export { DEFAULT_PRICES };
+/** What a plan allows: games it doesn't include fall back to the battle, and only some plans get their own gifts. */
+export function allowedBy(s: LiveSettings, plan: { games: readonly GameId[]; customMenus: boolean }): LiveSettings {
+  return {
+    ...s,
+    game: plan.games.includes(s.game) ? s.game : "battle",
+    gifts: plan.customMenus ? s.gifts : null,
+  };
+}

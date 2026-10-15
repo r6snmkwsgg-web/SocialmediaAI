@@ -21,13 +21,15 @@ type Props = {
   settings?: Partial<LiveSettings>;
   /** the free plan's "made with Hookline" line */
   tag?: boolean;
+  /** something the streamer needs to fix, shown at the top of the game */
+  notice?: string;
   /** reports the session's numbers now and then, for the streamer's stats */
   onStats?: (show: Show, final: boolean) => void;
 };
 
 const TESTERS: [Viewer, Viewer] = [
-  { id: "test-1", name: "tester one" },
-  { id: "test-2", name: "tester two" },
+  { id: "test-1", name: "tester one", pretend: true },
+  { id: "test-2", name: "tester two", pretend: true },
 ];
 
 /** Pictures of viewers, loaded once each, for drawing on balls and in the lists. */
@@ -53,7 +55,7 @@ function useImages() {
  * runs the game in real time, listens to TikFinity or the bridge, and has
  * a test panel (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, onStats }: Props) {
+export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, onStats }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -149,7 +151,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     let ticks = 0;
     const frame = (now: number) => {
       step(now);
-      draw(ctx, s, { demo: demo.current, image, status: status(), tag });
+      draw(ctx, s, { demo: demo.current, image, status: status(), tag, notice });
       // the test panel shows the vote's buttons only while there's a vote
       if (++ticks % 15 === 0) redraw((n) => n + 1);
       raf = requestAnimationFrame(frame);
@@ -163,7 +165,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
       cancelAnimationFrame(raf);
       clearInterval(keepGoing);
     };
-  }, [image, src, tag]);
+  }, [image, src, tag, notice]);
 
   // the font, before anything that matters is drawn
   useEffect(() => {

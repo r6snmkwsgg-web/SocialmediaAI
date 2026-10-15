@@ -102,7 +102,9 @@ create table public.live_sessions (
   id uuid primary key,
   user_id uuid not null references auth.users (id) on delete cascade,
   game text not null,
+  -- when a real viewer first and last did something
   started_at timestamptz not null,
+  last_event_at timestamptz,
   updated_at timestamptz not null default now(),
   rounds integer not null default 0,
   coins integer not null default 0,

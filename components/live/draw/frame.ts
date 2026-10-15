@@ -37,6 +37,10 @@ function drawTop(ctx: Ctx, show: Show, view: View) {
   }
   if (view.demo) text(ctx, "DEMO · PRETEND VIEWERS", W / 2, y, { size: 26, color: SIGNAL, align: "center", spacing: 3 });
   else if (view.status) text(ctx, view.status, W / 2, y, { size: 24, color: DIM, align: "center", spacing: 3 });
+  if (view.notice) {
+    roundRect(ctx, M, 40, SIDE, 64, 12, SIGNAL);
+    text(ctx, view.notice, W / 2, 84, { size: 28, color: INK, align: "center", spacing: 2, max: SIDE - 40 });
+  }
 }
 
 /**
@@ -68,7 +72,7 @@ function drawMenu(ctx: Ctx, show: Show, d: GameDraw) {
       const gw = Math.min(cw - 150, measure(ctx, g, 22, 1.5));
       text(ctx, g, x + 82, y + 72, { size: 22, color: PAPER, spacing: 1.5, alpha: 0.8, max: cw - 150 });
       coin(ctx, x + 82 + gw + 14, y + 64, 7);
-      text(ctx, t.min.toLocaleString("en-US"), x + 82 + gw + 26, y + 72, { size: 22, color: DIM, spacing: 1 });
+      text(ctx, (t.price ?? t.min).toLocaleString("en-US"), x + 82 + gw + 26, y + 72, { size: 22, color: DIM, spacing: 1 });
     }
   });
 }

@@ -1,7 +1,7 @@
 import { ABILITIES, type AbilityId } from "../../battle/abilities";
 import { ARENA, World, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_PRICES, tierIn, withPrices, type Tier } from "../menu";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, tierIn, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
 import type { Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
@@ -31,7 +31,7 @@ export const BATTLE_MENU: Tier[] = ([
   { effect: "rage", min: 99, name: "Rage 2X", gift: "Hand Hearts", line: `Your team hits twice as hard for ${RAGE_SECONDS} seconds`, color: "#FF3B30", icon: "flame", big: true },
   { effect: "shield", min: 299, name: "Shield", gift: "Corgi", line: `Your team can't be hurt for ${SHIELD_SECONDS} seconds, and gets ${SHIELD_HEAL} HP`, color: "#64D2FF", icon: "shield", big: true },
   { effect: "meteor", min: 999, name: "Meteor", gift: "Galaxy", line: "Smashes the other team's biggest ball", color: "#FF9F0A", icon: "meteor", big: true },
-] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i] }));
+] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i], price: DEFAULT_GIFTS[i].coins }));
 
 /** What a gift does, as steps: a streak of balls stops at a handful, and the rest heals. */
 export function battleSteps(effect: string, each: number, count: number): { effect: string; n: number }[] {
@@ -71,7 +71,7 @@ export class BattleGame implements Game {
   private names: [string, string];
 
   constructor(s: LiveSettings) {
-    this.menu = withPrices(BATTLE_MENU, s.prices);
+    this.menu = withGifts(BATTLE_MENU, s.gifts);
     this.pool = s.abilities.length >= 2 ? s.abilities : ["spike", "sword"];
     this.fightMax = s.roundSeconds;
     // the walls start closing in a little past halfway, so every fight ends

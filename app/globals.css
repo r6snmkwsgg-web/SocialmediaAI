@@ -83,7 +83,9 @@ body { background: var(--color-ink); color: var(--color-paper); -webkit-font-smo
     color-scheme: dark;
   }
 }
-.app[data-theme="dark"] {
+/* the same dark surfaces, for app parts shown on the (always dark) website */
+.app[data-theme="dark"],
+.tokens-dark {
   --bg: #0b0b0c;
   --fg: #f4f1ea;
   --card: #141416;

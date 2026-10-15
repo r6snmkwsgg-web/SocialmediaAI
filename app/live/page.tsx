@@ -148,8 +148,8 @@ export default function Live() {
           <p className="mt-5 max-w-2xl text-lg leading-relaxed text-paper/75">
             It never asks for your TikTok password. It only reads your LIVE&rsquo;s public events, the same chats, likes and gifts anyone watching can see.
           </p>
-          <div className="mt-12">
-            <Setup />
+          <div className="tokens-dark mt-12">
+            <Setup locked={["race", "royale"]} />
           </div>
         </div>
       </section>

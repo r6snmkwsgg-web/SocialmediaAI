@@ -13,7 +13,13 @@
  * pays out only what's new each time, so ten roses are worth ten.
  */
 
-export type Viewer = { id: string; name: string; avatar?: string };
+export type Viewer = {
+  id: string;
+  name: string;
+  avatar?: string;
+  /** a demo or test-panel viewer: plays like anyone, never counts in the session's numbers */
+  pretend?: boolean;
+};
 
 export type LiveEvent =
   /** `coins` is what one of the gift costs; `count` is how many just arrived */

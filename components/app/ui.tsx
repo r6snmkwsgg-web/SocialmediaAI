@@ -7,7 +7,7 @@ import Link from "next/link";
 
 export const button = {
   /** the one thing to do on a screen */
-  primary: "press inline-flex items-center justify-center gap-2 bg-signal px-5 py-2.5 font-display text-lg uppercase tracking-wider text-ink [--press:var(--color-fg)] disabled:opacity-50",
+  primary: "press inline-flex items-center justify-center gap-2 bg-signal px-5 py-2.5 font-display text-lg uppercase tracking-wider text-ink [--press:var(--fg)] disabled:opacity-50",
   secondary: "inline-flex items-center justify-center gap-2 border-2 border-fg px-4 py-2 font-display text-base uppercase tracking-wider text-fg transition hover:bg-fg hover:text-surface disabled:opacity-50",
   quiet: "inline-flex items-center gap-1.5 font-mono text-[11px] uppercase tracking-[0.16em] text-muted transition hover:text-fg",
 };
