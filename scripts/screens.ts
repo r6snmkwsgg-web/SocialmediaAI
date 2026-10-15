@@ -18,9 +18,24 @@ const PHONE = { width: 390, height: 844 };
 
 const settle = (page: Page, ms = 2500) => page.waitForTimeout(ms);
 
+/** Next's error overlay, which the development server can show for a moment while it rebuilds. */
+const overlay = (page: Page) =>
+  page.evaluate(() => {
+    const html = document.querySelector("nextjs-portal")?.shadowRoot?.innerHTML ?? "";
+    const text = html.replace(/<style[\s\S]*?<\/style>/g, "").replace(/<[^>]+>/g, " ");
+    return /Runtime|Unhandled|Build Error|\b[1-9]\d* Issues?\b/.test(text);
+  });
+
 async function shoot(page: Page, name: string, full = true) {
-  await page.screenshot({ path: `${OUT}/${name}.png`, fullPage: full });
-  console.log(`${OUT}/${name}.png`);
+  // a page caught mid-rebuild gets one reload before it counts
+  if (await overlay(page)) {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    await settle(page, 3500);
+    if (await overlay(page)) console.warn(`${name}: the page shows an error`);
+  }
+  // JPEG: the film grain makes PNGs of these pages several times bigger for no visible gain
+  await page.screenshot({ path: `${OUT}/${name}.jpg`, fullPage: full, type: "jpeg", quality: 82 });
+  console.log(`${OUT}/${name}.jpg`);
 }
 
 async function site(browser: Browser) {
