@@ -5,8 +5,9 @@
  *
  * It renders approved Shorts with Remotion (one at a time per worker; run
  * more workers for more at once), keeps them in storage, posts what's due,
- * makes each channel's Shorts every morning, and collects views for the
- * learning loop. It reads the same environment variables as the app.
+ * makes each channel's Shorts every morning, collects views for the
+ * learning loop, checks Trends and syncs Earnings. It reads the same
+ * environment variables as the app.
  */
 import "./server-only";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -19,6 +20,8 @@ import { claimJob, failJob, finishJob, jobProgress, type Job } from "../lib/serv
 import { dueForShorts, makeShorts } from "../lib/server/shorts/generate";
 import { postDue } from "../lib/server/shorts/post";
 import { collectStats } from "../lib/server/shorts/stats";
+import { syncEarnings } from "../lib/server/earnings";
+import { refreshTrends } from "../lib/server/trends";
 import { putVideo } from "../lib/server/storage";
 
 if (process.env.NODE_ENV !== "production") {
@@ -116,6 +119,8 @@ async function main() {
   say("ready");
   every(60_000, "post", () => postDue());
   every(15 * 60_000, "stats", () => collectStats());
+  every(30 * 60_000, "trends", () => refreshTrends());
+  every(6 * 3600_000, "earnings", () => syncEarnings());
   every(5 * 60_000, "daily shorts", async () => {
     const out: string[] = [];
     for (const id of await dueForShorts()) {

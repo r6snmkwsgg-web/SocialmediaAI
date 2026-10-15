@@ -19,6 +19,8 @@ type Queue = typeof import("@/lib/server/shorts/queue");
 type Render = typeof import("@/lib/server/shorts/render");
 type Post = typeof import("@/lib/server/shorts/post");
 type Stats = typeof import("@/lib/server/shorts/stats");
+type Earn = typeof import("@/lib/server/earnings");
+type Trends = typeof import("@/lib/server/trends");
 
 describe.skipIf(!safe)("the database", () => {
   let db: Db;
@@ -28,6 +30,8 @@ describe.skipIf(!safe)("the database", () => {
   let render: Render;
   let post: Post;
   let stats: Stats;
+  let earn: Earn;
+  let trends: Trends;
   let A = "";
   let B = "";
 
@@ -40,6 +44,8 @@ describe.skipIf(!safe)("the database", () => {
     render = await import("@/lib/server/shorts/render");
     post = await import("@/lib/server/shorts/post");
     stats = await import("@/lib/server/shorts/stats");
+    earn = await import("@/lib/server/earnings");
+    trends = await import("@/lib/server/trends");
     await db.admin(async (tx) => {
       await tx.unsafe("drop schema if exists public cascade; drop schema if exists hookline cascade; drop schema if exists auth cascade; create schema public; grant usage on schema public to public;");
       await tx.unsafe(readFileSync("supabase/local.sql", "utf8"));
@@ -220,6 +226,45 @@ describe.skipIf(!safe)("the database", () => {
     expect(w[0].samples).toBe(1);
     // and people can read their own weights, never someone else's
     expect(await db.asUser(B, (tx) => tx`select * from public.weights`)).toHaveLength(0);
+  });
+
+  it("shows each account its own earnings, day by day, and its goals' progress", async () => {
+    const today = new Date().toISOString().slice(0, 10);
+    await db.admin(async (tx) => {
+      await tx`insert into public.metrics (user_id, source, metric, day, value) values (${A}, 'youtube', 'views', ${today}, 1200), (${A}, 'youtube', 'subscribers', ${today}, 7)`;
+      await tx`insert into public.metrics (user_id, source, metric, day, value) values (${B}, 'youtube', 'views', ${today}, 999999)`;
+      await tx`delete from public.live_sessions where user_id = ${A}`;
+      await tx`insert into public.live_sessions (id, user_id, game, started_at, coins) values (gen_random_uuid(), ${A}, 'battle', now(), 350)`;
+    });
+    await db.asUser(A, (tx) => tx`insert into public.goals (user_id, source, metric, target, period, label) values (${A}, 'youtube', 'views', 10000, 'month', 'views')`);
+    const e = await earn.earningsOf(A, 30);
+    const views = e.series.find((s) => s.id === "youtube:views")!;
+    expect(views.points).toHaveLength(30);
+    expect(views.total).toBe(1200);
+    expect(e.series.find((s) => s.id === "live:coins")!.total).toBe(350);
+    expect(e.series.find((s) => s.id === "youtube:revenue")).toBeUndefined();
+    expect(e.goals[0]).toMatchObject({ target: 10000, progress: 1200, unit: "count" });
+    // metrics are written by the sync only
+    await expect(db.asUser(A, (tx) => tx`insert into public.metrics (user_id, source, metric, day, value) values (${A}, 'youtube', 'views', ${today}, 5)`)).rejects.toThrow();
+  });
+
+  it("keeps a seller's Stripe key to keys that can only read", async () => {
+    const [{ id: C }] = await db.admin((tx) => tx<{ id: string }[]>`select id from auth.users where email = 'c@test.local'`);
+    expect(await earn.connectStripe(C, "sk_live_abc")).toEqual({ ok: false, reason: "format" });
+    expect(await earn.hasStripe(C)).toBe(false);
+  });
+
+  it("follows niches, and shows rising Shorts in them, newest measures only", async () => {
+    await trends.setNiches(A, ["quizzes", "not-a-niche"]);
+    expect(await trends.followedNiches(A)).toEqual(["quizzes"]);
+    await db.admin((tx) => tx`
+      insert into public.trend_videos (external_id, niche, title, url, published_at, views, views_per_hour, format)
+      values ('q1', 'quizzes', 'A quiz', 'https://youtube.com/shorts/q1', now() - interval '5 hours', 5000, 1000, 'quiz'),
+             ('old', 'quizzes', 'Old', 'https://youtube.com/shorts/old', now() - interval '6 days', 9000, 60, 'quiz')`);
+    const r = await trends.rising(A, ["quizzes"]);
+    expect(r.map((v) => v.id)).toEqual(["q1"]);
+    const board = await trends.leaderboard(A);
+    expect(board.rows[0]).toMatchObject({ format: "quiz", videos: 1, typical: 1000 });
   });
 
   it("deleting an account deletes everything that was theirs", async () => {

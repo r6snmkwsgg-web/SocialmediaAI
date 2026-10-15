@@ -44,3 +44,19 @@ Defaults picked while building, so nobody has to guess why something is the way 
 - **The learning loop**: views are read at 1 hour, 24 hours and 3 days (up to two days late if the worker was down). At 24 hours a Short is compared with the channel's typical Short, the median of its last 30 at 24 hours, once there are at least 3: (views + 10) / (typical + 10). That moves a weight for its format and its kind (a battle's two powers, a quiz's subject, a story's tone, a chart's figure), averaged in log space over the last 20 results. Formats are drawn by these weights, trusted fully only after 5 results, never below a fifth of the best, and no more than two of one format a day. Within a format, the best kind of three runs is kept.
 - **The worker** (`pnpm worker`) does everything long or periodic: rendering, each channel's morning Shorts (from 6am local), posting every minute and views every 15 minutes. The same jobs can be run from a scheduler through `/api/cron/post`, `/api/cron/stats` and `/api/cron/shorts`; each video is locked while it's being posted, so both at once is safe.
 - **Rendered files** go in a private Supabase Storage bucket called `videos` (made automatically the first time) and are handed out as 10-minute signed links. Without Supabase they're kept in `.data/videos` and served by the app to their owner.
+
+## Trends
+
+- **YouTube only**, through the official Data API. TikTok doesn't offer trending data to apps like this (its Research API is for academic researchers), so there's no TikTok trends.
+- **Ten niches** (`lib/trends/niches.ts`), six of them one per Shorts format so "make one like this" can make one; the other four (satisfying, facts, gaming, football) are there to watch. People pick which to see; none picked means all.
+- **Rising means growing fast**: views per hour since upload. Each niche is searched every four hours for Shorts (three minutes or less) uploaded in the last two days, and the 25 growing fastest are kept for a week; Rising now shows the last three days. A search costs 100 of the 10,000 daily quota units, so ten niches every four hours uses about 6,000.
+- **Best times** come from the channel's own Shorts: each one's views at 24 hours against the channel's usual, by day of the week and three-hour block in its own timezone. YouTube doesn't share when a channel's viewers are online through its API.
+- **Formats right now** is the middle growth rate of the rising Shorts in each format over three days, next to how that format does on the channel.
+- **"Make one like this"** makes a Short of the same format straight into the queue, and counts toward the plan's Shorts.
+
+## Earnings
+
+- **Real figures only, from where they are**: YouTube Analytics (daily views, new subscribers and, for channels that can read it, YouTube's estimated revenue, refreshed for the last 35 days every 6 hours); TikTok's view counts (it only gives each video's total, so a day's views are the rise since the last reading, and a day without a reading shows as unknown, not zero); the LIVE game's gift coins, labelled as coins and as the game's own count, never as money; and Stripe sales for people who sell something.
+- **Stripe** needs a restricted key (`rk_live_…`) that can read balance transactions; a secret key is refused. It's stored encrypted. Sales are charges and payments less refunds, before Stripe's fees, kept per currency.
+- **Charts**: one measure per chart, side by side rather than two on one axis, as daily bars from zero, with each day's exact figure on hover and in a table for screen readers.
+- **Goals** are set on any of those measures, for this month (in the account's timezone) or all time.
