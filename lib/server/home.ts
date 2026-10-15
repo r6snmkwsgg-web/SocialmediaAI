@@ -15,7 +15,8 @@ export type HomeData = {
   goal: boolean;
   inReview: number;
   week: { posted: number; views: number | null; lives: number; rounds: number; coins: number };
-  next: { title: string; at: Date } | null;
+  /** the next few Shorts to post, soonest first */
+  upcoming: { id: string; title: string; at: Date }[];
 };
 
 export async function homeData(userId: string): Promise<HomeData> {
@@ -39,8 +40,9 @@ export async function homeData(userId: string): Promise<HomeData> {
         (select count(*) from public.live_sessions where started_at > now() - interval '7 days')::int as lives_week,
         (select coalesce(sum(rounds), 0) from public.live_sessions where started_at > now() - interval '7 days')::int as rounds_week,
         (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '7 days')::int as coins_week`;
-    const next = await tx<{ title: string; scheduled_for: Date }[]>`
-      select title, scheduled_for from public.videos where status = 'scheduled' and scheduled_for > now() order by scheduled_for limit 1`;
+    const next = await tx<{ id: string; title: string; scheduled_for: Date }[]>`
+      select id, title, scheduled_for from public.videos
+      where status in ('approved', 'rendering', 'ready', 'scheduled') and scheduled_for > now() order by scheduled_for limit 3`;
     return {
       youtube: r.youtube,
       swiped: r.swiped,
@@ -50,7 +52,7 @@ export async function homeData(userId: string): Promise<HomeData> {
       goal: r.goal,
       inReview: r.in_review,
       week: { posted: r.posted_week, views: r.views_week === null ? null : Number(r.views_week), lives: r.lives_week, rounds: r.rounds_week, coins: r.coins_week },
-      next: next[0] ? { title: next[0].title, at: next[0].scheduled_for } : null,
+      upcoming: next.map((v) => ({ id: v.id, title: v.title, at: v.scheduled_for })),
     };
   });
 }

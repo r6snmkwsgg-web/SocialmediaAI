@@ -29,6 +29,8 @@ function commands(theme: (t: "light" | "dark" | "system") => void): Command[] {
   return [
     { id: "home", group: "Go to", label: "Home", icon: Icons.home, href: "/app", words: "today dashboard setup" },
     { id: "queue", group: "Go to", label: "Shorts: your queue", icon: Icons.shorts, href: "/app/shorts", words: "swipe approve videos" },
+    { id: "calendar", group: "Go to", label: "Shorts: calendar", icon: Icons.calendar, href: "/app/shorts/calendar", words: "schedule scheduled when posting month" },
+    { id: "library", group: "Go to", label: "Shorts: library", icon: Icons.grid, href: "/app/shorts/library", words: "all posted videos history search what's working results" },
     { id: "live", group: "Go to", label: "Live: your game", icon: Icons.live, href: "/app/live", words: "tiktok live game gifts obs overlay stream" },
     { id: "trends", group: "Go to", label: "Trends", icon: Icons.trends, href: "/app/trends", words: "rising niches best times what's working" },
     { id: "earnings", group: "Go to", label: "Earnings", icon: Icons.earnings, href: "/app/earnings", words: "money revenue stripe goals views" },

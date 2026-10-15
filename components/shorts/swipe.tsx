@@ -10,6 +10,7 @@ import { seconds } from "@/lib/shorts/timing";
 import type { Spec } from "@/lib/shorts/types";
 import { toast } from "@/components/app/toast";
 import { ShortPlayer } from "./player";
+import { EditCopy } from "./edit-copy";
 import { TikTokChoicesForm, type CreatorResult } from "./tiktok";
 
 export type QueueCard = { id: string; spec: Spec; format: string; title: string; description: string; why: string[]; suggestedFor: string | null };
@@ -166,7 +167,7 @@ export function SwipeQueue({ items, tag, schedules, creator, decide, edit }: Pro
             />
           </>
         ) : editing ? (
-          <EditCopy card={cur} onDone={() => setEditing(false)} edit={edit} />
+          <EditCopy id={cur.id} title={cur.title} description={cur.description} onDone={() => setEditing(false)} edit={edit} />
         ) : (
           <div className="flex flex-col gap-2">
             <h2 className="text-[22px] font-semibold leading-snug sm:text-2xl">{cur.title}</h2>
@@ -216,45 +217,5 @@ export function SwipeQueue({ items, tag, schedules, creator, decide, edit }: Pro
         )}
       </div>
     </div>
-  );
-}
-
-function EditCopy({ card, onDone, edit }: { card: QueueCard; onDone: () => void; edit: Props["edit"] }) {
-  const router = useRouter();
-  const [title, setTitle] = useState(card.title);
-  const [description, setDescription] = useState(card.description);
-  const [msg, setMsg] = useState<string | null>(null);
-  const [pending, start] = useTransition();
-  const field = "w-full border-2 border-edge-strong bg-surface px-3 py-2 text-[15px] text-fg focus:border-fg focus:outline-none";
-  return (
-    <form
-      className="flex flex-col gap-3"
-      onSubmit={(e) => {
-        e.preventDefault();
-        start(async () => {
-          const r = await edit(card.id, title, description);
-          if (!r.ok) setMsg(r.message ?? "That didn't save.");
-          else {
-            toast("Title saved", "good");
-            onDone();
-            router.refresh();
-          }
-        });
-      }}
-    >
-      <label className="flex flex-col gap-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Title ({title.length}/100)</span>
-        <input value={title} maxLength={100} onChange={(e) => setTitle(e.target.value)} className={field} autoFocus />
-      </label>
-      <label className="flex flex-col gap-1.5">
-        <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Description</span>
-        <textarea value={description} onChange={(e) => setDescription(e.target.value)} rows={4} className={field} />
-      </label>
-      {msg && <p role="alert" className="text-[13px] text-signal">{msg}</p>}
-      <div className="flex gap-3">
-        <button type="submit" disabled={pending} className={button.secondary}>{pending ? "Saving…" : "Save"}</button>
-        <button type="button" onClick={onDone} className={button.quiet}>Cancel</button>
-      </div>
-    </form>
   );
 }

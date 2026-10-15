@@ -253,6 +253,41 @@ describe.skipIf(!safe)("the database", () => {
     expect(recap.body).toMatch(/17 playing at once\. Top gifter: mia with 999 coins/);
   });
 
+  it("keeps a library of every Short said yes to, with how each did against usual", async () => {
+    const lib = await import("@/lib/server/shorts/library");
+    const [{ id: D }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values ('d@test.local') returning id`);
+    const ids: string[] = [];
+    for (const [i, views] of [[1, 100], [2, 200], [3, 300], [4, 990]] as const) {
+      const [v] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, format, params, key, title, status, decided_at, posted_at, youtube_id)
+        values (${D}, ${i === 4 ? "quiz" : "wyr"}, '{}', 'k', ${`Short number ${i}`}, 'posted', now() - make_interval(days => ${10 - i}), now() - make_interval(days => ${10 - i}), ${`yt${i}`})
+        returning id`);
+      await db.admin((tx) => tx`insert into public.video_stats (video_id, checkpoint, views) values (${v.id}, '24h', ${views})`);
+      ids.push(v.id);
+    }
+    await db.admin((tx) => tx`insert into public.videos (user_id, format, params, key, title, status, decided_at, scheduled_for) values (${D}, 'race', '{}', 'k', 'Coming soon', 'scheduled', now(), now() + interval '2 days')`);
+    await db.admin((tx) => tx`insert into public.videos (user_id, format, params, key, title, status) values (${D}, 'quiz', '{}', 'k', 'Still in review', 'review')`);
+
+    const all = await lib.libraryOf(D);
+    expect(all.total).toBe(5);
+    expect(all.items[0].title).toBe("Coming soon");
+    // the usual is the middle of the first days: 250, so 990 views is about 3.8×
+    const best = all.items.find((x) => x.title === "Short number 4")!;
+    expect(best.vsUsual).toBeCloseTo((990 + 10) / (250 + 10));
+    expect((await lib.libraryOf(D, { filter: "posted" })).total).toBe(4);
+    expect((await lib.libraryOf(D, { format: "quiz" })).items.map((x) => x.title)).toEqual(["Short number 4"]);
+    expect((await lib.libraryOf(D, { q: "number 2" })).items).toHaveLength(1);
+    expect((await lib.libraryOf(D, { q: "100%" })).total).toBe(0);
+
+    const month = await lib.calendarOf(D, new Date(Date.now() - 30 * 86400_000), new Date(Date.now() + 30 * 86400_000));
+    expect(month.map((x) => x.title)).toContain("Coming soon");
+    expect(month.map((x) => x.title)).not.toContain("Still in review");
+
+    expect((await lib.shortOf(D, ids[3]))?.views["24h"]).toBe(990);
+    expect(await lib.shortOf(A, ids[3])).toBeNull();
+    expect((await lib.insightsFor(D)).typical).toBe(250);
+  });
+
   it("puts scheduled Shorts live when their time comes", async () => {
     const [v] = await db.admin((tx) => tx<{ id: string }[]>`
       insert into public.videos (user_id, format, params, key, title, status, scheduled_for, youtube_id)

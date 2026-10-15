@@ -9,6 +9,9 @@ import { proposeRanking, ranking } from "@/lib/shorts/formats/ranking";
 import { proposeTexts, STORIES } from "@/lib/shorts/formats/texts";
 import { PAIRS, proposeWyr } from "@/lib/shorts/formats/wyr";
 import { chooseFormats, lift, median, odds, updated } from "@/lib/shorts/learn";
+import { byDay, dayKey, gridBounds, monthGrid, parseMonth, shiftMonth } from "@/lib/shorts/calendar";
+import { historyOf, type HistoryFacts } from "@/lib/shorts/history";
+import { insights, kindName, times as timesX } from "@/lib/shorts/insights";
 import { soundFor } from "@/lib/shorts/sound";
 import { labelOf, postSettings, problemWith, tiktokChoices, tiktokReason, type Creator, type TikTokChoices } from "@/lib/shorts/tiktok";
 import { atLocal, bestHours, localParts, nextSlots, offsetMinutes } from "@/lib/shorts/times";
@@ -232,5 +235,80 @@ describe("TikTok's questions", () => {
     expect(tiktokReason("spam_risk_too_many_posts", "TikTok: x")).toMatch(/more posts from this account today/);
     expect(tiktokReason("something_new", "TikTok: something new")).toBe("TikTok: something new");
     expect(tiktokReason(null, "TikTok: 500")).toBe("TikTok: 500");
+  });
+});
+
+describe("the Shorts calendar", () => {
+  it("lays a month out in whole weeks, Sunday first", () => {
+    const oct = monthGrid({ y: 2026, m: 10 });
+    expect(oct).toHaveLength(5);
+    expect(oct[0][0]).toMatchObject({ y: 2026, m: 9, d: 27, inMonth: false });
+    expect(oct.at(-1)!.at(-1)).toMatchObject({ m: 10, d: 31, inMonth: true });
+    // February 2026 starts on a Sunday and fits in exactly four weeks
+    expect(monthGrid({ y: 2026, m: 2 })).toHaveLength(4);
+  });
+
+  it("reads the month from the address, or uses this one where they are", () => {
+    const now = new Date("2026-10-31T23:30:00Z");
+    expect(parseMonth("2027-01", now, "UTC")).toEqual({ y: 2027, m: 1 });
+    expect(parseMonth("2027-13", now, "UTC")).toEqual({ y: 2026, m: 10 });
+    expect(parseMonth(undefined, now, "Asia/Tokyo")).toEqual({ y: 2026, m: 11 });
+    expect(shiftMonth({ y: 2026, m: 1 }, -1)).toEqual({ y: 2025, m: 12 });
+    expect(shiftMonth({ y: 2026, m: 12 }, 1)).toEqual({ y: 2027, m: 1 });
+  });
+
+  it("puts each Short on the day it posts where they live", () => {
+    const { from, to } = gridBounds({ y: 2026, m: 10 }, "America/New_York");
+    expect(from.toISOString()).toBe("2026-09-27T04:00:00.000Z");
+    expect(to.toISOString()).toBe("2026-11-01T04:00:00.000Z");
+    const late = { at: new Date("2026-10-16T02:00:00Z") };
+    expect(dayKey(late.at, "America/New_York")).toBe("2026-10-15");
+    expect([...byDay([late], "UTC").keys()]).toEqual(["2026-10-16"]);
+  });
+});
+
+describe("what's working", () => {
+  const w = (kind: "format" | "key", name: string, score: number, samples: number) => ({ kind, name, score, samples });
+
+  it("names kinds the way people say them", () => {
+    expect(kindName("battle:spike")).toBe("Spike battles");
+    expect(kindName("quiz:capitals")).toBe("Capital city quizzes");
+    expect(kindName("texts:twist")).toBe("Stories with a twist");
+    expect(kindName("ranking:gdp")).toBe("GDP rankings");
+    expect(kindName("race:population")).toBe("Population races");
+    expect(kindName("wyr")).toBeNull();
+  });
+
+  it("puts measured formats first, best first, and only kinds that clearly stand out", () => {
+    const got = insights([w("format", "quiz", 1.9, 6), w("format", "battle", 0.8, 4), w("key", "quiz:capitals", 2.2, 4), w("key", "texts:funny", 1.05, 9), w("key", "battle:grow", 3, 2)]);
+    expect(got.formats.map((f) => f.format).slice(0, 2)).toEqual(["quiz", "battle"]);
+    expect(got.formats[2].samples).toBe(0);
+    expect(got.measured).toBe(10);
+    expect(got.kinds.map((k) => k.name)).toEqual(["Capital city quizzes"]);
+    expect(got.formats.reduce((s, f) => s + f.share, 0)).toBeCloseTo(1);
+    expect(timesX(1.94)).toBe("1.9×");
+    expect(timesX(12.4)).toBe("12×");
+  });
+});
+
+describe("a Short's history", () => {
+  const base: HistoryFacts = {
+    createdAt: new Date("2026-10-01T21:00:00Z"), origin: "daily", decidedAt: new Date("2026-10-01T23:00:00Z"), status: "posted",
+    scheduledFor: new Date("2026-10-02T19:00:00Z"), render: { status: "done", finishedAt: new Date("2026-10-02T00:00:00Z"), error: null },
+    uploadedAt: new Date("2026-10-02T01:00:00Z"), youtubeId: "abc", postedAt: new Date("2026-10-02T19:00:00Z"),
+    tiktokAt: null, tiktokPostedAt: null, tiktokError: null, error: null,
+  };
+
+  it("lists what happened, in order, and what's booked next", () => {
+    expect(historyOf(base).map((s) => s.title)).toEqual(["Made for your queue", "You said yes", "Made into a video", "Up on YouTube, private until its time", "Public on YouTube"]);
+    const coming = historyOf({ ...base, status: "scheduled", postedAt: null, tiktokAt: base.scheduledFor }, new Date("2026-10-02T02:00:00Z"));
+    expect(coming.slice(-2).map((s) => [s.title, s.tone])).toEqual([["Posts", "next"], ["Goes to TikTok", "next"]]);
+  });
+
+  it("says where it went wrong", () => {
+    const failed = historyOf({ ...base, status: "failed", render: { status: "failed", finishedAt: null, error: "x" }, uploadedAt: null, postedAt: null, youtubeId: null, error: "Rendering failed: x" });
+    expect(failed.at(-1)).toMatchObject({ title: "Couldn't be made into a video", tone: "bad" });
+    expect(historyOf({ ...base, status: "review", decidedAt: null }).at(-1)?.title).toBe("Waiting for your yes or no");
+    expect(historyOf({ ...base, status: "rejected" }).at(-1)?.title).toBe("You skipped it");
   });
 });

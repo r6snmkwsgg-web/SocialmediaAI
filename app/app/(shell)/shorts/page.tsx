@@ -108,7 +108,7 @@ export default async function Shorts() {
                   <li key={c.id} className="flex flex-col gap-3 px-5 py-4">
                     <div className="flex items-start justify-between gap-3">
                       <div className="min-w-0">
-                        <p className="truncate text-[15px] font-semibold">{c.title}</p>
+                        <Link href={`/app/shorts/${c.id}`} className="block truncate text-[15px] font-semibold hover:underline">{c.title}</Link>
                         <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
                           {FORMATS[c.spec.format].name}
                           {c.scheduledFor && <> · posts <LocalTime iso={c.scheduledFor.toISOString()} /></>}
@@ -181,9 +181,7 @@ export default async function Shorts() {
               {q.posted.map((p) => (
                 <li key={p.id} className="flex items-center gap-4 px-5 py-3.5">
                   <div className="min-w-0 flex-1">
-                    <p className="truncate text-[15px] font-semibold">
-                      {p.youtubeId ? <a href={`https://youtube.com/shorts/${p.youtubeId}`} target="_blank" rel="noreferrer" className="hover:underline">{p.title}</a> : p.title}
-                    </p>
+                    <Link href={`/app/shorts/${p.id}`} className="block truncate text-[15px] font-semibold hover:underline">{p.title}</Link>
                     <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
                       {FORMATS[p.format].name}
                       {p.postedAt && <> · <LocalTime iso={p.postedAt.toISOString()} style="day" /></>}

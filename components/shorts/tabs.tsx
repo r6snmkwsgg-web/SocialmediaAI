@@ -1,0 +1,34 @@
+"use client";
+import Link from "next/link";
+import { usePathname } from "next/navigation";
+import { Icons } from "@/components/app/icons";
+
+const TABS = [
+  { href: "/app/shorts", label: "Queue", icon: Icons.shorts },
+  { href: "/app/shorts/calendar", label: "Calendar", icon: Icons.calendar },
+  { href: "/app/shorts/library", label: "Library", icon: Icons.grid },
+];
+
+/** Shorts' three views: what's waiting, when things post, and everything so far. A single Short's page has its own way back. */
+export function ShortsTabs() {
+  const path = usePathname();
+  if (!TABS.some((t) => t.href === path)) return null;
+  return (
+    <nav aria-label="Shorts" className="mb-8 flex gap-1 overflow-x-auto border-b-2 border-edge">
+      {TABS.map((t) => {
+        const on = path === t.href;
+        return (
+          <Link
+            key={t.href}
+            href={t.href}
+            aria-current={on ? "page" : undefined}
+            className={`-mb-[2px] flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.16em] ${on ? "border-signal text-fg" : "border-transparent text-muted hover:text-fg"}`}
+          >
+            <t.icon className="h-4 w-4" />
+            {t.label}
+          </Link>
+        );
+      })}
+    </nav>
+  );
+}

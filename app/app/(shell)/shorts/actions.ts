@@ -27,13 +27,13 @@ export async function decide(videoId: string, yes: boolean, tiktok?: unknown): P
     const ok = await approve(me.id, videoId, (await billingFor(me.id)).plan, new Date(), choices?.data ?? null);
     // when it'll post, for the toast that says so
     const [v] = ok ? await asUser(me.id, (tx) => tx<{ scheduled_for: Date | null }[]>`select scheduled_for from public.videos where id = ${videoId}`) : [];
-    revalidatePath("/app/shorts");
+    revalidatePath("/app/shorts", "layout");
     revalidatePath("/app");
     return { ok, at: v?.scheduled_for?.toISOString() ?? null };
   }
   const ok = await reject(me.id, videoId);
   const replaced = ok ? (await makeShorts(me.id, { origin: "replacement" })) > 0 : false;
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
   return { ok, replaced };
 }
 
@@ -41,7 +41,7 @@ export async function decide(videoId: string, yes: boolean, tiktok?: unknown): P
 export async function makeMore(): Promise<number> {
   const me = await requireUser();
   const n = await makeShorts(me.id, { origin: "daily" });
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
   return n;
 }
 
@@ -52,7 +52,7 @@ export async function editCopy(videoId: string, title: string, description: stri
   const c = copy.safeParse({ title, description });
   if (!id.safeParse(videoId).success || !c.success) return { ok: false, message: "Titles need 1 to 100 characters." };
   await retitle(me.id, videoId, c.data.title, c.data.description);
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
   return { ok: true };
 }
 
@@ -62,7 +62,7 @@ export async function posted(form: FormData) {
   if (!id.safeParse(v).success) return;
   const link = String(form.get("link") ?? "").trim();
   await markPosted(me.id, v, link ? youtubeIdFrom(link) : null);
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
   revalidatePath("/app");
 }
 
@@ -71,7 +71,7 @@ export async function tryAgain(form: FormData) {
   const v = String(form.get("id") ?? "");
   if (!id.safeParse(v).success) return;
   await retry(me.id, v, (await billingFor(me.id)).plan);
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
 }
 
 /** Into their TikTok drafts, to finish in the TikTok app. */
@@ -89,7 +89,7 @@ export async function sendToTikTok(form: FormData) {
     const msg = err instanceof Error ? err.message : "TikTok didn't take it";
     await asUser(me.id, (tx) => tx`update public.videos set error = ${msg} where id = ${v}`);
   }
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
 }
 
 /** Who they are on TikTok right now and what they can post: asked each time TikTok's questions open. */
@@ -111,6 +111,6 @@ export async function postToTikTok(videoId: string, choices: unknown): Promise<{
   const c = tiktokChoices.safeParse(choices);
   if (!id.safeParse(videoId).success || !c.success) return { ok: false };
   const ok = await chooseTikTok(me.id, videoId, c.data);
-  revalidatePath("/app/shorts");
+  revalidatePath("/app/shorts", "layout");
   return { ok };
 }
