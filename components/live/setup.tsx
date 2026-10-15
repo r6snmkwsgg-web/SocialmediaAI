@@ -1,9 +1,22 @@
 "use client";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { LiveEvent } from "@/lib/live/events";
+import { GAMES } from "@/lib/live/games";
+import type { GameId } from "@/lib/live/settings";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
 
 type Heard = { at: number; e: LiveEvent };
+type BridgeStatus = { state: "idle" | "connecting" | "live" | "waiting" | "error"; user: string | null; error: string | null; version?: string };
+
+/** where the bridge's downloads live: the latest GitHub release */
+const BRIDGE_REPO = process.env.NEXT_PUBLIC_BRIDGE_REPO || "r6snmkwsgg-web/hookline";
+const download = (file: string) => `https://github.com/${BRIDGE_REPO}/releases/latest/download/${file}`;
+const DOWNLOADS = [
+  { label: "Windows", file: "hookline-bridge-win-x64.exe" },
+  { label: "Mac (Apple chip)", file: "hookline-bridge-mac-arm64" },
+  { label: "Mac (Intel)", file: "hookline-bridge-mac-x64" },
+  { label: "Linux", file: "hookline-bridge-linux-x64" },
+];
 
 function describe(e: LiveEvent): string {
   switch (e.kind) {
@@ -24,39 +37,77 @@ function describe(e: LiveEvent): string {
 
 const dot: Record<SourceState, string> = { open: "bg-[#34C759]", connecting: "bg-[#FFD60A] animate-blink", closed: "bg-dim" };
 const word: Record<SourceState, string> = { open: "Connected", connecting: "Looking…", closed: "Not running" };
+const bridgeWord: Record<BridgeStatus["state"], string> = {
+  idle: "Running, waiting for your username",
+  connecting: "Connecting to your LIVE…",
+  live: "Connected to your LIVE",
+  waiting: "You're not live yet: it'll connect when you are",
+  error: "Problem",
+};
 
 /**
- * The setup page's working parts: it listens for TikFinity and the bridge
- * on this computer and says which it can hear, shows the last few things
- * it heard, and builds the address to put in OBS or LIVE Studio.
+ * The setup page's working parts: pick a game, hear the LIVE (TikFinity
+ * or Hookline Bridge, which it can point at the streamer's account), get
+ * the address for OBS or LIVE Studio, and see what's coming in.
  */
-export function Setup() {
+export function Setup({ overlayKey, game: initial = "battle" }: { overlayKey?: string; game?: GameId } = {}) {
+  const [game, setGame] = useState<GameId>(initial);
   const [pick, setPick] = useState<SourceId>("tikfinity");
   const [states, setStates] = useState<Record<SourceId, SourceState>>({ tikfinity: "closed", bridge: "closed" });
+  const [bridge, setBridge] = useState<BridgeStatus | null>(null);
+  const [username, setUsername] = useState("");
   const [heard, setHeard] = useState<Heard[]>([]);
   const [raw, setRaw] = useState<string[]>([]);
+  const allRaw = useRef<{ at: string; text: string }[]>([]);
   const [showRaw, setShowRaw] = useState(false);
   const [clean, setClean] = useState(true);
   const [copied, setCopied] = useState(false);
   const [origin, setOrigin] = useState("");
+  const sources = useRef<Partial<Record<SourceId, LiveSource>>>({});
 
   useEffect(() => setOrigin(window.location.origin), []);
 
   useEffect(() => {
-    const sources = (Object.keys(SOURCES) as SourceId[]).map((id) => {
+    const made = (Object.keys(SOURCES) as SourceId[]).map((id) => {
       const s = new LiveSource(
         SOURCES[id].url,
         (e) => setHeard((h) => [{ at: Date.now(), e }, ...h].slice(0, 12)),
-        (st) => setStates((x) => ({ ...x, [id]: st })),
-        (text) => setRaw((r) => [text.length > 400 ? `${text.slice(0, 400)}…` : text, ...r].slice(0, 12)),
+        (st) => {
+          setStates((x) => ({ ...x, [id]: st }));
+          if (id === "bridge" && st !== "open") setBridge(null);
+        },
+        (text) => {
+          allRaw.current.push({ at: new Date().toISOString(), text });
+          if (allRaw.current.length > 500) allRaw.current.shift();
+          // the bridge's own status messages say how it's doing
+          if (id === "bridge" && text.includes('"bridge"')) {
+            try {
+              const m = JSON.parse(text) as { event?: string; data?: BridgeStatus };
+              if (m.event === "bridge" && m.data) {
+                setBridge(m.data);
+                if (m.data.user) setUsername((u) => u || m.data!.user!);
+                return;
+              }
+            } catch {
+              // not the bridge's; carry on
+            }
+          }
+          setRaw((r) => [text.length > 400 ? `${text.slice(0, 400)}…` : text, ...r].slice(0, 12));
+        },
       );
+      sources.current[id] = s;
       s.start();
       return s;
     });
-    return () => sources.forEach((s) => s.stop());
+    return () => made.forEach((s) => s.stop());
   }, []);
 
-  const url = useMemo(() => `${origin}/live/play?src=${pick}${clean ? "&clean=1" : ""}`, [origin, pick, clean]);
+  const url = useMemo(() => {
+    const q = new URLSearchParams({ src: pick, game });
+    if (clean) q.set("clean", "1");
+    if (overlayKey) q.set("key", overlayKey);
+    return `${origin}/live/play?${q}`;
+  }, [origin, pick, game, clean, overlayKey]);
 
   const copy = async () => {
     try {
@@ -68,6 +119,21 @@ export function Setup() {
     }
   };
 
+  const connect = (e: React.FormEvent) => {
+    e.preventDefault();
+    sources.current.bridge?.send({ cmd: "connect", user: username });
+  };
+
+  /** Everything it's heard, as a file: what to send if the game misreads something. */
+  const saveRaw = () => {
+    const blob = new Blob([JSON.stringify(allRaw.current, null, 2)], { type: "application/json" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob);
+    a.download = `hookline-live-events-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  };
+
   return (
     <div className="grid gap-px bg-line lg:grid-cols-3">
       {/* 1: hear the live */}
@@ -75,7 +141,7 @@ export function Setup() {
         <span className="outline-num font-display text-6xl leading-none">01</span>
         <h3 className="font-display text-3xl uppercase tracking-wide">Hear your LIVE</h3>
         <p className="text-[15px] leading-relaxed text-paper/70">
-          Something on your computer has to be connected to your LIVE and pass its events on. Pick one, start it, and it turns green here.
+          Something on your computer connects to your LIVE and passes its events on. Pick one, start it, and it turns green here.
         </p>
         <div className="flex flex-col gap-2" role="radiogroup" aria-label="Where the events come from">
           {(Object.keys(SOURCES) as SourceId[]).map((id) => (
@@ -88,9 +154,9 @@ export function Setup() {
               className={`flex items-center justify-between gap-3 border-2 px-4 py-3 text-left transition ${pick === id ? "border-paper bg-paper/5" : "border-line hover:border-paper/50"}`}
             >
               <span>
-                <span className="block font-display text-xl uppercase tracking-wide">{SOURCES[id].name}</span>
+                <span className="block font-display text-xl uppercase tracking-wide">{id === "bridge" ? "Hookline Bridge" : SOURCES[id].name}</span>
                 <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-dim">
-                  {id === "tikfinity" ? "Free app most streamers already use" : "One command, for the techy route"}
+                  {id === "tikfinity" ? "If you already use TikFinity" : "Our free app: download, open, done"}
                 </span>
               </span>
               <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-paper/70">
@@ -104,10 +170,40 @@ export function Setup() {
           <p className="text-[14px] leading-relaxed text-paper/65">
             Open TikFinity on this computer and connect it to your TikTok account. Hookline listens on its local event connection, port 21213. If it doesn&rsquo;t turn green, look in TikFinity&rsquo;s settings for its WebSocket or Event API and switch it on.
           </p>
+        ) : states.bridge === "open" ? (
+          <div className="flex flex-col gap-3">
+            <form onSubmit={connect} className="flex gap-2">
+              <label className="sr-only" htmlFor="tt-user">Your TikTok username</label>
+              <input
+                id="tt-user"
+                value={username}
+                onChange={(e) => setUsername(e.target.value)}
+                placeholder="your TikTok username"
+                autoComplete="off"
+                className="min-w-0 flex-1 border-2 border-line bg-ink-2 px-3 py-2 font-mono text-[13px] text-paper outline-none focus:border-paper"
+              />
+              <button type="submit" className="press bg-signal px-4 py-2 font-display text-lg uppercase tracking-wider text-ink">Connect</button>
+            </form>
+            {bridge && (
+              <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-paper/75">
+                <span className={`mr-2 inline-block h-2 w-2 rounded-full align-middle ${bridge.state === "live" ? "bg-[#34C759]" : bridge.state === "error" ? "bg-signal" : "bg-[#FFD60A]"}`} />
+                {bridgeWord[bridge.state]}
+                {bridge.user ? ` · @${bridge.user}` : ""}
+                {bridge.state === "error" && bridge.error ? ` · ${bridge.error}` : ""}
+              </p>
+            )}
+          </div>
         ) : (
-          <div className="flex flex-col gap-2 text-[14px] leading-relaxed text-paper/65">
-            <p>In the Hookline folder, run this with your TikTok name, while you&rsquo;re live:</p>
-            <code className="block overflow-x-auto border border-line bg-ink-2 px-3 py-2 font-mono text-[12px] text-paper">pnpm live:bridge yourname</code>
+          <div className="flex flex-col gap-3 text-[14px] leading-relaxed text-paper/65">
+            <p>Download Hookline Bridge and open it. It runs in the background; this page finds it and asks for your TikTok username.</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              {DOWNLOADS.map((d) => (
+                <a key={d.file} href={download(d.file)} className="border border-line px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-paper transition hover:border-paper">
+                  {d.label}
+                </a>
+              ))}
+            </div>
+            <p className="text-[12px] text-dim">On a Mac, the first time: right-click it and pick Open. Windows may ask if you trust it: More info, then Run anyway.</p>
           </div>
         )}
       </div>
@@ -115,8 +211,23 @@ export function Setup() {
       {/* 2: put it on the stream */}
       <div className="flex flex-col gap-5 bg-ink p-6 sm:p-7">
         <span className="outline-num font-display text-6xl leading-none">02</span>
-        <h3 className="font-display text-3xl uppercase tracking-wide">Put it on stream</h3>
-        <p className="text-[15px] leading-relaxed text-paper/70">
+        <h3 className="font-display text-3xl uppercase tracking-wide">Pick a game, put it on</h3>
+        <div className="flex flex-col gap-1.5" role="radiogroup" aria-label="Which game">
+          {GAMES.map((g) => (
+            <button
+              key={g.id}
+              type="button"
+              role="radio"
+              aria-checked={game === g.id}
+              onClick={() => setGame(g.id)}
+              className={`border-2 px-3 py-2 text-left transition ${game === g.id ? "border-paper bg-paper/5" : "border-line hover:border-paper/50"}`}
+            >
+              <span className="block font-display text-lg uppercase tracking-wide">{g.name}</span>
+              <span className="block text-[13px] leading-snug text-paper/60">{g.line}</span>
+            </button>
+          ))}
+        </div>
+        <p className="text-[14px] leading-relaxed text-paper/70">
           In OBS, add a Browser source with this address, 1080 wide and 1920 tall. In TikTok LIVE Studio, add it the same way you&rsquo;d add a TikFinity overlay.
         </p>
         <div className="flex flex-col gap-2">
@@ -133,9 +244,10 @@ export function Setup() {
             <input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} className="accent-[var(--color-signal)]" />
             Hide the hints around the game
           </label>
+          {overlayKey && <p className="text-[12px] leading-relaxed text-dim">This address has your private key in it, so the game uses your settings and saves your stats. Don&rsquo;t share it.</p>}
         </div>
         <p className="text-[13px] leading-relaxed text-dim">
-          If your browser asks to let the page use apps on this device, allow it. That&rsquo;s how it hears {SOURCES[pick].name}.
+          If your browser asks to let the page use apps on this device, allow it. That&rsquo;s how it hears your LIVE.
         </p>
       </div>
 
@@ -149,7 +261,10 @@ export function Setup() {
         <div className="flex min-h-[220px] flex-col border border-line bg-ink-2">
           <div className="flex items-center justify-between border-b border-line px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-dim">
             <span>What it&rsquo;s hearing</span>
-            <button type="button" onClick={() => setShowRaw((r) => !r)} className="hover:text-paper">{showRaw ? "Readable" : "Raw"}</button>
+            <span className="flex gap-3">
+              <button type="button" onClick={saveRaw} className="hover:text-paper">Save log</button>
+              <button type="button" onClick={() => setShowRaw((r) => !r)} className="hover:text-paper">{showRaw ? "Readable" : "Raw"}</button>
+            </span>
           </div>
           <ol className="flex flex-1 flex-col gap-1.5 overflow-hidden p-3 font-mono text-[11px] leading-snug">
             {showRaw
@@ -164,6 +279,7 @@ export function Setup() {
             )}
           </ol>
         </div>
+        <p className="text-[12px] leading-relaxed text-dim">If a gift or a chat doesn&rsquo;t do what it should, Save log and send us the file.</p>
       </div>
     </div>
   );

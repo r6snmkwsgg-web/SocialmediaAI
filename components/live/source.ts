@@ -7,7 +7,9 @@ import { parseMessage, type LiveEvent, type Streaks } from "@/lib/live/events";
  *
  * - TikFinity, the desktop app most TikTok streamers already use for
  *   alerts. Its Event API is on port 21213.
- * - Hookline's own bridge (`pnpm live:bridge yourname`), on port 21214.
+ * - Hookline Bridge, the small app streamers download (or `pnpm
+ *   live:bridge`), on port 21214. The setup page can tell it which
+ *   account to connect to.
  */
 export const SOURCES = {
   tikfinity: { name: "TikFinity", url: "ws://localhost:21213/" },
@@ -48,6 +50,13 @@ export class LiveSource {
     this.ws?.close();
     this.ws = null;
     this.set("closed");
+  }
+
+  /** Send something back, like a command to the bridge. False if it isn't open. */
+  send(msg: unknown): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false;
+    this.ws.send(JSON.stringify(msg));
+    return true;
   }
 
   private set(s: SourceState) {

@@ -10,8 +10,9 @@
     "lint": "eslint .",
     "test": "vitest run",
     "render": "tsx scripts/render.ts",
-    "live:bridge": "tsx scripts/live-bridge.mts",
-    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build"
+    "live:bridge": "tsx bridge/main.mts",
+    "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
+    "bridge:build": "tsx scripts/build-bridge.mts"
   },
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
@@ -34,8 +35,10 @@
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@types/ws": "^8.18.2",
+    "esbuild": "0.25.11",
     "eslint": "9.39.5",
     "eslint-config-next": "15.5.25",
+    "postject": "1.0.0-alpha.6",
     "tailwindcss": "4.3.3",
     "tiktok-live-connector": "2.5.0",
     "tsx": "4.20.6",
