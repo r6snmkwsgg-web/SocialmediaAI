@@ -60,3 +60,7 @@ Defaults picked while building, so nobody has to guess why something is the way 
 - **Stripe** needs a restricted key (`rk_live_…`) that can read balance transactions; a secret key is refused. It's stored encrypted. Sales are charges and payments less refunds, before Stripe's fees, kept per currency.
 - **Charts**: one measure per chart, side by side rather than two on one axis, as daily bars from zero, with each day's exact figure on hover and in a table for screen readers.
 - **Goals** are set on any of those measures, for this month (in the account's timezone) or all time.
+
+## Making a battle the same fight everywhere
+
+- Browsers don't agree on `Math.sin` and `Math.cos` to the last digit (Chrome changed its implementation after the version in Node 22), and a physics simulation turns that into a different fight: about a third of test fights played out differently in Chrome than in Node. So the battle simulation uses its own `sin`, `cos` and `hypot` (`lib/battle/trig.ts`), ports of fdlibm, which is what Node 22 uses. They match Node bit for bit (checked on 3.3 million inputs), so every fight is the same one it always was, and now the browser preview, the renderer and the server all compute the identical fight. `tests/trig.test.ts` pins the exact bits, and `tests/battle.test.ts` checks that every matchup still makes exactly the same fights.

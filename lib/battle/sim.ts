@@ -1,3 +1,4 @@
+import { cos, hypot, sin } from "./trig";
 import { ABILITIES, fib, type AbilityId } from "./abilities";
 
 /**
@@ -178,7 +179,7 @@ export class World {
     const ang = this.rand() * Math.PI * 2;
     const ball: Ball = {
       id: this.nextId++, team, kind, x, y,
-      vx: Math.cos(ang) * ab.speed, vy: Math.sin(ang) * ab.speed,
+      vx: cos(ang) * ab.speed, vy: sin(ang) * ab.speed,
       r: ab.radius, hp: ab.hp, maxHp: ab.hp, speed: ab.speed, touch: ab.touch,
       alive: true, bounces: 0, blade: 90, angle: this.rand() * Math.PI * 2, child: false, lastMine: 0, fresh: 0, born: this.clock, ...o,
     };
@@ -226,7 +227,7 @@ export class World {
       for (let i = 0; i < n; i++) {
         const ang = (i / Math.max(1, n)) * Math.PI * 2 + this.rand();
         const d = target.r + 34;
-        this.add(t, "fibonacci", target.x + Math.cos(ang) * d, target.y + Math.sin(ang) * d, { hp: 2, maxHp: 2, r: 30, child: true, fresh: this.clock + FRESH, tag: target.tag });
+        this.add(t, "fibonacci", target.x + cos(ang) * d, target.y + sin(ang) * d, { hp: 2, maxHp: 2, r: 30, child: true, fresh: this.clock + FRESH, tag: target.tag });
       }
       if (n > 0) this.events.push({ f, type: "spawn", x: target.x, y: target.y, team: t, n });
     }
@@ -235,7 +236,7 @@ export class World {
   private blast(x: number, y: number, radius: number, dmg: number, from: Team, f: number) {
     for (const o of this.balls) {
       if (!o.alive || o.team === from) continue;
-      if (Math.hypot(o.x - x, o.y - y) <= radius + o.r) this.hurt(o, dmg, f);
+      if (hypot(o.x - x, o.y - y) <= radius + o.r) this.hurt(o, dmg, f);
     }
     this.events.push({ f, type: "boom", x, y, dmg, to: (1 - from) as Team });
   }
@@ -294,7 +295,7 @@ export class World {
     for (const m of this.mines) {
       if (!m.alive || now - m.born < MINE_ARM) continue;
       if (m.x < lo || m.x > hi || m.y < lo || m.y > hi) { m.alive = false; continue; }
-      const hit = balls.some((o) => o.alive && o.team !== m.team && o.fresh <= now && Math.hypot(o.x - m.x, o.y - m.y) < o.r + MINE_R);
+      const hit = balls.some((o) => o.alive && o.team !== m.team && o.fresh <= now && hypot(o.x - m.x, o.y - m.y) < o.r + MINE_R);
       if (hit) {
         m.alive = false;
         this.blast(m.x, m.y, 110, 3 * this.power(m.team), m.team, f);
@@ -309,7 +310,7 @@ export class World {
       for (const o of balls) {
         if (!o.alive || o.team === m.team) continue;
         if (o === target) this.hurt(o, METEOR_HIT, f);
-        else if (Math.hypot(o.x - m.x, o.y - m.y) <= 170 + o.r) this.hurt(o, METEOR_SPLASH, f);
+        else if (hypot(o.x - m.x, o.y - m.y) <= 170 + o.r) this.hurt(o, METEOR_SPLASH, f);
       }
       this.events.push({ f, type: "boom", x: m.x, y: m.y, dmg: METEOR_HIT, to: (1 - m.team) as Team });
     }
@@ -323,7 +324,7 @@ export class World {
         const q = balls[j];
         if (!q.alive) continue;
         const dx = q.x - p.x, dy = q.y - p.y;
-        const d = Math.hypot(dx, dy) || 0.001;
+        const d = hypot(dx, dy) || 0.001;
         const overlap = p.r + q.r - d;
         if (overlap <= 0) continue;
         const nx = dx / d, ny = dy / d;
@@ -347,13 +348,13 @@ export class World {
     // sword blades cut whatever they sweep through
     for (const p of balls) {
       if (!p.alive || p.kind !== "sword" || p.plain) continue;
-      const ux = Math.cos(p.angle), uy = Math.sin(p.angle);
+      const ux = cos(p.angle), uy = sin(p.angle);
       const x0 = p.x + ux * p.r, y0 = p.y + uy * p.r;
       for (const o of balls) {
         if (!o.alive || o.team === p.team || o.fresh > now) continue;
         const along = Math.max(0, Math.min(p.blade, (o.x - x0) * ux + (o.y - y0) * uy));
         const px = x0 + ux * along, py = y0 + uy * along;
-        if (Math.hypot(o.x - px, o.y - py) > o.r || !this.ready(`c${p.id}-${o.id}`, now, CUT_GAP)) continue;
+        if (hypot(o.x - px, o.y - py) > o.r || !this.ready(`c${p.id}-${o.id}`, now, CUT_GAP)) continue;
         const dmg = 3 * this.power(p.team);
         this.events.push({ f, type: "cut", x: px, y: py, dmg, to: o.team });
         this.hurt(o, dmg, f);
@@ -364,7 +365,7 @@ export class World {
     // every ball keeps its own speed, whatever it bounced off
     for (const p of balls) {
       if (!p.alive) continue;
-      const v = Math.hypot(p.vx, p.vy) || 1;
+      const v = hypot(p.vx, p.vy) || 1;
       p.vx = (p.vx / v) * p.speed;
       p.vy = (p.vy / v) * p.speed;
     }

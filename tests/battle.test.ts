@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { ABILITY_IDS, fib } from "@/lib/battle/abilities";
 import { arenaAt, ARENA, FPS, SHRINK_TO, simulate, SUDDEN_DEATH } from "@/lib/battle/sim";
@@ -14,6 +15,20 @@ describe("the fight", () => {
     expect(b.frames[a.endFrame]).toEqual(a.frames[a.endFrame]);
     expect(simulate("fibonacci", "spike", 8).events).not.toEqual(a.events);
   });
+
+  // Shorts already made, and the live preview, depend on every fight staying
+  // exactly as it was. This changes only if the simulation does; if it has
+  // to, every video made before the change will play differently.
+  it("is still exactly the fight it always was, for every matchup", () => {
+    const h = createHash("sha256");
+    for (const a of ABILITY_IDS) {
+      for (const b of ABILITY_IDS) {
+        if (a === b) continue;
+        for (const seed of [1, 2, 3, 4, 32, 66, 98]) h.update(JSON.stringify(simulate(a, b, seed)));
+      }
+    }
+    expect(h.digest("hex")).toBe("7033c6cb4fcab19a6aad1d96b36f1869ec009c4c8867b5ef53667d5072e34fe1");
+  }, 30_000);
 
   it("ends with a winner, inside the arena, never in the first few seconds", () => {
     for (const x of ABILITY_IDS) {
