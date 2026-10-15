@@ -14,6 +14,8 @@ create table public.profiles (
   email text,
   name text,
   goal text check (goal in ('shorts', 'live', 'both')),
+  -- for posting times and "today"; set from the browser at sign-up
+  timezone text not null default 'UTC',
   onboarded_at timestamptz,
   created_at timestamptz not null default now()
 );
@@ -128,17 +130,22 @@ create table public.videos (
   why jsonb not null default '[]'::jsonb,
   status text not null default 'review'
     check (status in ('review', 'rejected', 'approved', 'rendering', 'ready', 'scheduled', 'posted', 'failed')),
+  -- a day's Shorts, or one made to replace a Short someone swiped away
+  origin text not null default 'daily' check (origin in ('daily', 'replacement')),
   suggested_for timestamptz,
   scheduled_for timestamptz,
   file_path text,
   youtube_id text,
   tiktok_publish_id text,
   error text,
+  -- set while something is uploading it, so two posters never post it twice
+  posting_at timestamptz,
   created_at timestamptz not null default now(),
   decided_at timestamptz,
   posted_at timestamptz
 );
 create index videos_user_status on public.videos (user_id, status, created_at desc);
+create index videos_user_created on public.videos (user_id, created_at desc);
 
 create table public.render_jobs (
   id bigserial primary key,
@@ -153,6 +160,8 @@ create table public.render_jobs (
   finished_at timestamptz
 );
 create index render_jobs_queue on public.render_jobs (status, priority desc, created_at);
+-- one job at a time per video
+create unique index render_jobs_live on public.render_jobs (video_id) where status in ('queued', 'running');
 
 create table public.video_stats (
   video_id uuid not null references public.videos (id) on delete cascade,

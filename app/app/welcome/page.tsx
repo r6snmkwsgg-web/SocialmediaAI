@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Wordmark } from "@/components/brand";
+import { TimezoneField } from "@/components/app/client-bits";
 import { ConnectList } from "@/components/app/connect";
 import { button } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
@@ -37,6 +38,7 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
           <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.2em] text-muted">Takes under a minute</p>
           <h1 id="goal" className="font-display text-[clamp(2.6rem,7vw,4.4rem)] uppercase leading-[0.92]">What do you want Hookline to do?</h1>
           <form action={pickGoal} className="mt-8 flex flex-col gap-3">
+            <TimezoneField />
             {GOALS.map((g) => (
               <button
                 key={g.id}

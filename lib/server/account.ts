@@ -14,7 +14,7 @@ import { asUser } from "./db";
 
 export type { Goal };
 
-export type Profile = { name: string | null; goal: Goal | null; onboardedAt: Date | null };
+export type Profile = { name: string | null; goal: Goal | null; timezone: string; onboardedAt: Date | null };
 
 export type Account = User & { profile: Profile; billing: Billing; plan: Plan };
 
@@ -25,8 +25,8 @@ export const account = cache(async (): Promise<Account> => {
 });
 
 async function profileOf(userId: string): Promise<Profile> {
-  const rows = await asUser(userId, (tx) => tx<{ name: string | null; goal: Goal | null; onboarded_at: Date | null }[]>`
-    select name, goal, onboarded_at from public.profiles where id = ${userId}`);
+  const rows = await asUser(userId, (tx) => tx<{ name: string | null; goal: Goal | null; timezone: string; onboarded_at: Date | null }[]>`
+    select name, goal, timezone, onboarded_at from public.profiles where id = ${userId}`);
   const r = rows[0];
-  return { name: r?.name ?? null, goal: r?.goal ?? null, onboardedAt: r?.onboarded_at ?? null };
+  return { name: r?.name ?? null, goal: r?.goal ?? null, timezone: r?.timezone ?? "UTC", onboardedAt: r?.onboarded_at ?? null };
 }

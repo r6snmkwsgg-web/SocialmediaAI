@@ -32,6 +32,8 @@ const schema = z.object({
   STRIPE_PRICE_CREATOR_YEAR: optional,
 
   ANTHROPIC_API_KEY: optional,
+  /** the Claude model that writes titles (see README) */
+  ANTHROPIC_MODEL: optional,
 
   GOOGLE_CLIENT_ID: optional,
   GOOGLE_CLIENT_SECRET: optional,
@@ -61,7 +63,7 @@ export function configured() {
     supabase: !!(e.NEXT_PUBLIC_SUPABASE_URL && e.NEXT_PUBLIC_SUPABASE_ANON_KEY),
     storage: !!(e.NEXT_PUBLIC_SUPABASE_URL && e.SUPABASE_SERVICE_ROLE_KEY),
     stripe: !!(e.STRIPE_SECRET_KEY && e.STRIPE_PRICE_PRO_MONTH),
-    claude: !!e.ANTHROPIC_API_KEY,
+    claude: !!(e.ANTHROPIC_API_KEY && e.ANTHROPIC_MODEL),
     youtube: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET),
     youtubeTrends: !!e.YOUTUBE_API_KEY,
     tiktok: !!(e.TIKTOK_CLIENT_KEY && e.TIKTOK_CLIENT_SECRET),

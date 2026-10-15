@@ -13,7 +13,10 @@
     "live:bridge": "tsx bridge/main.mts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
     "bridge:build": "tsx scripts/build-bridge.mts",
-    "db:migrate": "tsx scripts/db.mts"
+    "db:migrate": "tsx scripts/db.mts",
+    "worker": "tsx worker/main.ts",
+    "data": "tsx scripts/fetch-data.mts",
+    "stills": "tsx scripts/stills.ts"
   },
   "packageManager": "pnpm@10.33.0",
   "dependencies": {

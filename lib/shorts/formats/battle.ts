@@ -1,0 +1,44 @@
+import { ABILITIES, ABILITY_IDS, type AbilityId } from "../../battle/abilities";
+import { pickBattle } from "../../battle/drama";
+import type { Candidate, Context } from "../types";
+
+/** Ball battles: two abilities, one arena, a real fight. The most dramatic of many runs is the one that's posted. */
+
+export const matchupId = (a: AbilityId, b: AbilityId) => `battle:${[a, b].sort().join(":")}`;
+
+export function proposeBattle(ctx: Context, matchups = 6, runs = 40): Candidate | null {
+  const pairs: [AbilityId, AbilityId][] = [];
+  for (let i = 0; i < ABILITY_IDS.length; i++) for (let j = i + 1; j < ABILITY_IDS.length; j++) pairs.push([ABILITY_IDS[i], ABILITY_IDS[j]]);
+  const fresh = pairs.filter(([a, b]) => !ctx.used.has(matchupId(a, b)));
+  if (!fresh.length) return null;
+  for (let i = fresh.length - 1; i > 0; i--) {
+    const j = Math.floor(ctx.rand() * (i + 1));
+    [fresh[i], fresh[j]] = [fresh[j], fresh[i]];
+  }
+  let best: ReturnType<typeof pickBattle> | null = null;
+  for (const [x, y] of fresh.slice(0, matchups)) {
+    const [a, b] = ctx.rand() < 0.5 ? [x, y] : [y, x];
+    const got = pickBattle(a, b, runs, 1 + Math.floor(ctx.rand() * 1_000_000));
+    if (!best || got.drama.score > best.drama.score) best = got;
+  }
+  const { battle, drama: d } = best!;
+  const A = ABILITIES[battle.a], B = ABILITIES[battle.b];
+  const tried = Math.min(matchups, fresh.length) * runs;
+  return {
+    format: "battle",
+    params: { a: battle.a, b: battle.b, seed: battle.seed },
+    key: matchupId(battle.a, battle.b),
+    score: d.score,
+    why: [
+      `The best of ${tried} fights: ${d.leadChanges} lead change${d.leadChanges === 1 ? "" : "s"}${d.comeback ? " and a comeback" : ""}, over in ${Math.round(d.seconds)} seconds`,
+      `${A.name} vs ${B.name} hasn't been on your channel before`,
+    ],
+    facts: [
+      "A ball battle Short: two balls with different powers bounce around an arena and fight until one is knocked out. It's a real physics simulation; nobody picks the winner.",
+      `${A.name}: ${A.line} ${B.name}: ${B.line}`,
+      `${d.leadChanges} lead changes${d.comeback ? ", and the winner comes back from well behind" : ""}. Don't say who wins.`,
+      "It ends asking viewers to comment who they picked.",
+    ],
+    title: `${A.name} vs ${B.name}: who wins?`,
+  };
+}

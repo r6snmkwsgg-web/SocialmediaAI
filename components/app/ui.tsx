@@ -26,12 +26,12 @@ export function PageHead({ eyebrow, title, line, action }: { eyebrow?: string; t
 }
 
 export function Card({ children, className = "", as: Tag = "section" }: { children: React.ReactNode; className?: string; as?: "section" | "div" | "li" | "article" }) {
-  return <Tag className={`border-2 border-edge bg-card ${className}`}>{children}</Tag>;
+  return <Tag className={`min-w-0 border-2 border-edge bg-card ${className}`}>{children}</Tag>;
 }
 
 export function CardHead({ title, action }: { title: string; action?: React.ReactNode }) {
   return (
-    <div className="flex items-center justify-between gap-3 border-b-2 border-edge px-5 py-3">
+    <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b-2 border-edge px-5 py-3">
       <h2 className="font-display text-xl uppercase tracking-wide">{title}</h2>
       {action}
     </div>

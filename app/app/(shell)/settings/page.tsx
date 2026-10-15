@@ -11,12 +11,21 @@ export const metadata: Metadata = { title: "Settings" };
 
 const NOTES: Record<string, { text: string; bad?: boolean }> = {
   saved: { text: "Saved." },
+  youtube: { text: "YouTube is connected. Shorts you approve can post themselves now." },
+  tiktok: { text: "TikTok is connected." },
+  channels: { text: "Your plan has room for one channel on each platform. Creator has room for five.", bad: true },
+  connect: { text: "That didn't connect. Try again, and allow everything Hookline asks for.", bad: true },
+  denied: { text: "Nothing was connected: the permission was turned down.", bad: true },
+  nochannel: { text: "That Google account has no YouTube channel yet. Make one on YouTube, then connect again.", bad: true },
+  setup: { text: "Connecting accounts isn't set up on this Hookline yet.", bad: true },
   disconnected: { text: "Disconnected. Hookline can't post there or read it any more." },
   profile: { text: "That didn't save. Check the name is under 40 characters.", bad: true },
   confirm: { text: "Type DELETE to confirm, then press the button again.", bad: true },
   cancel: { text: "Your subscription couldn't be cancelled, so nothing was deleted. Try again, or cancel it in Plan & billing first.", bad: true },
   delete: { text: "The account couldn't be deleted. Try again in a minute.", bad: true },
 };
+
+const ZONES = ["UTC", ...Intl.supportedValuesOf("timeZone").filter((z) => z !== "UTC")];
 
 const field = "w-full border-2 border-edge-strong bg-surface px-3.5 py-2.5 text-base text-fg focus:border-fg focus:outline-none";
 
@@ -27,7 +36,8 @@ export default async function Settings({ searchParams }: { searchParams: Search 
   const q = await searchParams;
   const channels = await channelsOf(me.id);
   const c = configured();
-  const key = ["saved", "disconnected"].find((k) => q[k] === "1") ?? (typeof q.error === "string" ? q.error : undefined);
+  const key =
+    ["saved", "disconnected"].find((k) => q[k] === "1") ?? (typeof q.connected === "string" ? q.connected : undefined) ?? (typeof q.error === "string" ? q.error : undefined);
   const note = key ? NOTES[key] : undefined;
 
   return (
@@ -58,6 +68,12 @@ export default async function Settings({ searchParams }: { searchParams: Search 
                 <option value="shorts">Shorts</option>
                 <option value="live">LIVE games</option>
                 <option value="both">Both</option>
+              </select>
+            </label>
+            <label className="flex flex-col gap-2 sm:col-span-2">
+              <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Time zone: when your Shorts post, and what &ldquo;today&rdquo; means</span>
+              <select name="timezone" defaultValue={me.profile.timezone} className={`${field} sm:max-w-md`}>
+                {ZONES.map((z) => <option key={z} value={z}>{z.replace(/_/g, " ")}</option>)}
               </select>
             </label>
             <div className="sm:col-span-2">

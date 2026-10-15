@@ -2,6 +2,7 @@
 import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser } from "@/lib/server/auth";
+import { validTimezone } from "@/lib/shorts/times";
 import { asUser } from "@/lib/server/db";
 
 const goal = z.enum(["shorts", "live", "both"]);
@@ -10,9 +11,10 @@ export async function pickGoal(form: FormData) {
   const me = await requireUser();
   const g = goal.safeParse(form.get("goal"));
   if (!g.success) redirect("/app/welcome");
+  const tz = validTimezone(String(form.get("tz") ?? ""));
   await asUser(me.id, (tx) => tx`
-    insert into public.profiles (id, email, goal) values (${me.id}, ${me.email}, ${g.data})
-    on conflict (id) do update set goal = excluded.goal`);
+    insert into public.profiles (id, email, goal, timezone) values (${me.id}, ${me.email}, ${g.data}, ${tz})
+    on conflict (id) do update set goal = excluded.goal, timezone = case when excluded.timezone = 'UTC' then profiles.timezone else excluded.timezone end`);
   redirect("/app/welcome?step=connect");
 }
 

@@ -1,6 +1,6 @@
 import "server-only";
 import { createServerClient } from "@supabase/ssr";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { cookies } from "next/headers";
 import { env } from "./env";
 
@@ -29,9 +29,4 @@ export async function supabase(): Promise<SupabaseClient> {
   });
 }
 
-/** Supabase as the server, for storage: never sent to a browser. */
-export function supabaseAdmin(): SupabaseClient {
-  const e = env();
-  if (!e.NEXT_PUBLIC_SUPABASE_URL || !e.SUPABASE_SERVICE_ROLE_KEY) throw new Error("Supabase storage isn't set up.");
-  return createClient(e.NEXT_PUBLIC_SUPABASE_URL, e.SUPABASE_SERVICE_ROLE_KEY, { auth: { persistSession: false, autoRefreshToken: false } });
-}
+export { supabaseAdmin } from "./supabase-admin";

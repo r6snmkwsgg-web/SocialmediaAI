@@ -38,3 +38,19 @@ export async function asUser<T>(userId: string, fn: (tx: Tx) => Promise<T>): Pro
 export async function admin<T>(fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(fn) as Promise<T>;
 }
+
+/**
+ * Runs `fn` while holding a lock named after a user, so two requests
+ * can't both do something that should happen once (like making today's
+ * Shorts). The second waits for the first.
+ */
+export async function withUserLock<T>(userId: string, fn: () => Promise<T>): Promise<T> {
+  const conn = await sql().reserve();
+  try {
+    await conn`select pg_advisory_lock(hashtext(${`user:${userId}`}))`;
+    return await fn();
+  } finally {
+    await conn`select pg_advisory_unlock(hashtext(${`user:${userId}`}))`.catch(() => {});
+    conn.release();
+  }
+}

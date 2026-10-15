@@ -6,18 +6,21 @@ import { requireUser, signOut } from "@/lib/server/auth";
 import { stripe } from "@/lib/server/billing";
 import { admin, asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
-import { supabaseAdmin } from "@/lib/server/supabase";
+import { removeVideos } from "@/lib/server/storage";
+import { supabaseAdmin } from "@/lib/server/supabase-admin";
+import { validTimezone } from "@/lib/shorts/times";
 
 const profile = z.object({
   name: z.string().trim().max(40).transform((s) => s || null),
   goal: z.enum(["shorts", "live", "both"]),
+  timezone: z.string().refine((t) => validTimezone(t) === t),
 });
 
 export async function saveProfile(form: FormData) {
   const me = await requireUser();
-  const p = profile.safeParse({ name: form.get("name") ?? "", goal: form.get("goal") });
+  const p = profile.safeParse({ name: form.get("name") ?? "", goal: form.get("goal"), timezone: form.get("timezone") ?? "UTC" });
   if (!p.success) redirect("/app/settings?error=profile");
-  await asUser(me.id, (tx) => tx`update public.profiles set name = ${p.data.name}, goal = ${p.data.goal} where id = ${me.id}`);
+  await asUser(me.id, (tx) => tx`update public.profiles set name = ${p.data.name}, goal = ${p.data.goal}, timezone = ${p.data.timezone} where id = ${me.id}`);
   revalidatePath("/app", "layout");
   redirect("/app/settings?saved=1");
 }
@@ -50,6 +53,7 @@ export async function deleteAccount(form: FormData) {
       redirect("/app/settings?error=cancel#delete");
     }
   }
+  await removeVideos(me.id).catch(() => {});
   if (configured().storage) {
     const { error } = await supabaseAdmin().auth.admin.deleteUser(me.id);
     if (error) redirect("/app/settings?error=delete#delete");
