@@ -1,6 +1,7 @@
 import "server-only";
 import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
+import { connection } from "next/server";
 import { cache } from "react";
 import { sign, unsign } from "./crypto";
 import { admin } from "./db";
@@ -19,6 +20,8 @@ export type User = { id: string; email: string };
 const DEV_COOKIE = "hl_dev";
 
 export const currentUser = cache(async (): Promise<User | null> => {
+  // always this request's answer: never worked out once when the site is built
+  await connection();
   if (configured().supabase) {
     const { data } = await (await supabase()).auth.getUser();
     return data.user ? { id: data.user.id, email: data.user.email ?? "" } : null;
