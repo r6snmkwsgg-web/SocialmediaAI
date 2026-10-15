@@ -18,16 +18,18 @@ const id = z.uuid();
  * Right or left on a Short. Left makes a new one in its place, while the
  * day's replacements last. A right can carry the creator's TikTok choices.
  */
-export async function decide(videoId: string, yes: boolean, tiktok?: unknown): Promise<{ ok: boolean; replaced?: boolean }> {
+export async function decide(videoId: string, yes: boolean, tiktok?: unknown): Promise<{ ok: boolean; replaced?: boolean; at?: string | null }> {
   const me = await requireUser();
   if (!id.safeParse(videoId).success) return { ok: false };
   if (yes) {
     const choices = tiktok == null ? null : tiktokChoices.safeParse(tiktok);
     if (choices && !choices.success) return { ok: false };
     const ok = await approve(me.id, videoId, (await billingFor(me.id)).plan, new Date(), choices?.data ?? null);
+    // when it'll post, for the toast that says so
+    const [v] = ok ? await asUser(me.id, (tx) => tx<{ scheduled_for: Date | null }[]>`select scheduled_for from public.videos where id = ${videoId}`) : [];
     revalidatePath("/app/shorts");
     revalidatePath("/app");
-    return { ok };
+    return { ok, at: v?.scheduled_for?.toISOString() ?? null };
   }
   const ok = await reject(me.id, videoId);
   const replaced = ok ? (await makeShorts(me.id, { origin: "replacement" })) > 0 : false;

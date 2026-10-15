@@ -18,6 +18,7 @@
     "data": "tsx scripts/fetch-data.mts",
     "stills": "tsx scripts/stills.ts",
     "og": "tsx scripts/og.ts",
+    "icons": "tsx scripts/icons.ts",
     "screens": "tsx scripts/screens.ts"
   },
   "packageManager": "pnpm@10.33.0",

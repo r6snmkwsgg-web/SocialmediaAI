@@ -1,6 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useEffect, useId, useState, useTransition } from "react";
+import { toast } from "@/components/app/toast";
 import { button } from "@/components/app/ui";
 import { Phone } from "@/components/phone";
 import { labelOf, POLICIES, PRIVACY_LABEL, problemWith, type Creator, type Privacy, type TikTokChoices } from "@/lib/shorts/tiktok";
@@ -235,6 +236,7 @@ export function TikTokLater({ id, spec, seconds, tag, label, load, choose }: {
             start(async () => {
               const r = await choose(id, c);
               if (!r.ok) return setFailed(true);
+              toast("Going to TikTok too", "good");
               setOpen(false);
               router.refresh();
             })

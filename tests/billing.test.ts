@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { checklist, nextStep, type Facts } from "@/lib/app/checklist";
+import { score } from "@/lib/app/search";
 import { PLANS, yearSaving } from "@/lib/billing/plans";
 import { HANDLED, planNote, subscriptionRow, type PriceMap, type SubLike } from "@/lib/billing/webhook";
 
@@ -84,7 +85,7 @@ describe("what someone's told when their plan changes", () => {
 
   it("says the plan they're on, once per state, so a renewal says nothing new", () => {
     expect(note({})).toMatchObject({ kind: "plan", title: "You're on Pro" });
-    expect(note({}).key).toBe(note({ end: 1_900_000_000 }).key);
+    expect(note({})?.key).toBe(note({ end: 1_900_000_000 })?.key);
     expect(note({ price: "price_cr_m" })?.title).toBe("You're on Creator");
   });
 
@@ -114,5 +115,27 @@ describe("Home's setup list", () => {
     expect(steps[0].done).toBe(true);
     expect(nextStep(steps)?.id).toBe("wentLive");
     expect(nextStep(checklist("both", { youtube: true, swiped: true, posted: true, liveSetUp: true, wentLive: true, goal: true }))).toBeNull();
+  });
+});
+
+describe("the command palette's search", () => {
+  const earnings = { label: "Earnings", words: "money revenue stripe goals views" };
+  const live = { label: "Live: your game", words: "tiktok live game gifts obs overlay stream" };
+
+  it("finds a command by its name or the other words people use for it", () => {
+    expect(score(earnings, "earn")).toBeGreaterThan(0);
+    expect(score(earnings, "money")).toBeGreaterThan(0);
+    expect(score(live, "obs")).toBeGreaterThan(0);
+    expect(score(live, "money")).toBe(0);
+  });
+
+  it("needs every word typed, and ranks a hit in the name above one in the other words", () => {
+    expect(score(live, "tiktok gifts")).toBeGreaterThan(0);
+    expect(score(live, "tiktok money")).toBe(0);
+    expect(score(live, "live")).toBeGreaterThan(score(earnings, "views"));
+  });
+
+  it("shows everything when nothing's typed", () => {
+    expect(score(earnings, "  ")).toBe(1);
   });
 });

@@ -14,6 +14,8 @@ export const metadata: Metadata = {
   description: "Shorts made and posted for you, games your TikTok LIVE chat plays with gifts, what's rising on Shorts, and what you earned, in one place.",
   openGraph: { type: "website", siteName: "Hookline", images: ["/og/home.png"] },
   twitter: { card: "summary_large_image" },
+  // added to an iPhone's home screen, it opens like an app
+  appleWebApp: { capable: true, title: "Hookline", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = { themeColor: "#0b0b0c" };

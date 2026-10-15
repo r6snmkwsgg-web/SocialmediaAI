@@ -2,22 +2,17 @@
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { Icons } from "./icons";
+import { applyTheme, type Theme } from "./theme";
 
-type Theme = "system" | "light" | "dark";
-
-/** Light, dark, or whatever the device does: saved in a cookie so the next page loads right. */
+/** The theme as picked here or anywhere else (the command palette can change it too). */
 function useTheme(initial: Theme): [Theme, (t: Theme) => void] {
   const [theme, setTheme] = useState<Theme>(initial);
-  const set = (t: Theme) => {
-    setTheme(t);
-    const el = document.querySelector<HTMLElement>(".app");
-    if (el) {
-      if (t === "system") delete el.dataset.theme;
-      else el.dataset.theme = t;
-    }
-    document.cookie = `hl_theme=${t}; path=/; max-age=31536000; samesite=lax`;
-  };
-  return [theme, set];
+  useEffect(() => {
+    const heard = (e: Event) => setTheme((e as CustomEvent<Theme>).detail);
+    window.addEventListener("hl:theme", heard);
+    return () => window.removeEventListener("hl:theme", heard);
+  }, []);
+  return [theme, applyTheme];
 }
 
 /**

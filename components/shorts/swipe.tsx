@@ -8,6 +8,7 @@ import { button, Pill } from "@/components/app/ui";
 import type { TikTokChoices } from "@/lib/shorts/tiktok";
 import { seconds } from "@/lib/shorts/timing";
 import type { Spec } from "@/lib/shorts/types";
+import { toast } from "@/components/app/toast";
 import { ShortPlayer } from "./player";
 import { TikTokChoicesForm, type CreatorResult } from "./tiktok";
 
@@ -20,7 +21,7 @@ type Props = {
   schedules: boolean;
   /** set when approved Shorts also go straight to TikTok: asks TikTok about the account */
   creator?: () => Promise<CreatorResult>;
-  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null) => Promise<{ ok: boolean; replaced?: boolean }>;
+  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null }>;
   edit: (id: string, title: string, description: string) => Promise<{ ok: boolean; message?: string }>;
 };
 
@@ -53,7 +54,11 @@ export function SwipeQueue({ items, tag, schedules, creator, decide, edit }: Pro
       setList((l) => l.filter((x) => x.id !== id));
       setDx(0);
       start(async () => {
-        await decide(id, yes, tiktok);
+        const r = await decide(id, yes, tiktok);
+        if (!r.ok) toast("That didn't save. Try again.", "bad");
+        else if (!yes) toast(r.replaced ? "Skipped. A different one is on its way." : "Skipped.");
+        else if (r.at) toast(`Posting ${new Date(r.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`, "good");
+        else toast("Kept. It's being made into a video now.", "good");
         router.refresh();
       });
     },
@@ -230,6 +235,7 @@ function EditCopy({ card, onDone, edit }: { card: QueueCard; onDone: () => void;
           const r = await edit(card.id, title, description);
           if (!r.ok) setMsg(r.message ?? "That didn't save.");
           else {
+            toast("Title saved", "good");
             onDone();
             router.refresh();
           }

@@ -6,6 +6,8 @@ import { AccountMenu } from "@/components/app/account-menu";
 import { Bell } from "@/components/app/bell";
 import { SectionName, SideNav, TabBar } from "@/components/app/nav";
 import { toView } from "@/components/app/notes";
+import { Palette, PaletteButton } from "@/components/app/palette";
+import { Toaster } from "@/components/app/toast";
 import { PLANS } from "@/lib/billing/plans";
 import { account } from "@/lib/server/account";
 import { notificationsOf } from "@/lib/server/notify";
@@ -52,6 +54,7 @@ export default async function Shell({ children }: { children: React.ReactNode })
             <SectionName />
           </div>
           <div className="flex items-center gap-3">
+            <PaletteButton />
             <Bell items={notes.items.map(toView)} unread={notes.unread} seen={seenAll} />
             <AccountMenu email={me.email} plan={me.plan.name} theme={theme} />
           </div>
@@ -61,6 +64,8 @@ export default async function Shell({ children }: { children: React.ReactNode })
         </main>
       </div>
       <TabBar />
+      <Palette />
+      <Toaster />
     </div>
   );
 }

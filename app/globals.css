@@ -119,3 +119,10 @@ body { background: var(--color-ink); color: var(--color-paper); -webkit-font-smo
 @media (prefers-reduced-motion: reduce) {
   .skeleton { animation: none; }
 }
+
+/* toasts rise in; with reduced motion they just appear */
+@keyframes toast-in { from { opacity: 0; transform: translateY(8px); } }
+.toast-in { animation: toast-in 180ms ease-out; }
+@media (prefers-reduced-motion: reduce) {
+  .toast-in { animation: none; }
+}
