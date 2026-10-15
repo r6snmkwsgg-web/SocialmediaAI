@@ -53,3 +53,67 @@ body { background: var(--color-ink); color: var(--color-paper); -webkit-font-smo
 @media (prefers-reduced-motion: reduce) {
   .animate-ticker { animation: none; }
 }
+
+/*
+ * The app's own surfaces, light or dark. The marketing site is dark by
+ * design; inside the app, people pick (or follow their system). Set on the
+ * app's outer element; data-theme="light" or "dark" overrides the system.
+ */
+.app {
+  --bg: #f4f1ea;
+  --fg: #0b0b0c;
+  --card: #fbfaf6;
+  --card-2: #ebe6da;
+  --edge: rgba(11, 11, 12, 0.12);
+  --edge-strong: rgba(11, 11, 12, 0.32);
+  --muted: #66635d;
+  color-scheme: light;
+  background: var(--bg);
+  color: var(--fg);
+}
+@media (prefers-color-scheme: dark) {
+  .app:not([data-theme="light"]) {
+    --bg: #0b0b0c;
+    --fg: #f4f1ea;
+    --card: #141416;
+    --card-2: #1d1d20;
+    --edge: rgba(244, 241, 234, 0.12);
+    --edge-strong: rgba(244, 241, 234, 0.32);
+    --muted: #8d8a83;
+    color-scheme: dark;
+  }
+}
+.app[data-theme="dark"] {
+  --bg: #0b0b0c;
+  --fg: #f4f1ea;
+  --card: #141416;
+  --card-2: #1d1d20;
+  --edge: rgba(244, 241, 234, 0.12);
+  --edge-strong: rgba(244, 241, 234, 0.32);
+  --muted: #8d8a83;
+  color-scheme: dark;
+}
+
+@theme inline {
+  --color-surface: var(--bg);
+  --color-fg: var(--fg);
+  --color-card: var(--card);
+  --color-card-2: var(--card-2);
+  --color-edge: var(--edge);
+  --color-edge-strong: var(--edge-strong);
+  --color-muted: var(--muted);
+}
+
+/* keyboard focus you can always see, in either theme */
+.app :focus-visible { outline: 3px solid var(--color-signal); outline-offset: 2px; }
+
+@keyframes shimmer { to { background-position: -200% 0; } }
+/* a loading block that breathes, for skeletons */
+.skeleton {
+  background: linear-gradient(90deg, var(--card-2) 0%, var(--card) 50%, var(--card-2) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 1.4s linear infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton { animation: none; }
+}

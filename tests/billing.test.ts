@@ -1,0 +1,97 @@
+import { describe, expect, it } from "vitest";
+import { checklist, nextStep, type Facts } from "@/lib/app/checklist";
+import { PLANS, yearSaving } from "@/lib/billing/plans";
+import { HANDLED, subscriptionRow, type PriceMap, type SubLike } from "@/lib/billing/webhook";
+
+const prices: PriceMap = {
+  price_pro_m: { plan: "pro", interval: "month" },
+  price_pro_y: { plan: "pro", interval: "year" },
+  price_cr_m: { plan: "creator", interval: "month" },
+};
+
+function sub(over: Partial<SubLike> & { price?: string; end?: number } = {}): SubLike {
+  const { price = "price_pro_m", end = 1_800_000_000, ...rest } = over;
+  return {
+    id: "sub_1",
+    customer: "cus_1",
+    status: "active",
+    cancel_at_period_end: false,
+    items: { data: [{ price: { id: price }, current_period_end: end }] },
+    ...rest,
+  };
+}
+
+describe("plans", () => {
+  it("a year is two months free", () => {
+    expect(yearSaving(PLANS.pro)).toBe(PLANS.pro.price.month * 2);
+    expect(yearSaving(PLANS.creator)).toBe(PLANS.creator.price.month * 2);
+  });
+
+  it("free gets the battle with the tag; paid plans get every game without it", () => {
+    expect(PLANS.free.games).toEqual(["battle"]);
+    expect(PLANS.free.tag).toBe(true);
+    for (const p of [PLANS.pro, PLANS.creator]) {
+      expect(p.games).toEqual(["battle", "race", "royale"]);
+      expect(p.tag).toBe(false);
+      expect(p.scheduling).toBe(true);
+    }
+    expect(PLANS.creator.customMenus).toBe(true);
+    expect(PLANS.pro.customMenus).toBe(false);
+  });
+});
+
+describe("what a Stripe subscription means", () => {
+  it("an active subscription to a known price gets that plan", () => {
+    const r = subscriptionRow(sub(), prices);
+    expect(r).toMatchObject({ plan: "pro", interval: "month", status: "active", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1", cancel_at_period_end: false });
+    expect(r.current_period_end?.toISOString()).toBe(new Date(1_800_000_000 * 1000).toISOString());
+  });
+
+  it("trialing and a failed card still keep the plan while Stripe retries", () => {
+    expect(subscriptionRow(sub({ status: "trialing" }), prices).plan).toBe("pro");
+    expect(subscriptionRow(sub({ status: "past_due" }), prices).plan).toBe("pro");
+  });
+
+  it("cancelled, unpaid or unfinished subscriptions drop to free", () => {
+    for (const status of ["canceled", "unpaid", "incomplete", "incomplete_expired", "paused"]) {
+      expect(subscriptionRow(sub({ status }), prices).plan).toBe("free");
+    }
+  });
+
+  it("a price that isn't one of ours never grants a plan", () => {
+    const r = subscriptionRow(sub({ price: "price_someone_else" }), prices);
+    expect(r.plan).toBe("free");
+    expect(r.interval).toBeNull();
+  });
+
+  it("reads the customer whether Stripe sends an id or the whole customer", () => {
+    expect(subscriptionRow(sub({ customer: { id: "cus_obj" } }), prices).stripe_customer_id).toBe("cus_obj");
+  });
+
+  it("knows a cancellation at the end of the period, and the yearly interval", () => {
+    const r = subscriptionRow(sub({ price: "price_pro_y", cancel_at_period_end: true }), prices);
+    expect(r).toMatchObject({ plan: "pro", interval: "year", cancel_at_period_end: true });
+  });
+
+  it("only listens for the events that change a subscription", () => {
+    expect(HANDLED.has("customer.subscription.updated")).toBe(true);
+    expect(HANDLED.has("invoice.paid")).toBe(false);
+  });
+});
+
+describe("Home's setup list", () => {
+  const none: Facts = { youtube: false, swiped: false, posted: false, liveSetUp: false, wentLive: false, goal: false };
+
+  it("puts what they came for first", () => {
+    expect(checklist("shorts", none)[0].id).toBe("youtube");
+    expect(checklist("live", none)[0].id).toBe("liveSetUp");
+    expect(checklist(null, none)).toHaveLength(6);
+  });
+
+  it("the next step is the first one not done, from real data", () => {
+    const steps = checklist("live", { ...none, liveSetUp: true });
+    expect(steps[0].done).toBe(true);
+    expect(nextStep(steps)?.id).toBe("wentLive");
+    expect(nextStep(checklist("both", { youtube: true, swiped: true, posted: true, liveSetUp: true, wentLive: true, goal: true }))).toBeNull();
+  });
+});

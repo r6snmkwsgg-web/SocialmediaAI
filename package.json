@@ -12,18 +12,23 @@
     "render": "tsx scripts/render.ts",
     "live:bridge": "tsx bridge/main.mts",
     "check": "pnpm typecheck && pnpm lint && pnpm test && pnpm build",
-    "bridge:build": "tsx scripts/build-bridge.mts"
+    "bridge:build": "tsx scripts/build-bridge.mts",
+    "db:migrate": "tsx scripts/db.mts"
   },
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
     "@anthropic-ai/sdk": "0.132.0",
     "@remotion/fonts": "4.0.531",
     "@remotion/player": "4.0.531",
+    "@supabase/ssr": "0.12.7",
+    "@supabase/supabase-js": "2.117.3",
     "next": "15.5.25",
+    "postgres": "3.4.9",
     "react": "19.3.0",
     "react-dom": "19.3.0",
     "remotion": "4.0.531",
     "server-only": "0.0.1",
+    "stripe": "23.0.0",
     "zod": "4.6.5"
   },
   "devDependencies": {

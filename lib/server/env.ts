@@ -1,0 +1,81 @@
+import "server-only";
+import { z } from "zod";
+
+/**
+ * Every setting the server reads, checked once. Each outside service is
+ * optional: when its keys aren't set, the part of the app that needs it
+ * says so plainly instead of breaking, so the app runs with only a
+ * database while the rest gets set up.
+ */
+
+const optional = z.string().trim().min(1).optional().catch(undefined);
+
+const schema = z.object({
+  DATABASE_URL: optional,
+  NEXT_PUBLIC_SITE_URL: optional,
+  /** 32 random bytes, base64: encrypts OAuth tokens and Stripe keys at rest */
+  TOKEN_KEY: optional,
+  /** a secret for the scheduled jobs (Vercel Cron sends it as a bearer token) */
+  CRON_SECRET: optional,
+  /** local development only: sign in without email */
+  HOOKLINE_DEV_LOGIN: optional,
+
+  NEXT_PUBLIC_SUPABASE_URL: optional,
+  NEXT_PUBLIC_SUPABASE_ANON_KEY: optional,
+  SUPABASE_SERVICE_ROLE_KEY: optional,
+
+  STRIPE_SECRET_KEY: optional,
+  STRIPE_WEBHOOK_SECRET: optional,
+  STRIPE_PRICE_PRO_MONTH: optional,
+  STRIPE_PRICE_PRO_YEAR: optional,
+  STRIPE_PRICE_CREATOR_MONTH: optional,
+  STRIPE_PRICE_CREATOR_YEAR: optional,
+
+  ANTHROPIC_API_KEY: optional,
+
+  GOOGLE_CLIENT_ID: optional,
+  GOOGLE_CLIENT_SECRET: optional,
+  /** a YouTube Data API key for the trends job, which reads public videos */
+  YOUTUBE_API_KEY: optional,
+
+  TIKTOK_CLIENT_KEY: optional,
+  TIKTOK_CLIENT_SECRET: optional,
+  /** set once TikTok has approved the app for posting to people's accounts */
+  TIKTOK_POSTING_APPROVED: optional,
+});
+
+export type Env = z.infer<typeof schema>;
+
+let cached: Env | null = null;
+
+export function env(): Env {
+  if (!cached) cached = schema.parse(process.env);
+  return cached;
+}
+
+/** Which outside services are set up, for the screens that depend on them. */
+export function configured() {
+  const e = env();
+  return {
+    db: !!e.DATABASE_URL,
+    supabase: !!(e.NEXT_PUBLIC_SUPABASE_URL && e.NEXT_PUBLIC_SUPABASE_ANON_KEY),
+    storage: !!(e.NEXT_PUBLIC_SUPABASE_URL && e.SUPABASE_SERVICE_ROLE_KEY),
+    stripe: !!(e.STRIPE_SECRET_KEY && e.STRIPE_PRICE_PRO_MONTH),
+    claude: !!e.ANTHROPIC_API_KEY,
+    youtube: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET),
+    youtubeTrends: !!e.YOUTUBE_API_KEY,
+    tiktok: !!(e.TIKTOK_CLIENT_KEY && e.TIKTOK_CLIENT_SECRET),
+    tiktokPosting: e.TIKTOK_POSTING_APPROVED === "1",
+    tokens: !!e.TOKEN_KEY,
+  };
+}
+
+/** Signing in without email: only on a developer's own machine, never in a deploy. */
+export function devLoginOn(): boolean {
+  return process.env.NODE_ENV !== "production" && env().HOOKLINE_DEV_LOGIN === "1";
+}
+
+/** The site's own address, for links in emails and OAuth redirects. */
+export function siteUrl(fallback?: string): string {
+  return (env().NEXT_PUBLIC_SITE_URL ?? fallback ?? "http://localhost:3000").replace(/\/$/, "");
+}
