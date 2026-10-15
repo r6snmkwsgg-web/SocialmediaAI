@@ -74,28 +74,32 @@ export const RIVAL_HEAL: Tier = { effect: "heal", min: 1, name: "+1 HP", gift: "
 export type SideGifts = { red: MenuGift[]; blue: MenuGift[] };
 
 /**
- * Each side's three gifts. Red's are the classics; blue's cost the same
- * where TikTok has a gift at that exact price everywhere (199 and 500),
- * and the nearest everyday one where it doesn't (a Doughnut, 30, against
- * a Perfume, 20). Streamers can swap in their own.
+ * Each side's three gifts: three pairs that cost exactly the same, from
+ * TikTok's regular gifts that anyone can send, so neither side pays more
+ * for the same power. Gifts that some price lists put behind a gifter
+ * level (the Money Gun, the Gem Gun, Confetti) are left out. Streamers can
+ * swap in their own.
  */
 export const DEFAULT_SIDE_GIFTS: SideGifts = {
   red: [
-    { name: "Perfume", coins: 20 },
+    { name: "Paper Crane", coins: 99 },
     { name: "Sunglasses", coins: 199 },
-    { name: "Money Gun", coins: 500 },
+    { name: "Corgi", coins: 299 },
   ],
   blue: [
-    { name: "Doughnut", coins: 30 },
+    { name: "Little Crown", coins: 99 },
     { name: "Hearts", coins: 199 },
-    { name: "Gem Gun", coins: 500 },
+    { name: "Boxing Gloves", coins: 299 },
   ],
 };
+
+/** the same gift, spelled the other ways it turns up */
+const ALIASES: Record<string, string> = { donut: "doughnut", donuts: "doughnut", doughnuts: "doughnut", boxingglove: "boxinggloves", handheart: "handhearts", papercranes: "papercrane" };
 
 /** A gift's name as TikTok might send it, made comparable: case, spaces and punctuation don't count, and a donut is a doughnut. */
 export function giftKey(name: string): string {
   const k = name.toLowerCase().replace(/[^a-z0-9]/g, "");
-  return ({ donut: "doughnut", donuts: "doughnut", doughnuts: "doughnut" } as Record<string, string>)[k] ?? k;
+  return ALIASES[k] ?? k;
 }
 
 /** One side's three powers, each with that side's gift. */

@@ -395,10 +395,10 @@ function SideGiftsField({ own, setOwn, gifts, setGifts, allowed }: {
         {!ok && <p role="alert" className="text-signal">Each side needs three different gifts, each costing more than the one before, and no gift on both sides. Until then, the game uses Hookline&rsquo;s.</p>}
         {gaps.map((x) => (
           <p key={x.power} className="text-muted">
-            {x.power}: red pays {x.red.toLocaleString("en-US")} coins, blue pays {x.blue.toLocaleString("en-US")}.{" "}
-            {edit ? "Gifts at the same price keep it fair." : "TikTok has no second gift at 20 coins that every country gets, so blue's is a Doughnut at 30."}
+            {x.power}: red pays {x.red.toLocaleString("en-US")} coins, blue pays {x.blue.toLocaleString("en-US")}. Gifts at the same price keep it fair.
           </p>
         ))}
+        {!edit && <p className="text-muted">Each pair costs the same, and anyone can send them: none needs a gifter level.</p>}
         {!allowed.customMenus && <p className="text-muted">On {allowed.planName}, each side uses these gifts. Creator lets you pick your own.</p>}
       </div>
     </fieldset>

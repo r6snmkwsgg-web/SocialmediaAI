@@ -275,8 +275,10 @@ export const battleDraw: GameDraw = {
   blastLine(show, b: Blast) {
     const us = b.side === null ? "" : show.teams[b.side].name.toUpperCase();
     const them = b.side === null ? "" : show.teams[1 - b.side].name.toUpperCase();
-    if (b.tier.effect === "rage") return `${us} HITS TWICE AS HARD`;
+    // a side named for many (CELTICS, DOGS) reads as plural: CELTICS HIT, CELTICS' BALL
+    const many = (name: string) => /[^S]S$/.test(name);
+    if (b.tier.effect === "rage") return `${us} ${many(us) ? "HIT" : "HITS"} TWICE AS HARD`;
     if (b.tier.effect === "shield") return `${us} CAN'T BE HURT`;
-    return `ON ${them}'S BIGGEST BALL`;
+    return `ON ${many(them) ? `${them}'` : `${them}'S`} BIGGEST BALL`;
   },
 };

@@ -111,7 +111,7 @@ The bridge only listens, so anyone's LIVE works for the first check.
 3. On `https://<domain>/live`, in the setup: pick Hookline Bridge, type their username and connect. The connection check should list their chats, likes and gifts as they happen.
 4. Open the game from the setup: their gifts and likes should land in the fight.
 5. The full test needs someone who can go LIVE (TikTok asks for 18+ and 1,000 followers in most places): add the game from `/app/live` as a browser source at 1080 × 1920 in TikTok LIVE Studio or OBS, go live, have friends type 1 or 2 and send a Rose, watch the vote between rounds, then end the LIVE and check `/app/live` shows that session's numbers.
-6. Rivals, the same way: pick it in `/app/live` (it needs Pro), then have one friend send a Perfume and another a Doughnut. Each should land on its own side, red and blue, whatever number they typed. If TikTok names a gift differently in your country, change it under "Each side's gifts" (Creator).
+6. Rivals, the same way: pick it in `/app/live` (it needs Pro), then have one friend send a Paper Crane and another a Little Crown (99 coins each). Each should land on its own side, red and blue, whatever number they typed. If TikTok names a gift differently in your country, change it under "Each side's gifts" (Creator).
 
 ## 11. Domain, email and the legal pages
 

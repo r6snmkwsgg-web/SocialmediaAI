@@ -341,12 +341,14 @@ describe("Rivals", () => {
   };
 
   it("knows each side's gifts by name, however TikTok spells them", () => {
-    expect(routeGift(DEFAULT_SIDE_GIFTS, "Perfume")).toMatchObject({ side: 0, tier: { effect: "ball", price: 20 } });
-    expect(routeGift(DEFAULT_SIDE_GIFTS, "money gun")).toMatchObject({ side: 0, tier: { effect: "meteor" } });
-    expect(routeGift(DEFAULT_SIDE_GIFTS, "Gem-Gun")).toMatchObject({ side: 1, tier: { effect: "meteor", gift: "Gem Gun" } });
-    expect(routeGift(DEFAULT_SIDE_GIFTS, "Donut")).toMatchObject({ side: 1, tier: { effect: "ball" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Paper Crane")).toMatchObject({ side: 0, tier: { effect: "ball", price: 99 } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "corgi")).toMatchObject({ side: 0, tier: { effect: "meteor" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Boxing-Gloves")).toMatchObject({ side: 1, tier: { effect: "meteor", gift: "Boxing Gloves" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "Boxing Glove")).toMatchObject({ side: 1, tier: { effect: "meteor" } });
+    expect(routeGift(DEFAULT_SIDE_GIFTS, "LITTLE CROWN")).toMatchObject({ side: 1, tier: { effect: "ball" } });
     expect(routeGift(DEFAULT_SIDE_GIFTS, "Rose")).toBeNull();
-    expect(giftKey(" Hand-Hearts! ")).toBe("handhearts");
+    expect(giftKey(" Hand-Heart! ")).toBe("handhearts");
+    expect(giftKey("Donut")).toBe("doughnut");
   });
 
   it("keeps religion, race, where people are from and who they love out of it", () => {
@@ -365,12 +367,13 @@ describe("Rivals", () => {
 
   it("checks each side's gifts make a fair game", () => {
     expect(validSideGifts(DEFAULT_SIDE_GIFTS)).toBe(true);
-    const red = DEFAULT_SIDE_GIFTS.red;
-    expect(validSideGifts({ red, blue: [{ name: "Perfume", coins: 20 }, ...DEFAULT_SIDE_GIFTS.blue.slice(1)] })).toBe(false);
-    expect(validSideGifts({ red: [red[1], red[0], red[2]], blue: DEFAULT_SIDE_GIFTS.blue })).toBe(false);
-    expect(validSideGifts({ red: red.slice(0, 2), blue: DEFAULT_SIDE_GIFTS.blue })).toBe(false);
-    // the one power that costs one side more, with Hookline's gifts
-    expect(priceGaps(DEFAULT_SIDE_GIFTS)).toEqual([{ power: "Your ball", red: 20, blue: 30 }]);
+    const { red, blue } = DEFAULT_SIDE_GIFTS;
+    expect(validSideGifts({ red, blue: [{ name: "Paper Crane", coins: 99 }, ...blue.slice(1)] })).toBe(false);
+    expect(validSideGifts({ red: [red[1], red[0], red[2]], blue })).toBe(false);
+    expect(validSideGifts({ red: red.slice(0, 2), blue })).toBe(false);
+    // Hookline's cost the same, pair by pair; a streamer's own may not
+    expect(priceGaps(DEFAULT_SIDE_GIFTS)).toEqual([]);
+    expect(priceGaps({ red, blue: [{ name: "Doughnut", coins: 30 }, ...blue.slice(1)] })).toEqual([{ power: "Your ball", red: 99, blue: 30 }]);
   });
 
   it("starts with politics off, drops rivalries it won't run, and keeps a rotation going", () => {
@@ -402,8 +405,8 @@ describe("Rivals", () => {
     const { s, w } = rivals(31);
     toPlay(s);
     s.handle({ kind: "chat", viewer: viewer("a"), text: "2" });
-    // Perfume is red's: it moves them to red and drops their ball in there
-    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
+    // a Paper Crane is red's: it moves them to red and drops their ball in there
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Paper Crane", coins: 99, count: 1 });
     expect(s.sideOf("a")).toBe(0);
     expect(w().balls.find((b) => b.tag?.id === "a")).toMatchObject({ team: 0 });
     // Hearts is blue's rage, at the same price as red's Sunglasses
@@ -412,8 +415,8 @@ describe("Rivals", () => {
     expect(w().rage[1]).toBeGreaterThan(w().clock);
     expect(w().rage[0]).toBeLessThanOrEqual(w().clock);
     expect(s.blasts.at(-1)).toMatchObject({ side: 1, tier: { effect: "rage", gift: "Hearts" } });
-    // and the Gem Gun is blue's meteor, onto red
-    s.handle({ kind: "gift", viewer: viewer("b"), gift: "Gem Gun", coins: 500, count: 1 });
+    // and the Boxing Gloves are blue's meteor, onto red
+    s.handle({ kind: "gift", viewer: viewer("b"), gift: "Boxing Gloves", coins: 299, count: 1 });
     expect(w().meteors.at(-1)).toMatchObject({ team: 1 });
     expect(["0:ball", "1:rage", "1:meteor"].every((k) => s.lit.has(k))).toBe(true);
   });
@@ -426,6 +429,9 @@ describe("Rivals", () => {
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Rose", coins: 1, count: 5 });
     expect(w().hp(0)).toBe(hp + 5);
     expect(s.sideOf("a")).toBe(0);
+    // a Perfume costs less than any power: it heals
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Perfume", coins: 20, count: 1 });
+    expect(w().hp(0)).toBe(hp + 25);
     // a Galaxy is on neither side, and costs more than a meteor: a meteor for red
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
     expect(w().meteors.at(-1)).toMatchObject({ team: 0 });
