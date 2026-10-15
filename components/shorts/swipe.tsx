@@ -20,6 +20,8 @@ type Props = {
   tag: boolean;
   /** the plan posts for you at the suggested time */
   schedules: boolean;
+  /** on a plan that posts for you, waiting only for an account to post to */
+  paid?: boolean;
   /** set when approved Shorts also go straight to TikTok: asks TikTok about the account */
   creator?: () => Promise<CreatorResult>;
   decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null }>;
@@ -32,7 +34,7 @@ type Props = {
  * before it goes. When it's going to TikTok too, a yes first asks
  * TikTok's questions for that Short, next to the Short itself.
  */
-export function SwipeQueue({ items, tag, schedules, creator, decide, edit }: Props) {
+export function SwipeQueue({ items, tag, schedules, paid = false, creator, decide, edit }: Props) {
   const router = useRouter();
   const [list, setList] = useState(items);
   const [dx, setDx] = useState(0);
@@ -199,6 +201,8 @@ export function SwipeQueue({ items, tag, schedules, creator, decide, edit }: Pro
                 ) : (
                   "Swipe right and it posts at your next free time. Nothing posts without your yes."
                 )
+              ) : paid ? (
+                "Swipe right and it's made into a video. Connect YouTube and the ones you keep post themselves."
               ) : (
                 "Swipe right and it's made into a video you download and post yourself. Pro posts it for you."
               )}

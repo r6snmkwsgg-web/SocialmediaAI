@@ -19,6 +19,8 @@ const schema = z.object({
   CRON_SECRET: optional,
   /** local development only: sign in without email */
   HOOKLINE_DEV_LOGIN: optional,
+  /** who can open /admin: email addresses, comma-separated */
+  ADMIN_EMAILS: optional,
 
   NEXT_PUBLIC_SUPABASE_URL: optional,
   NEXT_PUBLIC_SUPABASE_ANON_KEY: optional,
@@ -80,4 +82,11 @@ export function devLoginOn(): boolean {
 /** The site's own address, for links in emails and OAuth redirects. */
 export function siteUrl(fallback?: string): string {
   return (env().NEXT_PUBLIC_SITE_URL ?? fallback ?? "http://localhost:3000").replace(/\/$/, "");
+}
+
+/** Whether this signed-in email runs Hookline, and can see /admin. */
+export function isAdmin(email: string | null | undefined): boolean {
+  if (!email) return false;
+  const list = (env().ADMIN_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+  return list.includes(email.trim().toLowerCase());
 }

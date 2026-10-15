@@ -55,7 +55,8 @@ Vercel's free plan is for non-commercial projects, so a paid Hookline needs Verc
 1. vercel.com/new: import `hookline`. The defaults are right for Next.js. Deploy.
 2. Settings, Environment Variables: everything in `.env.example` except `HOOKLINE_DEV_LOGIN`, `CHROME_PATH` and `TEST_DATABASE_URL`. Make `TOKEN_KEY` once with `openssl rand -base64 32` and never change it, since it unlocks every saved token. `CRON_SECRET` is only needed if a scheduler runs the jobs instead of the worker.
 3. Settings, Domains: add `<domain>` and follow the DNS steps.
-4. Set `NEXT_PUBLIC_SITE_URL` to `https://<domain>`, then redeploy (Deployments, the latest one, Redeploy).
+4. Set `NEXT_PUBLIC_SITE_URL` to `https://<domain>` and `ADMIN_EMAILS` to your own email, then redeploy (Deployments, the latest one, Redeploy).
+5. Sign in and open `https://<domain>/admin`: its Setup list ticks off each service as it's connected, and Rendering shows whether the worker is running.
 
 ## 7. The worker: rendering and posting
 
@@ -119,6 +120,7 @@ The bridge only listens, so anyone's LIVE works for the first check.
 
 ## Later
 
+- Email for the notifications that matter most (a Short posted, a LIVE recap, an account to reconnect): needs an email service like Resend, and a setting for each person to turn them off.
 - A Remotion company license once more than three people work on Hookline.
 - More workers once renders queue up; each renders one Short at a time.
 - TikTok has no trends API for apps like this. If it adds one, Trends can show TikTok too.

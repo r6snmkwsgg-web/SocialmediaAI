@@ -66,3 +66,16 @@ Defaults picked while building, so nobody has to guess why something is the way 
 ## Making a battle the same fight everywhere
 
 - Browsers don't agree on `Math.sin` and `Math.cos` to the last digit (Chrome changed its implementation after the version in Node 22), and a physics simulation turns that into a different fight: about a third of test fights played out differently in Chrome than in Node. So the battle simulation uses its own `sin`, `cos` and `hypot` (`lib/battle/trig.ts`), ports of fdlibm, which is what Node 22 uses. They match Node bit for bit (checked on 3.3 million inputs), so every fight is the same one it always was, and now the browser preview, the renderer and the server all compute the identical fight. `tests/trig.test.ts` pins the exact bits, and `tests/battle.test.ts` checks that every matchup still makes exactly the same fights.
+
+## The platform around the sections
+
+- **Notifications only for things that happened**: a Short going live on YouTube or out to TikTok, one that couldn't be made or was turned down, one ready to download (when nothing will post it), the morning's Shorts, a Short whose first day beat the usual by half again or more (worse results only steer what's made, they don't notify), a LIVE's recap once it's been quiet for 20 minutes, plan changes, and accounts needing reconnecting. Each event has a key, so it notifies once however many jobs notice it. Opening the bell counts them as seen. There are no emails yet; that needs an email service and is in NEXT.md's "Later".
+- **Ctrl K (⌘K on a Mac)** opens a palette to go anywhere or do the common things (connect an account, switch the theme, sign out), matching any word typed against each command's name and the words people use for it.
+- **Toasts** say what just happened after an action that doesn't change the page much: a swipe ("Posting Tue 4:00 PM"), a saved title, TikTok choices.
+- **The calendar** shows each Short on the local day and hour it posts or posted, in the account's own timezone, Sunday first. On a phone it's a list of days instead of a grid.
+- **The library** shows every Short said yes to, newest first, 24 at a time, with views at the latest checkpoint and the first day against the usual Short, using the learning loop's own measure.
+- **What's working** draws each format's first-day result against the usual as one bar from a middle line, on a scale where twice and half are the same distance away, up to four times either way. A kind of Short (a power, a subject, a tone) is only called out after 3 results and when it's at least 15% away from usual.
+- **Each Short's page** lists only what happened or is booked to, from the times saved as it happens (made, approved, rendered, uploaded, public, TikTok); nothing is inferred.
+- **The worker checks in** every 30 seconds; one silent for 2 minutes counts as stopped. People only hear about it when their own Shorts are waiting to be made.
+- **The admin page** (`/admin`) is for the emails in `ADMIN_EMAILS`; anyone else gets the ordinary not-found page. Revenue there is at list price: active plans and ones whose card Stripe is retrying, yearly plans as a twelfth, trials not counted. Stripe has the figures after fees and discounts.
+- **On a phone's home screen**, Hookline opens straight into the app, in its own window.

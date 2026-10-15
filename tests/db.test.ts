@@ -288,6 +288,26 @@ describe.skipIf(!safe)("the database", () => {
     expect((await lib.insightsFor(D)).typical).toBe(250);
   });
 
+  it("knows when no worker is rendering, and shows the operator the whole picture", async () => {
+    const worker = await import("@/lib/server/worker");
+    const adminView = await import("@/lib/server/admin");
+    expect((await worker.workerStatus()).running).toBe(0);
+    await worker.checkIn("test-worker", null);
+    expect((await worker.workerStatus()).running).toBe(1);
+    // a worker that stopped checking in two minutes ago counts as gone
+    expect((await worker.workerStatus(new Date(Date.now() + 3 * 60_000))).running).toBe(0);
+    await worker.checkOut("test-worker");
+    expect((await worker.workerStatus()).running).toBe(0);
+    // nobody signed in can see the workers
+    await expect(db.asUser(A, (tx) => tx`select * from public.workers`)).rejects.toThrow(/permission denied/);
+
+    const o = await adminView.overview();
+    expect(o.accounts).toBeGreaterThanOrEqual(2);
+    expect(o.paying.pro).toBeGreaterThanOrEqual(1);
+    expect(o.revenue).toBeGreaterThan(0);
+    expect(o.newest.length).toBeGreaterThan(0);
+  });
+
   it("puts scheduled Shorts live when their time comes", async () => {
     const [v] = await db.admin((tx) => tx<{ id: string }[]>`
       insert into public.videos (user_id, format, params, key, title, status, scheduled_for, youtube_id)

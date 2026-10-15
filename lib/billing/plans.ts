@@ -81,3 +81,16 @@ export const PAID: PlanId[] = ["pro", "creator"];
 export function yearSaving(p: Plan): number {
   return p.price.month * 12 - p.price.year;
 }
+
+/**
+ * What paying accounts bring in a month at list price: a yearly plan
+ * counts as a twelfth of its price. Trials haven't paid yet; a card
+ * Stripe is retrying still counts until the plan ends.
+ */
+export function monthlyRevenue(subs: { plan: PlanId; interval: Interval | null; status: string }[]): number {
+  return subs.reduce((sum, s) => {
+    if (s.plan === "free" || !(s.status === "active" || s.status === "past_due")) return sum;
+    const price = PLANS[s.plan].price;
+    return sum + (s.interval === "year" ? price.year / 12 : price.month);
+  }, 0);
+}

@@ -37,6 +37,8 @@ alter table public.notifications enable row level security;
 alter table public.workers enable row level security;
 
 grant select, update on public.notifications to authenticated;
+-- the workers table is the server's alone, even where new tables are granted to everyone by default
+revoke all on public.workers from anon, authenticated;
 
 -- people read their own, and mark them read; only the server writes them
 create policy "own notifications" on public.notifications for select to authenticated

@@ -39,7 +39,9 @@ pnpm worker                   # in a second terminal: rendering, posting and the
 
 `HOOKLINE_DEV_LOGIN=1` puts a "sign in without email" button on `/login`, so the whole app works offline without Supabase. It only works in development; a production build ignores it.
 
-Everything else is optional. A service that isn't set up says so where it's needed, and the rest of the app works.
+Everything else is optional. A service that isn't set up says so where it's needed, and the rest of the app works. Put your own email in `ADMIN_EMAILS` and `/admin` shows what's set up and what isn't.
+
+Inside the app, Ctrl K (⌘K on a Mac) jumps anywhere.
 
 ## Settings
 
@@ -60,6 +62,7 @@ Every setting is in [.env.example](.env.example), with what it's for. Locally th
 | Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY` | Where the bridge downloads come from, and a signing key if TikTok starts refusing it. |
 | Rendering | `CHROME_PATH` | The Chrome the worker renders with, if not Remotion's own. |
 | Contact | `NEXT_PUBLIC_CONTACT_EMAIL` | Shown on the privacy and terms pages. |
+| Admin | `ADMIN_EMAILS` | Who can open `/admin`: sign-ups, plans, revenue, the render queue and problems. |
 
 ## Setting up the services
 
@@ -123,10 +126,12 @@ An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the 
 - makes each channel's Shorts for the day, from 6am in its timezone
 - reads views 1 hour, 1 day and 3 days after posting, for the learning loop
 - refreshes Trends (each niche every 4 hours) and syncs Earnings every 6 hours
+- sends each LIVE's recap once it's been quiet for 20 minutes
+- checks in every 30 seconds, so the app can say when rendering has stopped and `/admin` can show the workers
 
 Run more workers for more renders at once; each one claims its own job. A failed render is tried 3 times. The worker finds Chrome by itself, or uses `CHROME_PATH` (Chrome or Chrome Headless Shell).
 
-A scheduler can run the periodic jobs instead: `GET /api/cron/post`, `/api/cron/stats`, `/api/cron/shorts`, `/api/cron/trends` and `/api/cron/earnings`, with `Authorization: Bearer <CRON_SECRET>`. Rendering always needs the worker. Running both is safe, since each job locks what it works on.
+A scheduler can run the periodic jobs instead: `GET /api/cron/post`, `/api/cron/stats`, `/api/cron/shorts`, `/api/cron/trends`, `/api/cron/earnings` and `/api/cron/live`, with `Authorization: Bearer <CRON_SECRET>`. Rendering always needs the worker. Running both is safe, since each job locks what it works on.
 
 ## The LIVE bridge
 
@@ -152,6 +157,7 @@ pnpm bridge:build             # the bridge as one program
 pnpm render fibonacci spike   # one battle Short as an MP4 in out/, the best of 60 runs
 pnpm stills                   # every Short format at five moments, as pictures in out/stills
 pnpm og                       # the share images in public/og
+pnpm icons                    # the home-screen icons, from app/icon.svg
 pnpm data                     # fetches the World Bank figures in data/ again
 pnpm screens [url]            # screenshots of every page into docs/screens (the app running with HOOKLINE_DEV_LOGIN=1)
 ```
@@ -169,7 +175,7 @@ TEST_DATABASE_URL=postgres://postgres:<password>@127.0.0.1:5432/hookline_test pn
 
 ## Where things are
 
-- `app/` the pages and routes: the website at the top, the signed-in app under `app/app/`, and webhooks, OAuth and the cron jobs under `app/api/`
+- `app/` the pages and routes: the website at the top, the signed-in app under `app/app/`, the operator's view under `app/admin/`, and webhooks, OAuth and the cron jobs under `app/api/`
 - `components/` the website (`site/`), the app (`app/`), the LIVE games (`live/`) and the Shorts player and queue (`shorts/`)
 - `lib/battle/` the ball battle: the simulation (`sim.ts`) and its own trig (`trig.ts`), picking the best run, the timeline and the soundtrack
 - `lib/live/` the LIVE games: TikTok's events, the rules, the show round after round, the vote, settings and session numbers

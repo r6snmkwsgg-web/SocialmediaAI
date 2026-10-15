@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { checklist, nextStep, type Facts } from "@/lib/app/checklist";
 import { score } from "@/lib/app/search";
-import { PLANS, yearSaving } from "@/lib/billing/plans";
+import { monthlyRevenue, PLANS, yearSaving } from "@/lib/billing/plans";
 import { HANDLED, planNote, subscriptionRow, type PriceMap, type SubLike } from "@/lib/billing/webhook";
 
 const prices: PriceMap = {
@@ -38,6 +38,21 @@ describe("plans", () => {
     }
     expect(PLANS.creator.customMenus).toBe(true);
     expect(PLANS.pro.customMenus).toBe(false);
+  });
+});
+
+describe("monthly revenue at list price", () => {
+  it("counts monthly plans whole and yearly ones as a twelfth, only while they're paying", () => {
+    expect(
+      monthlyRevenue([
+        { plan: "pro", interval: "month", status: "active" },
+        { plan: "creator", interval: "year", status: "active" },
+        { plan: "pro", interval: "month", status: "past_due" },
+        { plan: "pro", interval: "month", status: "trialing" },
+        { plan: "creator", interval: "month", status: "canceled" },
+        { plan: "free", interval: null, status: "none" },
+      ]),
+    ).toBeCloseTo(PLANS.pro.price.month * 2 + PLANS.creator.price.year / 12);
   });
 });
 

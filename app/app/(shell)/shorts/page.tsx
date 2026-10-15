@@ -14,6 +14,7 @@ import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { allowanceOf, makeShorts } from "@/lib/server/shorts/generate";
 import { queueOf, type Coming } from "@/lib/server/shorts/queue";
+import { workerStatus } from "@/lib/server/worker";
 import { decide, editCopy, makeMore, posted, postToTikTok, sendToTikTok, tiktokAccount, tryAgain } from "./actions";
 
 export const metadata: Metadata = { title: "Shorts" };
@@ -48,6 +49,8 @@ export default async function Shorts() {
   const tiktokDirect = me.plan.scheduling && !!tiktok && configured().tiktokDirect;
   const schedules = me.plan.scheduling && (!!youtube || tiktokDirect);
   const working = q.coming.some((c) => c.status === "approved" || c.status === "rendering");
+  // nothing's rendering at all right now: say so, rather than leave Shorts looking stuck
+  const paused = working && (await workerStatus()).running === 0;
   const per = allow.per === "week" ? "this week" : "today";
 
   return (
@@ -70,6 +73,7 @@ export default async function Shorts() {
           items={q.waiting.map((w) => ({ id: w.id, spec: w.spec, format: FORMATS[w.spec.format].name, title: w.title, description: w.description, why: w.why, suggestedFor: w.suggestedFor?.toISOString() ?? null }))}
           tag={me.plan.tag}
           schedules={schedules}
+          paid={me.plan.scheduling}
           creator={tiktokDirect ? tiktokAccount : undefined}
           decide={decide}
           edit={editCopy}
@@ -98,6 +102,11 @@ export default async function Shorts() {
         <Card>
           <CardHead title="Coming up" />
           <AutoRefresh active={working} />
+          {paused && (
+            <p role="status" className="border-b-2 border-edge bg-card-2 px-5 py-3 text-[13px] leading-relaxed">
+              <b className="font-semibold">Making videos is paused right now.</b> Yours are safe in line and get made as soon as it&rsquo;s back, by themselves.
+            </p>
+          )}
           {q.coming.length === 0 ? (
             <p className="px-5 py-5 text-[14px] text-muted">Shorts you swipe right on show up here while they&rsquo;re made{schedules ? " and until they post" : ", ready to download"}.</p>
           ) : (

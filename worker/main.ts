@@ -11,7 +11,7 @@
  */
 import "./server-only";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
@@ -24,6 +24,7 @@ import { syncEarnings } from "../lib/server/earnings";
 import { refreshTrends } from "../lib/server/trends";
 import { recapLives } from "../lib/server/live";
 import { putVideo } from "../lib/server/storage";
+import { checkIn, checkOut, forgetStopped } from "../lib/server/worker";
 
 if (process.env.NODE_ENV !== "production") {
   try {
@@ -38,6 +39,9 @@ const say = (...a: unknown[]) => console.log(new Date().toISOString(), ...a);
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 let serveUrl = "";
+// who this worker is when it checks in, and what it's rendering right now
+const workerId = `${hostname()}-${process.pid}`;
+let rendering: string | null = null;
 
 async function render(job: Job) {
   const dir = mkdtempSync(join(tmpdir(), "hookline-render-"));
@@ -85,12 +89,16 @@ async function renderLoop() {
       await sleep(2000);
       continue;
     }
+    rendering = job.videoId;
+    void checkIn(workerId, rendering).catch(() => {});
     try {
       await render(job);
     } catch (e) {
       const msg = e instanceof Error ? e.message.split("\n")[0] : String(e);
       say(`render ${job.videoId} failed:`, msg);
       await failJob(job, msg).catch(() => {});
+    } finally {
+      rendering = null;
     }
   }
 }
@@ -118,6 +126,15 @@ async function main() {
   say("bundling the videos…");
   serveUrl = await bundle({ entryPoint: resolve("remotion/index.ts"), publicDir: resolve("public") });
   say("ready");
+  every(30_000, "check in", async () => {
+    await checkIn(workerId, rendering);
+  });
+  every(3600_000, "tidy check-ins", () => forgetStopped());
+  for (const signal of ["SIGINT", "SIGTERM"] as const) {
+    process.once(signal, () => {
+      void checkOut(workerId).finally(() => process.exit(0));
+    });
+  }
   every(60_000, "post", () => postDue());
   every(15 * 60_000, "stats", () => collectStats());
   every(30 * 60_000, "trends", () => refreshTrends());
