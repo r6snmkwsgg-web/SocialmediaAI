@@ -1,16 +1,10 @@
 import type { AbilityId } from "../battle/abilities";
 
 /**
- * The whole game, as a viewer has to understand it, is three rules:
- *
- *   1. Type 1 or 2 to join RED or BLUE.
- *   2. Send a gift and your ball joins the fight, with your face on it.
- *      Send more and it grows.
- *   3. Likes heal your team.
- *
- * On top, for bigger gifts, three powers that explain themselves when they
- * go off (a bubble, ice, a meteor), and a crown for whoever's given the
- * most this round.
+ * What everything a viewer does is worth. The game is RED against BLUE:
+ * type 1 or 2 to join, likes heal your team, and every gift does
+ * something from the menu below. The menu sits on screen the whole time,
+ * by gift name, because viewers know their gifts by name, not by price.
  */
 
 export const TEAMS = [
@@ -21,63 +15,77 @@ export const TEAMS = [
 /** the champions' abilities: the ones you can read at a glance */
 export const LIVE_ABILITIES: AbilityId[] = ["spike", "sword", "grow", "speed", "heal"];
 
-/** this many likes on a side is worth 1 HP to it */
-export const LIKES_PER_HP = 30;
-/** a follow or a share heals the side a little */
-export const FOLLOW_HP = 3;
-export const SHARE_HP = 2;
-/** the most balls a side can have at once, champion included, so it stays readable */
-export const MAX_SIDE = 7;
+export type Effect = "heal" | "small" | "ball" | "rage" | "shield" | "meteor";
 
-/**
- * How big and tough a viewer's ball is, from what they've given this
- * round. Every gift counts, so a rose gets you in and a Galaxy makes you
- * the biggest thing in the arena.
- */
-export function ballFor(coins: number): { r: number; hp: number; touch: number } {
-  const c = Math.max(1, coins);
-  return {
-    r: Math.round(Math.min(130, 30 + 28 * Math.log10(1 + c))),
-    hp: Math.round(3 + 3 * Math.sqrt(c)),
-    touch: 1 + Math.floor(Math.log10(1 + c)),
-  };
-}
-
-export type PowerId = "shield" | "freeze" | "meteor";
-
-export type Power = {
-  id: PowerId;
-  /** the cheapest single gift, in coins, that sets it off */
+export type Tier = {
+  effect: Effect;
+  /** the cheapest single gift, in coins, that does it */
   min: number;
+  /** what it's called on the menu, a word or two */
   name: string;
-  /** what it does, in a few words */
+  /** the gift at that price viewers will know */
+  gift: string;
+  /** what it does, in plain words, for the website and the moment it happens */
   line: string;
   color: string;
-  /** how long it lasts; more of the same gift adds on */
-  seconds: number;
 };
 
-/** Cheapest first. A gift does the best one its price reaches. */
-export const POWERS: Power[] = [
-  { id: "shield", min: 99, name: "Shield", line: "Your team can't be hurt", color: "#64D2FF", seconds: 6 },
-  { id: "freeze", min: 299, name: "Freeze", line: "Their team can't move", color: "#D6F1FF", seconds: 5 },
-  { id: "meteor", min: 999, name: "Meteor", line: "Smashes their biggest ball", color: "#FF9F0A", seconds: 0 },
+export const RAGE_SECONDS = 8;
+export const SHIELD_SECONDS = 6;
+export const SHIELD_HEAL = 10;
+
+/** Cheapest first. A gift does the best thing its price reaches. */
+export const TIERS: Tier[] = [
+  { effect: "heal", min: 1, name: "+1 HP", gift: "Rose", line: "Heals your team 1 HP for every coin", color: "#FF6FB5" },
+  { effect: "small", min: 5, name: "Mini ball", gift: "Finger Heart", line: "A small ball with your face joins your team", color: "#F4F1EA" },
+  { effect: "ball", min: 20, name: "Big ball", gift: "Perfume", line: "A full fighter with your face joins your team", color: "#34C759" },
+  { effect: "rage", min: 99, name: "Rage 2X", gift: "Hand Hearts", line: `Your team hits twice as hard for ${RAGE_SECONDS} seconds`, color: "#FF3B30" },
+  { effect: "shield", min: 299, name: "Shield", gift: "Corgi", line: `Your team can't be hurt for ${SHIELD_SECONDS} seconds, and gets ${SHIELD_HEAL} HP`, color: "#64D2FF" },
+  { effect: "meteor", min: 999, name: "Meteor", gift: "Galaxy", line: "Smashes the other team's biggest ball", color: "#FF9F0A" },
 ];
 
-/** The power a single gift of this price sets off, if any. */
-export function powerFor(coins: number): Power | null {
-  let p: Power | null = null;
-  for (const x of POWERS) if (coins >= x.min) p = x;
-  return p;
+export function tierFor(coins: number): Tier {
+  let t = TIERS[0];
+  for (const x of TIERS) if (coins >= x.min) t = x;
+  return t;
 }
 
-/** what the guide on the website shows: a few gifts, and the ball each one makes */
-export const SIZES = [
-  { gift: "Rose", coins: 1 },
-  { gift: "Perfume", coins: 20 },
-  { gift: "Hand Hearts", coins: 100 },
-  { gift: "Galaxy", coins: 1000 },
-].map((g) => ({ ...g, ...ballFor(g.coins) }));
+/** this many likes on a side is worth 1 HP to it */
+export const LIKES_PER_HP = 30;
+/** a follow heals your team; a share drops a mini ball, once a round */
+export const FOLLOW_HP = 3;
+/** the most balls a side can have at once, champion included, so it stays readable */
+export const MAX_SIDE = 10;
+/** a streak of balls stops at a handful; what's past it heals instead */
+export const MAX_SUMMONS_AT_ONCE = 5;
+/** one gift of 5,000 coins or more brings down three meteors */
+export const SHOWER_COINS = 5000;
+
+/**
+ * What a gift does, as steps to run. A streak of cheap gifts adds up (ten
+ * roses heal ten), but a streak of balls stops at a handful so the arena
+ * stays readable; whatever's past that turns into health.
+ */
+export function giftSteps(coins: number, count: number): { effect: Effect; n: number }[] {
+  const tier = tierFor(coins);
+  switch (tier.effect) {
+    case "heal":
+      return [{ effect: "heal", n: coins * count }];
+    case "small":
+    case "ball": {
+      const balls = Math.min(count, MAX_SUMMONS_AT_ONCE);
+      const out: { effect: Effect; n: number }[] = [{ effect: tier.effect, n: balls }];
+      if (count > balls) out.push({ effect: "heal", n: (count - balls) * Math.ceil(coins / 5) });
+      return out;
+    }
+    case "rage":
+      return [{ effect: "rage", n: count }];
+    case "shield":
+      return [{ effect: "shield", n: count }, { effect: "heal", n: SHIELD_HEAL * count }];
+    case "meteor":
+      return [{ effect: "meteor", n: Math.min(5, count * (coins >= SHOWER_COINS ? 3 : 1)) }];
+  }
+}
 
 /**
  * Which side someone means in chat: "1" or "2", red or blue, left or

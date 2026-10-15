@@ -3,22 +3,22 @@ import Link from "next/link";
 import { Eyebrow, Wordmark } from "@/components/brand";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
-import { FOLLOW_HP, LIKES_PER_HP, POWERS, SIZES, TEAMS } from "@/lib/live/rules";
+import { FOLLOW_HP, LIKES_PER_HP, TEAMS, TIERS } from "@/lib/live/rules";
 
 export const metadata: Metadata = {
   title: "Live ball battles for TikTok LIVE · Hookline",
-  description: "Red against blue on your TikTok LIVE. Viewers type 1 or 2 to pick a team, and every gift drops the gifter's own ball into the fight.",
+  description: "Red against blue on your TikTok LIVE. Viewers type 1 or 2 to pick a team, and every gift does something in the fight, from a heal to a meteor.",
 };
 
 const RULES = [
   { n: "1", title: "Type 1 or 2", body: "Joins RED or BLUE. You stay on your team round after round.", color: TEAMS[0].color },
-  { n: "2", title: "Send a gift", body: "Your ball drops into the fight with your face on it. Gift again and it grows.", color: "#FFD60A" },
+  { n: "2", title: "Send a gift", body: "Every gift does something, from a heal to a meteor. The menu is on screen the whole time.", color: "#FFD60A" },
   { n: "3", title: "Tap to like", body: `Every ${LIKES_PER_HP} likes heals your team 1 HP. A follow is worth ${FOLLOW_HP}.`, color: "#FF6FB5" },
 ];
 
 const WHY = [
   { title: "Anyone gets it in two seconds", body: "Two colours, two numbers, one arena. Someone scrolling past sees RED vs BLUE and TYPE 1 OR 2, and that's all they need." },
-  { title: "Every gift is visible", body: "The gifter's face is on a ball in the fight, and everyone watches it hit. Bigger gifts set off a shield, a freeze or a meteor with their name on it, and the biggest gifter wears the crown." },
+  { title: "Six things to spend on", body: "From a rose that heals to a Galaxy that calls down a meteor, every price does something different, and the menu shows it by gift name. Big ones get the gifter's face and name across the arena, and the biggest gifter wears the crown." },
   { title: "Rounds are short", body: "Most fights last under a minute, then the next round starts. The score carries over, so there's always a reason to stay for one more." },
 ];
 
@@ -58,7 +58,7 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift drops the gifter&rsquo;s own ball into the fight with their face on it. Big gifts shield your team, freeze theirs, or call down a meteor.
+              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift does something in the fight: a rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
@@ -101,7 +101,7 @@ export default function Live() {
       <section id="gifts" className="scroll-mt-16 bg-paper text-ink">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
           <Eyebrow dark>The whole game</Eyebrow>
-          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Three rules. That&rsquo;s it.</h2>
+          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Pick a side. Then spend.</h2>
           <ol className="mt-12 grid gap-px border-2 border-ink bg-ink md:grid-cols-3">
             {RULES.map((r) => (
               <li key={r.n} className="flex flex-col gap-3 bg-paper p-6 sm:p-7">
@@ -112,47 +112,26 @@ export default function Live() {
             ))}
           </ol>
 
-          <div className="mt-16 grid gap-10 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)] lg:items-end">
-            <div>
-              <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">Bigger gift, bigger ball.</h3>
-              <p className="mt-4 max-w-md text-[16px] leading-relaxed text-ink/75">
-                A ball&rsquo;s size and health come from everything that viewer has sent this round. A rose gets you in. A Galaxy makes you the biggest thing in the arena. Gifts from someone who hasn&rsquo;t picked a team go to the one that&rsquo;s losing.
-              </p>
-            </div>
-            <ul className="flex flex-wrap items-end gap-x-8 gap-y-6">
-              {SIZES.map((g) => (
-                <li key={g.gift} className="flex flex-col items-center gap-3">
-                  <span className="rounded-full border-[5px] bg-[#26262A]" style={{ width: g.r * 1.1, height: g.r * 1.1, borderColor: TEAMS[1].color }} aria-hidden="true" />
-                  <span className="text-center">
-                    <span className="block font-display text-2xl uppercase">{g.gift}</span>
-                    <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-ink/55">{g.coins.toLocaleString("en-US")} {g.coins === 1 ? "coin" : "coins"} · {g.hp} HP</span>
-                  </span>
-                </li>
-              ))}
-            </ul>
-          </div>
-
           <div className="mt-16 border-t-2 border-ink pt-10">
-            <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">Power gifts.</h3>
-            <p className="mt-3 max-w-xl text-[16px] leading-relaxed text-ink/75">
-              Three of them, always on screen. When one goes off, the gifter&rsquo;s face and name fill the top of the arena, so everyone sees who did it.
+            <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">The gift menu.</h3>
+            <p className="mt-3 max-w-2xl text-[16px] leading-relaxed text-ink/75">
+              Six items, always on screen, by the gift viewers know. Any gift worth at least that many coins does the same thing. When one lands, its item lights up and the same picture shows up in the fight, so viewers learn the menu by watching. Gifts from someone who hasn&rsquo;t picked a team go to whichever one is losing.
             </p>
-            <ul className="mt-8 grid gap-px border-2 border-ink bg-ink md:grid-cols-4">
-              {POWERS.map((p) => (
-                <li key={p.id} className="flex flex-col gap-2 bg-ink p-6 text-paper">
-                  <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">{p.min}+ coins</span>
-                  <span className="font-display text-4xl uppercase tracking-wide" style={{ color: p.color }}>{p.name}</span>
-                  <span className="text-[15px] leading-snug text-paper/75">
-                    {p.line}{p.seconds ? ` for ${p.seconds} seconds` : ""}.
+            <ul className="mt-8 grid gap-px border-2 border-ink bg-ink sm:grid-cols-2 lg:grid-cols-3">
+              {TIERS.map((t) => (
+                <li key={t.effect} className="flex flex-col gap-2 bg-ink p-6 text-paper">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">
+                    {t.gift} · {t.min.toLocaleString("en-US")} {t.min === 1 ? "coin" : "coins"}
                   </span>
+                  <span className="font-display text-4xl uppercase tracking-wide" style={{ color: t.color }}>{t.name}</span>
+                  <span className="text-[15px] leading-snug text-paper/75">{t.line}.</span>
                 </li>
               ))}
-              <li className="flex flex-col gap-2 bg-ink p-6 text-paper">
-                <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">Most coins this round</span>
-                <span className="font-display text-4xl uppercase tracking-wide text-[#FFD60A]">The crown</span>
-                <span className="text-[15px] leading-snug text-paper/75">Sits on your ball until someone gives more and takes it.</span>
-              </li>
             </ul>
+            <p className="mt-6 flex items-start gap-3 text-[16px] leading-relaxed text-ink/80">
+              <span className="font-display text-2xl uppercase text-[#B8860B]">The crown.</span>
+              <span className="pt-1">Whoever has given the most this round wears it on their ball, until someone gives more and takes it.</span>
+            </p>
           </div>
         </div>
       </section>
