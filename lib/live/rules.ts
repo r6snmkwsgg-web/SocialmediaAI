@@ -8,7 +8,9 @@ import type { AbilityId } from "../battle/abilities";
  *      Send more and it grows.
  *   3. Likes heal your team.
  *
- * Everything here is in service of keeping it that simple.
+ * On top, for bigger gifts, three powers that explain themselves when they
+ * go off (a bubble, ice, a meteor), and a crown for whoever's given the
+ * most this round.
  */
 
 export const TEAMS = [
@@ -39,6 +41,34 @@ export function ballFor(coins: number): { r: number; hp: number; touch: number }
     hp: Math.round(3 + 3 * Math.sqrt(c)),
     touch: 1 + Math.floor(Math.log10(1 + c)),
   };
+}
+
+export type PowerId = "shield" | "freeze" | "meteor";
+
+export type Power = {
+  id: PowerId;
+  /** the cheapest single gift, in coins, that sets it off */
+  min: number;
+  name: string;
+  /** what it does, in a few words */
+  line: string;
+  color: string;
+  /** how long it lasts; more of the same gift adds on */
+  seconds: number;
+};
+
+/** Cheapest first. A gift does the best one its price reaches. */
+export const POWERS: Power[] = [
+  { id: "shield", min: 99, name: "Shield", line: "Your team can't be hurt", color: "#64D2FF", seconds: 6 },
+  { id: "freeze", min: 299, name: "Freeze", line: "Their team can't move", color: "#D6F1FF", seconds: 5 },
+  { id: "meteor", min: 999, name: "Meteor", line: "Smashes their biggest ball", color: "#FF9F0A", seconds: 0 },
+];
+
+/** The power a single gift of this price sets off, if any. */
+export function powerFor(coins: number): Power | null {
+  let p: Power | null = null;
+  for (const x of POWERS) if (coins >= x.min) p = x;
+  return p;
 }
 
 /** what the guide on the website shows: a few gifts, and the ball each one makes */

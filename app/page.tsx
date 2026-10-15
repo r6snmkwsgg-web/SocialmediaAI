@@ -175,7 +175,7 @@ export default function Home() {
             </Eyebrow>
             <h2 className="max-w-3xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Now your chat picks the winner.</h2>
             <p className="max-w-xl text-lg leading-relaxed text-paper/75">
-              Red against blue on your LIVE. Viewers type 1 or 2 to pick a team, and every gift drops the gifter&rsquo;s own ball into the fight, face and all.
+              Red against blue on your LIVE. Viewers type 1 or 2 to pick a team, every gift drops the gifter&rsquo;s own ball into the fight, and big gifts freeze the other team or call down a meteor.
             </p>
             <ul className="grid max-w-xl gap-px bg-line sm:grid-cols-3">
               {[["Type 1 or 2", "Pick a team"], ["Send a gift", "Your ball joins"], ["Tap to like", "Heal your team"]].map(([g, d]) => (

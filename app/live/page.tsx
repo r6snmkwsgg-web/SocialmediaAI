@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Eyebrow, Wordmark } from "@/components/brand";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
-import { FOLLOW_HP, LIKES_PER_HP, SIZES, TEAMS } from "@/lib/live/rules";
+import { FOLLOW_HP, LIKES_PER_HP, POWERS, SIZES, TEAMS } from "@/lib/live/rules";
 
 export const metadata: Metadata = {
   title: "Live ball battles for TikTok LIVE · Hookline",
@@ -18,7 +18,7 @@ const RULES = [
 
 const WHY = [
   { title: "Anyone gets it in two seconds", body: "Two colours, two numbers, one arena. Someone scrolling past sees RED vs BLUE and TYPE 1 OR 2, and that's all they need." },
-  { title: "Every gift is visible", body: "The gifter's face is on a ball in the fight, the bigger the gift the bigger the ball, and everyone watches it hit. That's the reason to send one." },
+  { title: "Every gift is visible", body: "The gifter's face is on a ball in the fight, and everyone watches it hit. Bigger gifts set off a shield, a freeze or a meteor with their name on it, and the biggest gifter wears the crown." },
   { title: "Rounds are short", body: "Most fights last under a minute, then the next round starts. The score carries over, so there's always a reason to stay for one more." },
 ];
 
@@ -58,7 +58,7 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift drops the gifter&rsquo;s own ball into the fight with their face on it. The bigger the gift, the bigger the ball.
+              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift drops the gifter&rsquo;s own ball into the fight with their face on it. Big gifts shield your team, freeze theirs, or call down a meteor.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
@@ -129,6 +129,29 @@ export default function Live() {
                   </span>
                 </li>
               ))}
+            </ul>
+          </div>
+
+          <div className="mt-16 border-t-2 border-ink pt-10">
+            <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">Power gifts.</h3>
+            <p className="mt-3 max-w-xl text-[16px] leading-relaxed text-ink/75">
+              Three of them, always on screen. When one goes off, the gifter&rsquo;s face and name fill the top of the arena, so everyone sees who did it.
+            </p>
+            <ul className="mt-8 grid gap-px border-2 border-ink bg-ink md:grid-cols-4">
+              {POWERS.map((p) => (
+                <li key={p.id} className="flex flex-col gap-2 bg-ink p-6 text-paper">
+                  <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">{p.min}+ coins</span>
+                  <span className="font-display text-4xl uppercase tracking-wide" style={{ color: p.color }}>{p.name}</span>
+                  <span className="text-[15px] leading-snug text-paper/75">
+                    {p.line}{p.seconds ? ` for ${p.seconds} seconds` : ""}.
+                  </span>
+                </li>
+              ))}
+              <li className="flex flex-col gap-2 bg-ink p-6 text-paper">
+                <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">Most coins this round</span>
+                <span className="font-display text-4xl uppercase tracking-wide text-[#FFD60A]">The crown</span>
+                <span className="text-[15px] leading-snug text-paper/75">Sits on your ball until someone gives more and takes it.</span>
+              </li>
             </ul>
           </div>
         </div>

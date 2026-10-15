@@ -105,6 +105,10 @@ export class LiveSound {
       else if (e.type === "spawn") this.tone(700, now, 0.16, 0.16, "sine", 3300);
       // a viewer's ball dropping in gets a rising chord; growing, a higher one
       else if (e.type === "summon") [0, 4, 7].forEach((n, i) => this.pluck(midi((e.grew ? 72 : 67) + n), 0.24, i * 0.05));
+      // the power gifts: a bright chord for a shield, an icy fall for a freeze, a whistle as a meteor comes in
+      else if (e.type === "power" && e.power === "shield") [0, 4, 7, 12].forEach((n, i) => this.pluck(midi(76 + n), 0.22, i * 0.04));
+      else if (e.type === "power") [12, 9, 5, 0, -3].forEach((n, i) => this.tone(midi(84 + n), now + i * 0.06, 0.3, 0.12, "sine"));
+      else if (e.type === "meteor") this.tone(1400, now, 1.2, 0.1, "sine", 120);
     }
   }
 

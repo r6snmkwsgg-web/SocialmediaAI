@@ -1,12 +1,14 @@
 import { ARENA, FPS, type Ball, type Team } from "@/lib/battle/sim";
 import { INTRO, KO_HOLD, LIVE_SUDDEN, WIN, type Show } from "@/lib/live/round";
-import { TEAMS } from "@/lib/live/rules";
+import { POWERS, TEAMS, type PowerId } from "@/lib/live/rules";
 
 /**
  * The live show, drawn onto a 1080 × 1920 canvas every frame. It has to
  * make sense to someone who scrolls onto the LIVE and looks for two
- * seconds, so it says three things and nothing else: which team is which
- * and how to join it, who's winning, and what a gift does. A stream covers
+ * seconds, so it leads with three things: which team is which and how to
+ * join it, who's winning, and what a gift does. The power gifts sit in one
+ * row of three under the teams, and explain themselves when they go off:
+ * a bubble, ice, a meteor. A stream covers
  * the top of the picture with the streamer's name and the bottom with
  * chat, so all of that sits in the middle.
  */
@@ -14,7 +16,7 @@ import { TEAMS } from "@/lib/live/rules";
 export const W = 1080;
 export const H = 1920;
 const AX = 60;
-const AY = 476;
+const AY = 548;
 const SIDE = 960;
 const SCALE = SIDE / ARENA;
 const PAPER = "#F4F1EA";
@@ -149,10 +151,77 @@ function heartIcon(ctx: Ctx, x: number, y: number, s: number) {
   ctx.restore();
 }
 
+function crownIcon(ctx: Ctx, x: number, y: number, s: number) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.beginPath();
+  ctx.moveTo(-s / 2, s * 0.3);
+  ctx.lineTo(-s / 2, -s * 0.2);
+  ctx.lineTo(-s / 4, s * 0.05);
+  ctx.lineTo(0, -s * 0.38);
+  ctx.lineTo(s / 4, s * 0.05);
+  ctx.lineTo(s / 2, -s * 0.2);
+  ctx.lineTo(s / 2, s * 0.3);
+  ctx.closePath();
+  ctx.fillStyle = GOLD;
+  ctx.fill();
+  ctx.lineWidth = Math.max(2, s * 0.08);
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = INK;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/** each power's picture: a shield, a snowflake, a meteor */
+function powerIcon(ctx: Ctx, id: PowerId, x: number, y: number, s: number, fill: string) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.fillStyle = fill;
+  ctx.strokeStyle = fill;
+  ctx.lineCap = "round";
+  if (id === "shield") {
+    ctx.beginPath();
+    ctx.moveTo(0, -s / 2);
+    ctx.lineTo(s * 0.42, -s * 0.32);
+    ctx.quadraticCurveTo(s * 0.4, s * 0.25, 0, s / 2);
+    ctx.quadraticCurveTo(-s * 0.4, s * 0.25, -s * 0.42, -s * 0.32);
+    ctx.closePath();
+    ctx.fill();
+  } else if (id === "freeze") {
+    ctx.lineWidth = s * 0.11;
+    for (let i = 0; i < 3; i++) {
+      ctx.rotate(Math.PI / 3);
+      ctx.beginPath();
+      ctx.moveTo(-s / 2, 0);
+      ctx.lineTo(s / 2, 0);
+      for (const e of [-1, 1]) {
+        ctx.moveTo(e * s * 0.3, 0);
+        ctx.lineTo(e * s * 0.45, -s * 0.13);
+        ctx.moveTo(e * s * 0.3, 0);
+        ctx.lineTo(e * s * 0.45, s * 0.13);
+      }
+      ctx.stroke();
+    }
+  } else {
+    ctx.lineWidth = s * 0.16;
+    ctx.globalAlpha = 0.6;
+    ctx.beginPath();
+    ctx.moveTo(s * 0.05, -s * 0.05);
+    ctx.lineTo(s * 0.48, -s * 0.48);
+    ctx.stroke();
+    ctx.globalAlpha = 1;
+    circle(ctx, -s * 0.12, s * 0.12, s * 0.32, fill);
+  }
+  ctx.restore();
+}
+
 // ── the arena ──
 
-function drawBall(ctx: Ctx, view: View, w: Show["world"], b: Ball, turn: number) {
+function drawBall(ctx: Ctx, view: View, w: Show["world"], b: Ball, spin: number, crowned: boolean) {
   const c = color(b.team);
+  const frozen = w.frozen[b.team] > w.clock;
+  // frozen things stop turning
+  const turn = frozen ? 0 : spin;
   // a new or grown ball pops in
   const k = b.born > 0 ? ease((w.clock - b.born) / 0.35) : 1;
   const r = b.r * (0.55 + 0.45 * k);
@@ -207,6 +276,72 @@ function drawBall(ctx: Ctx, view: View, w: Show["world"], b: Ball, turn: number)
     text(ctx, String(Math.ceil(b.hp)), b.x, b.y + size * 0.36, { size, align: "center", color: "#fff" });
   }
   ctx.restore();
+
+  if (frozen) {
+    // a block of ice over it
+    ctx.save();
+    circle(ctx, b.x, b.y, r + 6, "rgba(214,241,255,0.5)", "#E8F7FF", 6);
+    ctx.strokeStyle = "rgba(255,255,255,0.85)";
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.moveTo(b.x - r * 0.5, b.y - r * 0.2);
+    ctx.lineTo(b.x - r * 0.1, b.y + r * 0.05);
+    ctx.lineTo(b.x + r * 0.15, b.y - r * 0.35);
+    ctx.moveTo(b.x - r * 0.1, b.y + r * 0.05);
+    ctx.lineTo(b.x + r * 0.05, b.y + r * 0.5);
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (w.shield[b.team] > w.clock) {
+    const pulse = 0.5 + 0.5 * Math.sin(spin * 6);
+    ctx.save();
+    circle(ctx, b.x, b.y, r + 16 + pulse * 4, "rgba(100,210,255,0.14)", "#64D2FF", 5);
+    ctx.restore();
+  }
+  if (crowned) crownIcon(ctx, b.x, b.y - r - 26, Math.min(76, Math.max(40, r * 0.8)));
+}
+
+/** A target on the ball a meteor is aimed at, and the meteor falling onto it. */
+function drawMeteors(ctx: Ctx, show: Show, turn: number) {
+  const w = show.world;
+  for (const m of w.meteors) {
+    if (w.clock < m.from) continue;
+    const t = w.balls.find((b) => b.id === m.target && b.alive);
+    const x = t ? t.x : m.x, y = t ? t.y : m.y;
+    const k = Math.min(1, (w.clock - m.from) / (m.at - m.from));
+    ctx.save();
+    const rr = (t ? t.r : 60) + 40 - 24 * k;
+    ctx.translate(x, y);
+    ctx.rotate(turn * 2);
+    ctx.strokeStyle = "#FF3B30";
+    ctx.lineWidth = 6;
+    ctx.beginPath();
+    ctx.arc(0, 0, rr, 0, Math.PI * 2);
+    ctx.stroke();
+    for (let i = 0; i < 4; i++) {
+      ctx.rotate(Math.PI / 2);
+      ctx.beginPath();
+      ctx.moveTo(rr - 20, 0);
+      ctx.lineTo(rr + 20, 0);
+      ctx.stroke();
+    }
+    ctx.restore();
+    const sx = x + 520 * (1 - k), sy = y - 900 * (1 - k);
+    ctx.save();
+    const g = ctx.createLinearGradient(sx, sy, sx + 170, sy - 300);
+    g.addColorStop(0, "rgba(255,159,10,0.95)");
+    g.addColorStop(1, "rgba(255,159,10,0)");
+    ctx.strokeStyle = g;
+    ctx.lineWidth = 46;
+    ctx.lineCap = "round";
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + 170, sy - 300);
+    ctx.stroke();
+    circle(ctx, sx, sy, 38, "#FF9F0A", INK, 6);
+    circle(ctx, sx - 9, sy - 9, 13, GOLD);
+    ctx.restore();
+  }
 }
 
 function drawEffects(ctx: Ctx, show: Show) {
@@ -264,6 +399,87 @@ function drawEffects(ctx: Ctx, show: Show) {
     }
     ctx.restore();
   }
+}
+
+const BLAST = 2;
+
+/** when each power gift's moment on screen starts; a backlog is skipped, not replayed */
+function blastTimes(show: Show): { b: Show["blasts"][number]; start: number }[] {
+  let end = -Infinity;
+  const out: { b: Show["blasts"][number]; start: number }[] = [];
+  for (const b of show.blasts) {
+    const start = Math.max(b.at, end);
+    if (start - b.at > 3) continue;
+    end = start + BLAST;
+    out.push({ b, start });
+  }
+  return out;
+}
+
+/** A power gift's moment: who sent it and what it does, big, over the arena. */
+function drawBlast(ctx: Ctx, show: Show, view: View): boolean {
+  for (const { b, start } of blastTimes(show)) {
+    const age = show.now - start;
+    if (age < 0 || age >= BLAST) continue;
+    const k = Math.min(ease(age / 0.15), ease((BLAST - age) / 0.2));
+    const p = b.power;
+    const them = TEAMS[1 - b.side].name.toUpperCase(), us = TEAMS[b.side].name.toUpperCase();
+    const what = p.id === "shield" ? `${us} CAN'T BE HURT` : p.id === "freeze" ? `${them} CAN'T MOVE` : `ON ${them}'S BIGGEST BALL`;
+    const x = AX + 30, y = AY + 24, bw = SIDE - 60, h = 200;
+    ctx.save();
+    ctx.globalAlpha = k;
+    ctx.translate(W / 2, y + h / 2);
+    const s = 0.85 + 0.15 * pop(age * 4);
+    ctx.scale(s, s);
+    ctx.translate(-W / 2, -(y + h / 2));
+    roundRect(ctx, x, y, bw, h, 24, INK);
+    ctx.lineWidth = 6;
+    ctx.strokeStyle = p.color;
+    ctx.beginPath();
+    ctx.roundRect(x, y, bw, h, 24);
+    ctx.stroke();
+    face(ctx, view, b.viewer.name, b.viewer.avatar, x + 100, y + h / 2, 64, color(b.side), 7);
+    text(ctx, b.viewer.name, x + 196, y + 54, { size: 36, max: bw - 360 });
+    text(ctx, `${p.name.toUpperCase()}!${b.count > 1 ? ` ×${b.count}` : ""}`, x + 196, y + 148, { size: 86, color: p.color, spacing: 3, max: bw - 360 });
+    text(ctx, what, x + 196, y + 184, { size: 26, color: DIM, spacing: 2, max: bw - 360 });
+    powerIcon(ctx, p.id, x + bw - 90, y + h / 2, 96, p.color);
+    ctx.restore();
+    return true;
+  }
+  return false;
+}
+
+/** The three power gifts, in one row under the teams, lit up while one is going. */
+function drawPowers(ctx: Ctx, show: Show) {
+  const w = show.world;
+  const y = 444, h = 84, gap = 14;
+  const cw = (SIDE - gap * 2) / 3;
+  POWERS.forEach((p, i) => {
+    const x = AX + i * (cw + gap);
+    // is it going right now, and for which team?
+    let on: { side: Team; left: number } | null = null;
+    if (p.id === "meteor") {
+      const m = w.meteors[0];
+      if (m) on = { side: m.team, left: 0 };
+    } else {
+      const until = p.id === "shield" ? w.shield : w.frozen;
+      for (const t of [0, 1] as Team[]) if (until[t] > w.clock) on = { side: t, left: until[t] - w.clock };
+    }
+    roundRect(ctx, x, y, cw, h, 14, on ? "#1E2A33" : "#161618");
+    ctx.lineWidth = on ? 4 : 2;
+    ctx.strokeStyle = on ? p.color : "rgba(244,241,234,0.16)";
+    ctx.beginPath();
+    ctx.roundRect(x + 1, y + 1, cw - 2, h - 2, 13);
+    ctx.stroke();
+    powerIcon(ctx, p.id, x + 44, y + h / 2, 44, p.color);
+    text(ctx, p.name.toUpperCase(), x + 82, y + 46, { size: 40, color: p.color, spacing: 2 });
+    if (on && p.id !== "meteor") {
+      text(ctx, `${TEAMS[on.side].name.toUpperCase()} ${Math.ceil(on.left)}S`, x + 82, y + 74, { size: 22, color: PAPER, spacing: 2 });
+    } else {
+      circle(ctx, x + 90, y + 66, 8, GOLD, INK, 2);
+      text(ctx, `${p.min}+ COINS`, x + 104, y + 74, { size: 22, color: DIM, spacing: 2 });
+    }
+  });
 }
 
 /** One line at a time over the top of the arena: who just joined, whose ball just grew. */
@@ -342,9 +558,11 @@ function drawArena(ctx: Ctx, show: Show, view: View, turn: number) {
   ctx.rect(-4, -4, ARENA + 8, ARENA + 8);
   ctx.clip();
   // champions under viewers' balls, so faces and names stay readable
-  for (const b of w.balls) if (b.alive && !b.plain) drawBall(ctx, view, w, b, turn);
-  for (const b of w.balls) if (b.alive && b.plain) drawBall(ctx, view, w, b, turn);
+  const king = show.crown ? show.ballOf.get(show.crown) : undefined;
+  for (const b of w.balls) if (b.alive && !b.plain) drawBall(ctx, view, w, b, turn, false);
+  for (const b of w.balls) if (b.alive && b.plain) drawBall(ctx, view, w, b, turn, b === king);
   drawEffects(ctx, show);
+  drawMeteors(ctx, show, turn);
   ctx.restore();
   ctx.restore();
 
@@ -408,15 +626,15 @@ function drawTeams(ctx: Ctx, show: Show) {
 
 /** The other two rules, under the arena. */
 function drawRules(ctx: Ctx) {
-  const y = AY + SIDE + 74;
-  const l1 = "SEND A GIFT: YOUR BALL JOINS";
-  const w1 = measure(ctx, l1, 50, 2);
-  giftIcon(ctx, W / 2 - w1 / 2 - 34, y - 18, 40);
-  text(ctx, l1, W / 2 + 22, y, { size: 50, align: "center", spacing: 2 });
-  const l2 = "BIGGER GIFT, BIGGER BALL · LIKES HEAL";
-  const w2 = measure(ctx, l2, 34, 2);
-  heartIcon(ctx, W / 2 - w2 / 2 - 26, y + 50, 32);
-  text(ctx, l2, W / 2 + 16, y + 62, { size: 34, color: DIM, align: "center", spacing: 2 });
+  const y = AY + SIDE + 66;
+  const line = (s: string, ly: number, size: number, col: string, icon: (x: number, y: number) => void) => {
+    const w = measure(ctx, s, size, 2);
+    icon(W / 2 - w / 2 - size * 0.5, ly - size * 0.36);
+    text(ctx, s, W / 2 + size * 0.36, ly, { size, color: col, align: "center", spacing: 2 });
+  };
+  line("SEND A GIFT: YOUR BALL JOINS", y, 50, PAPER, (x, iy) => giftIcon(ctx, x, iy, 40));
+  line("BIGGEST GIFTER WEARS THE CROWN", y + 58, 34, DIM, (x, iy) => crownIcon(ctx, x, iy, 34));
+  line("LIKES HEAL YOUR TEAM", y + 106, 34, DIM, (x, iy) => heartIcon(ctx, x, iy + 2, 30));
 }
 
 // ── the moments ──
@@ -500,7 +718,7 @@ function drawWin(ctx: Ctx, show: Show, view: View) {
 
   if (show.mvp) {
     const m = show.mvp;
-    text(ctx, "TOP GIFTER", cx, 1180, { size: 38, color: GOLD, align: "center", spacing: 8 });
+    crownIcon(ctx, cx, 1170, 60);
     face(ctx, view, m.viewer.name, m.viewer.avatar, cx, 1275, 64, GOLD, 6);
     text(ctx, m.viewer.name, cx, 1400, { size: 60, align: "center", max: 900 });
   }
@@ -516,8 +734,9 @@ export function draw(ctx: Ctx, show: Show, view: View) {
   ctx.fillRect(0, 0, W, H);
   drawTop(ctx, show, view);
   drawTeams(ctx, show);
+  drawPowers(ctx, show);
   drawArena(ctx, show, view, turn);
-  drawToast(ctx, show, view);
+  if (!drawBlast(ctx, show, view)) drawToast(ctx, show, view);
   drawRules(ctx);
   drawIntro(ctx, show);
   drawKo(ctx, show);

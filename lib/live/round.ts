@@ -1,13 +1,15 @@
 import { ABILITIES, type AbilityId } from "../battle/abilities";
 import { ARENA, rng, TICK, World, type Ball, type Team } from "../battle/sim";
 import type { LiveEvent, Viewer } from "./events";
-import { ballFor, FOLLOW_HP, LIKES_PER_HP, LIVE_ABILITIES, MAX_SIDE, SHARE_HP, sideFromChat, TEAMS } from "./rules";
+import { ballFor, FOLLOW_HP, LIKES_PER_HP, LIVE_ABILITIES, MAX_SIDE, powerFor, SHARE_HP, sideFromChat, TEAMS, type Power } from "./rules";
 
 /**
  * A live show: round after round of RED against BLUE. Each side has a
  * champion ball, and viewers join a side by typing 1 or 2. A gift drops
  * the giver's own ball into the fight with their face on it, and more
- * gifts make it bigger; likes heal. It keeps the score across rounds, and
+ * gifts make it bigger; likes heal. Bigger gifts set off a power (shield,
+ * freeze, meteor), and the round's biggest gifter wears the crown. It
+ * keeps the score across rounds, and
  * it's all plain logic: the screen reads it and draws it, and a test can
  * run a whole show without one.
  */
@@ -28,9 +30,13 @@ export const LIVE_HP = 1.5;
 export type Member = { viewer: Viewer; side: Team; coins: number };
 /** one line about what just happened, shown briefly */
 export type Toast = { id: number; at: number; side: Team; viewer: Viewer; text: string };
+/** a power gift going off: its moment on screen */
+export type Blast = { id: number; at: number; side: Team; viewer: Viewer; power: Power; count: number };
 export type Cue = { at: number; kind: "count" | "fight" | "ko" | "win" | "gift" | "join"; n?: number };
 
-type Pending = { side: Team; viewer: Viewer; coins: number; gift: string } | { side: Team; viewer: Viewer; heal: number };
+type Pending =
+  | { side: Team; viewer: Viewer; coins: number; gift: string; each: number; count: number }
+  | { side: Team; viewer: Viewer; heal: number };
 
 export class Show {
   /** seconds since the show started, real time */
@@ -54,6 +60,9 @@ export class Show {
   /** likes toward the next HP, per side */
   readonly likes: [number, number] = [0, 0];
   readonly toasts: Toast[] = [];
+  readonly blasts: Blast[] = [];
+  /** who's given the most this round, and so wears the crown */
+  crown: string | null = null;
   readonly cues: Cue[] = [];
   /** every cue so far, counting ones the list has let go of */
   cueCount = 0;
@@ -125,6 +134,7 @@ export class Show {
     this.acc = 0;
     this.roundCoins.clear();
     this.ballOf.clear();
+    this.crown = null;
     this.shared.clear();
     this.go("intro");
   }
@@ -266,7 +276,7 @@ export class Show {
     const coins = e.coins * e.count;
     m.coins += coins;
     this.cue("gift", coins);
-    this.act({ side, viewer: m.viewer, coins, gift: e.count > 1 ? `${e.count}× ${e.gift}` : e.gift });
+    this.act({ side, viewer: m.viewer, coins, gift: e.count > 1 ? `${e.count}× ${e.gift}` : e.gift, each: e.coins, count: e.count });
   }
 
   /** Do it now if the fight's on; otherwise it waits for the next fight to start. */
@@ -285,22 +295,39 @@ export class Show {
     const team = TEAMS[side].name.toUpperCase();
     const total = (this.roundCoins.get(viewer.id) ?? 0) + coins;
     this.roundCoins.set(viewer.id, total);
+    this.power(p.side, viewer, p.each, p.count);
+    // the crown goes to whoever's given the most this round
+    const top = this.crown ? (this.roundCoins.get(this.crown) ?? 0) : 0;
+    const took = this.crown !== viewer.id && total > top;
+    if (took) this.crown = viewer.id;
     const stats = ballFor(total);
     const mine = this.ballOf.get(viewer.id);
     if (mine?.alive && mine.team === side) {
       w.grow(mine, stats);
-      this.toast(side, viewer, `grew · ${gift}`);
+      this.toast(side, viewer, took ? `took the crown · ${gift}` : `grew · ${gift}`);
       return;
     }
     const ball = w.summon(side, this.kind(side), { ...stats, tag: { name: viewer.name, avatar: viewer.avatar } });
     if (ball) {
       this.ballOf.set(viewer.id, ball);
-      this.toast(side, viewer, `joined ${team} · ${gift}`);
+      this.toast(side, viewer, took && top > 0 ? `took the crown · ${gift}` : `joined ${team} · ${gift}`);
     } else {
       // the side is full: the gift heals it instead
       const hp = Math.max(1, Math.round(ballFor(coins).hp / 2));
       w.heal(side, hp);
       this.toast(side, viewer, `healed ${team} +${hp} · ${gift}`);
     }
+  }
+
+  /** A big enough gift sets off a power, once per gift sent. */
+  private power(side: Team, viewer: Viewer, each: number, count: number) {
+    const power = powerFor(each);
+    if (!power) return;
+    const w = this.world;
+    if (power.id === "shield") w.protect(side, power.seconds * count);
+    else if (power.id === "freeze") w.freeze((1 - side) as Team, power.seconds * count);
+    else for (let i = 0; i < Math.min(count, 5); i++) w.meteor(side, i, i * 0.4);
+    this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, power, count });
+    if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
   }
 }

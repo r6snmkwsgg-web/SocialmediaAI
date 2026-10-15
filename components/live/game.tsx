@@ -4,7 +4,7 @@ import { rng, type BattleEvent, type World } from "@/lib/battle/sim";
 import { demoTick, demoViewer, GIFTS } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
 import { Show } from "@/lib/live/round";
-import { LIKES_PER_HP, TEAMS } from "@/lib/live/rules";
+import { LIKES_PER_HP, powerFor, TEAMS } from "@/lib/live/rules";
 import { draw, H, W } from "./draw";
 import { LiveSound } from "./sound";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
@@ -228,7 +228,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
                 {GIFTS.map((g) => (
                   <button key={g.name} type="button" onClick={() => gift(newcomer(side), g)} className={btn}>
                     <span className="block text-paper">{g.name}</span>
-                    <span className="block text-[10px] text-dim">{g.coins} · new viewer joins</span>
+                    <span className="block text-[10px] text-dim">{g.coins} · {powerFor(g.coins)?.name ?? "new viewer joins"}</span>
                   </button>
                 ))}
                 <button type="button" onClick={() => gift(tester(side), GIFTS[2])} className={btn}>

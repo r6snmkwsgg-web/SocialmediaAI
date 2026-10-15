@@ -80,7 +80,15 @@ export type BattleEvent =
   | { f: number; type: "heal"; x: number; y: number; team: Team; n?: number }
   | { f: number; type: "ko"; x: number; y: number; team: Team; last: boolean }
   /** only live: a viewer's ball dropping in, or growing when they give more */
-  | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; grew: boolean };
+  | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; grew: boolean }
+  /** only live: a power gift going off. `team` is the side it's on: shielded, or frozen */
+  | { f: number; type: "power"; team: Team; power: "shield" | "freeze" }
+  | { f: number; type: "meteor"; x: number; y: number; team: Team; target: number };
+
+/** a meteor's hit on the ball it was aimed at, and on anything of theirs close by */
+export const METEOR_HIT = 30;
+const METEOR_SPLASH = 10;
+const METEOR_FALL = 1.2;
 
 export type Battle = {
   a: AbilityId;
@@ -135,6 +143,11 @@ export class World {
   readonly balls: Ball[] = [];
   readonly mines: Mine[] = [];
   readonly events: BattleEvent[] = [];
+  /** live power gifts: until when each team is shielded, or frozen */
+  readonly shield: [number, number] = [0, 0];
+  readonly frozen: [number, number] = [0, 0];
+  /** meteors on their way down: who sent them, what they're aimed at, when they land */
+  readonly meteors: { id: number; team: Team; target: number; x: number; y: number; from: number; at: number }[] = [];
   readonly suddenDeath: number;
   readonly maxTeam: number;
   /** physics steps run so far */
@@ -190,7 +203,7 @@ export class World {
 
   /** Damage that lands on a ball, with what it sets off: a Fibonacci split, or a knockout. */
   private hurt(target: Ball, dmg: number, f: number) {
-    if (!target.alive) return;
+    if (!target.alive || this.shield[target.team] > this.clock) return;
     target.hp = Math.max(0, target.hp - dmg);
     if (target.hp <= 0) {
       target.alive = false;
@@ -235,6 +248,12 @@ export class World {
     for (const p of balls) {
       if (!p.alive) continue;
       p.r = Math.min(p.r, size / 2 - 4);
+      if (this.frozen[p.team] > now) {
+        // frozen in place, though the walls still push it in
+        p.x = Math.min(hi - p.r, Math.max(lo + p.r, p.x));
+        p.y = Math.min(hi - p.r, Math.max(lo + p.r, p.y));
+        continue;
+      }
       p.x += p.vx * DT;
       p.y += p.vy * DT;
       if (p.kind === "sword") p.angle += 5.2 * DT;
@@ -283,6 +302,20 @@ export class World {
       }
     }
 
+    // meteors land on whatever they were aimed at, wherever it is now
+    for (const m of this.meteors) {
+      if (m.at > now) continue;
+      const target = balls.find((b) => b.id === m.target && b.alive);
+      if (target) { m.x = target.x; m.y = target.y; }
+      for (const o of balls) {
+        if (!o.alive || o.team === m.team) continue;
+        if (o === target) this.hurt(o, METEOR_HIT, f);
+        else if (Math.hypot(o.x - m.x, o.y - m.y) <= 170 + o.r) this.hurt(o, METEOR_SPLASH, f);
+      }
+      this.events.push({ f, type: "boom", x: m.x, y: m.y, dmg: METEOR_HIT, to: (1 - m.team) as Team });
+    }
+    for (let i = this.meteors.length - 1; i >= 0; i--) if (this.meteors[i].at <= now) this.meteors.splice(i, 1);
+
     // balls hitting each other: bounce apart, and enemies trade damage
     for (let i = 0; i < balls.length; i++) {
       const p = balls[i];
@@ -295,16 +328,34 @@ export class World {
         const overlap = p.r + q.r - d;
         if (overlap <= 0) continue;
         const nx = dx / d, ny = dy / d;
-        p.x -= nx * overlap / 2; p.y -= ny * overlap / 2;
-        q.x += nx * overlap / 2; q.y += ny * overlap / 2;
-        const pn = p.vx * nx + p.vy * ny, qn = q.vx * nx + q.vy * ny;
-        if (pn - qn > 0) {
-          p.vx += (qn - pn) * nx; p.vy += (qn - pn) * ny;
-          q.vx += (pn - qn) * nx; q.vy += (pn - qn) * ny;
+        const fp = this.frozen[p.team] > now, fq = this.frozen[q.team] > now;
+        if (fp || fq) {
+          // a frozen ball doesn't budge: whatever hits it bounces off
+          if (fp && fq) {
+            p.x -= nx * overlap / 2; p.y -= ny * overlap / 2;
+            q.x += nx * overlap / 2; q.y += ny * overlap / 2;
+          } else if (fp) {
+            q.x += nx * overlap; q.y += ny * overlap;
+            const qn = q.vx * nx + q.vy * ny;
+            if (qn < 0) { q.vx -= 2 * qn * nx; q.vy -= 2 * qn * ny; }
+          } else {
+            p.x -= nx * overlap; p.y -= ny * overlap;
+            const pn = p.vx * nx + p.vy * ny;
+            if (pn > 0) { p.vx -= 2 * pn * nx; p.vy -= 2 * pn * ny; }
+          }
+        } else {
+          p.x -= nx * overlap / 2; p.y -= ny * overlap / 2;
+          q.x += nx * overlap / 2; q.y += ny * overlap / 2;
+          const pn = p.vx * nx + p.vy * ny, qn = q.vx * nx + q.vy * ny;
+          if (pn - qn > 0) {
+            p.vx += (qn - pn) * nx; p.vy += (qn - pn) * ny;
+            q.vx += (pn - qn) * nx; q.vy += (pn - qn) * ny;
+          }
         }
         if (p.team === q.team || p.fresh > now || q.fresh > now || !this.ready(`h${p.id}-${q.id}`, now, HIT_GAP)) continue;
         const cx = p.x + nx * p.r, cy = p.y + ny * p.r;
-        const toQ = p.touch, toP = q.touch;
+        // a frozen ball can't fight back
+        const toQ = fp ? 0 : p.touch, toP = fq ? 0 : q.touch;
         this.events.push({ f, type: "hit", x: q.x, y: q.y - q.r, cx, cy, dmg: toQ, to: q.team });
         this.events.push({ f, type: "hit", x: p.x, y: p.y - p.r, cx, cy, dmg: toP, to: p.team });
         this.hurt(q, toQ, f);
@@ -314,7 +365,7 @@ export class World {
 
     // sword blades cut whatever they sweep through
     for (const p of balls) {
-      if (!p.alive || p.kind !== "sword" || p.plain) continue;
+      if (!p.alive || p.kind !== "sword" || p.plain || this.frozen[p.team] > now) continue;
       const ux = Math.cos(p.angle), uy = Math.sin(p.angle);
       const x0 = p.x + ux * p.r, y0 = p.y + uy * p.r;
       for (const o of balls) {
@@ -390,6 +441,29 @@ export class World {
     ball.touch = Math.max(ball.touch, o.touch);
     ball.born = this.clock;
     this.events.push({ f: this.f, type: "summon", x: ball.x, y: ball.y, team: ball.team, name: ball.tag?.name, grew: true });
+  }
+
+  /** A shield on a team: nothing hurts it for a while. More of it adds on. */
+  protect(team: Team, seconds: number) {
+    this.shield[team] = Math.max(this.shield[team], this.clock) + seconds;
+    this.events.push({ f: this.f, type: "power", team, power: "shield" });
+  }
+
+  /** A team frozen solid: it can't move or hit back for a while. More of it adds on. */
+  freeze(team: Team, seconds: number) {
+    this.frozen[team] = Math.max(this.frozen[team], this.clock) + seconds;
+    this.events.push({ f: this.f, type: "power", team, power: "freeze" });
+  }
+
+  /** A meteor from `team` onto the other side's strongest ball (or the nth strongest), landing a moment later. */
+  meteor(team: Team, nth = 0, delay = 0): boolean {
+    const foes = this.balls.filter((b) => b.alive && b.team !== team).sort((x, y) => y.hp - x.hp);
+    if (foes.length === 0) return false;
+    const target = foes[nth % foes.length];
+    const from = this.clock + delay;
+    this.meteors.push({ id: this.nextId++, team, target: target.id, x: target.x, y: target.y, from, at: from + METEOR_FALL });
+    this.events.push({ f: this.f, type: "meteor", x: target.x, y: target.y, team, target: target.id });
+    return true;
   }
 
   /** Health for a team, onto its strongest ball; past full, it raises the ball's maximum. */
