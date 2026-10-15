@@ -16,7 +16,9 @@
     "db:migrate": "tsx scripts/db.mts",
     "worker": "tsx worker/main.ts",
     "data": "tsx scripts/fetch-data.mts",
-    "stills": "tsx scripts/stills.ts"
+    "stills": "tsx scripts/stills.ts",
+    "og": "tsx scripts/og.ts",
+    "screens": "tsx scripts/screens.ts"
   },
   "packageManager": "pnpm@10.33.0",
   "dependencies": {
@@ -46,6 +48,7 @@
     "esbuild": "0.25.11",
     "eslint": "9.39.5",
     "eslint-config-next": "15.5.25",
+    "playwright": "1.56.1",
     "postject": "1.0.0-alpha.6",
     "tailwindcss": "4.3.3",
     "tiktok-live-connector": "2.5.0",

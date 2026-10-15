@@ -5,6 +5,8 @@ const nextConfig: NextConfig = {
   serverExternalPackages: ["@remotion/renderer", "@remotion/bundler"],
   // YouTube's thumbnails, for Trends
   images: { remotePatterns: [{ protocol: "https", hostname: "i.ytimg.com" }] },
+  // keeps the development badge out of screenshots
+  devIndicators: false,
 };
 
 export default nextConfig;

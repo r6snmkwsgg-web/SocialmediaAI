@@ -6,7 +6,7 @@ import { allowedBy, DEFAULT_SETTINGS, GAME_IDS, type GameId, type LiveSettings }
 import { overlayFor } from "@/lib/server/live";
 
 export const metadata: Metadata = {
-  title: "Live game · Hookline",
+  title: "Live game",
   robots: { index: false },
 };
 

@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { Eyebrow, Wordmark } from "@/components/brand";
+import { Eyebrow } from "@/components/brand";
+import { SiteFooter, SiteHeader } from "@/components/site/chrome";
+import { GAMES } from "@/lib/live/games";
+import { RACE_MENU } from "@/lib/live/games/race";
+import { ROYALE_MENU } from "@/lib/live/games/royale";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
 import { BATTLE_MENU as TIERS } from "@/lib/live/games/battle";
@@ -10,8 +14,9 @@ import { FOLLOW_HP, LIKES_PER_HP } from "@/lib/live/show";
 const TEAMS = DEFAULT_SETTINGS.teams;
 
 export const metadata: Metadata = {
-  title: "Live ball battles for TikTok LIVE · Hookline",
-  description: "Red against blue on your TikTok LIVE. Viewers type 1 or 2 to pick a team, and every gift does something in the fight, from a heal to a meteor.",
+  title: "Games for TikTok LIVE",
+  description: "Ball Battle, Ball Race and Last One Standing: games your TikTok LIVE chat joins with a word, where every gift does something on screen. Free to start.",
+  openGraph: { images: ["/og/live.png"] },
 };
 
 const RULES = [
@@ -36,17 +41,7 @@ const TIPS = [
 export default function Live() {
   return (
     <main className="overflow-x-clip">
-      <header className="sticky top-0 z-50 border-b border-line bg-ink/85 backdrop-blur">
-        <nav className="mx-auto flex h-16 max-w-7xl items-center justify-between px-4 sm:px-8">
-          <Link href="/" className="text-[26px] leading-none"><Wordmark /></Link>
-          <div className="hidden items-center gap-8 font-mono text-[11px] uppercase tracking-[0.18em] text-paper/70 md:flex">
-            <Link href="/" className="transition hover:text-paper">Shorts</Link>
-            <a href="#gifts" className="transition hover:text-paper">Gifts</a>
-            <a href="#setup" className="transition hover:text-paper">Set it up</a>
-          </div>
-          <a href="/live/play?demo=1" className="border border-paper/30 px-4 py-2 font-mono text-[11px] uppercase tracking-[0.18em] transition hover:border-paper">Try it</a>
-        </nav>
-      </header>
+      <SiteHeader current="/live" />
 
       {/* hero */}
       <section>
@@ -62,7 +57,7 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift does something in the fight: a rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
+              Three games for your stream. In Ball Battle it&rsquo;s red against blue: viewers type 1 or 2 to pick a team, and every gift does something in the fight. A rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
@@ -105,7 +100,7 @@ export default function Live() {
       <section id="gifts" className="scroll-mt-16 bg-paper text-ink">
         <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
           <Eyebrow dark>The whole game</Eyebrow>
-          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Pick a side. Then spend.</h2>
+          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Ball Battle: pick a side, then spend.</h2>
           <ol className="mt-12 grid gap-px border-2 border-ink bg-ink md:grid-cols-3">
             {RULES.map((r) => (
               <li key={r.n} className="flex flex-col gap-3 bg-paper p-6 sm:p-7">
@@ -125,7 +120,7 @@ export default function Live() {
               {TIERS.map((t) => (
                 <li key={t.effect} className="flex flex-col gap-2 bg-ink p-6 text-paper">
                   <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-dim">
-                    {t.gift} · {t.min.toLocaleString("en-US")} {t.min === 1 ? "coin" : "coins"}
+                    {t.gift} · {(t.price ?? t.min).toLocaleString("en-US")} {(t.price ?? t.min) === 1 ? "coin" : "coins"}
                   </span>
                   <span className="font-display text-4xl uppercase tracking-wide" style={{ color: t.color }}>{t.name}</span>
                   <span className="text-[15px] leading-snug text-paper/75">{t.line}.</span>
@@ -136,6 +131,47 @@ export default function Live() {
               <span className="font-display text-2xl uppercase text-[#B8860B]">The crown.</span>
               <span className="pt-1">Whoever has given the most this round wears it on their ball, until someone gives more and takes it.</span>
             </p>
+          </div>
+        </div>
+      </section>
+
+      {/* the other games */}
+      <section className="border-b border-line">
+        <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
+          <Eyebrow>Two more games</Eyebrow>
+          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Everyone for themselves.</h2>
+          <p className="mt-5 max-w-2xl text-lg leading-relaxed text-paper/75">
+            In these, every viewer gets their own ball with their face on it. Between rounds, chat votes for the next board or arena. Ball Battle is free; these two come with Pro.
+          </p>
+          <div className="mt-12 grid gap-6 lg:grid-cols-2">
+            {[
+              { game: GAMES.find((g) => g.id === "race")!, menu: RACE_MENU, src: "/live/play?demo=1&clean=1&game=race" },
+              { game: GAMES.find((g) => g.id === "royale")!, menu: ROYALE_MENU, src: "/live/play?demo=1&clean=1&game=royale" },
+            ].map(({ game, menu, src }) => (
+              <div key={game.id} className="flex flex-col gap-5 border-2 border-line p-6 sm:p-7">
+                <div className="flex flex-wrap items-baseline justify-between gap-3">
+                  <h3 className="font-display text-4xl uppercase tracking-wide">{game.name}</h3>
+                  <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-signal">{game.join} to join</span>
+                </div>
+                <p className="text-[15px] leading-relaxed text-paper/70">{game.line}</p>
+                <ul className="grid gap-px bg-line sm:grid-cols-2">
+                  {menu.map((t) => (
+                    <li key={t.effect} className="flex flex-col gap-1 bg-ink p-4">
+                      <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-dim">{t.gift} · {(t.price ?? t.min).toLocaleString("en-US")} {(t.price ?? t.min) === 1 ? "coin" : "coins"}</span>
+                      <span className="font-display text-2xl uppercase tracking-wide" style={{ color: t.color }}>{t.name}</span>
+                      <span className="text-[13px] leading-snug text-paper/65">{t.line}</span>
+                    </li>
+                  ))}
+                </ul>
+                <a href={src} className="w-fit font-display text-xl uppercase tracking-wider underline decoration-signal decoration-[3px] underline-offset-[6px] hover:text-signal">Try {game.name} →</a>
+              </div>
+            ))}
+          </div>
+          <div className="mt-14 flex flex-col items-start gap-5 border-t border-line pt-10 sm:flex-row sm:items-center sm:justify-between">
+            <p className="max-w-xl text-lg leading-relaxed text-paper/80">
+              Sign up to keep your game set up: your teams, round length, your own gift prices on Creator, and every LIVE&rsquo;s rounds, coins and top gifters.
+            </p>
+            <Link href="/login" className="press shrink-0 bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Start free →</Link>
           </div>
         </div>
       </section>
@@ -172,13 +208,7 @@ export default function Live() {
         </div>
       </section>
 
-      <footer className="border-t border-line">
-        <div className="mx-auto flex max-w-7xl flex-col gap-4 px-4 py-10 font-mono text-[11px] uppercase tracking-[0.16em] text-dim sm:flex-row sm:items-center sm:justify-between sm:px-8">
-          <Wordmark className="text-xl text-paper" />
-          <span>Not affiliated with TikTok or TikFinity.</span>
-          <span>© 2026 Hookline</span>
-        </div>
-      </footer>
+      <SiteFooter />
     </main>
   );
 }

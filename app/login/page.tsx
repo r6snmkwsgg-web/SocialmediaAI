@@ -6,7 +6,7 @@ import { currentUser } from "@/lib/server/auth";
 import { configured, devLoginOn } from "@/lib/server/env";
 import { devLogin, google, sendLink } from "./actions";
 
-export const metadata: Metadata = { title: "Sign in · Hookline", robots: { index: false } };
+export const metadata: Metadata = { title: "Sign in", robots: { index: false } };
 
 const ERRORS: Record<string, string> = {
   email: "That email doesn't look right. Check it and try again.",
