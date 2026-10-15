@@ -18,6 +18,18 @@ Defaults picked while building, so nobody has to guess why something is the way 
 - **Without a key** (someone trying it from the website) the game is the free one: the battle, with the tag. Demo mode (`?demo=1`) can show any game, since it's only pretend viewers.
 - **Session numbers count real viewers only.** Demo and test-panel viewers play like anyone but never count, and rounds count from the first thing a real viewer does, so testing before going live doesn't add up. The game sends the whole session so far every 30 seconds and as it closes; numbers only ever go up, and a session dated in the future or more than a week back is turned away.
 
+## Rivals
+
+- **The game** (`lib/live/games/rivals.ts`, with its rules in `lib/live/rivals.ts`): the ball battle with named sides, red always on the left and blue on the right, and a different rivalry every round. The vote offers three that didn't just play; without a vote, the next one is random. Both sides field the same champion, a different one each round, so the gifts decide it. Everyone picks a side again each round, since last round's sides were different ones.
+- **Each side's gifts**: the same three powers for both (a ball with the gifter's face, Rage 2X, a meteor), each set off by that side's own gift, so the gift picks the side, even for someone who typed the other number. Red: Perfume (20 coins), Sunglasses (199), Money Gun (500). Blue: Doughnut (30), Hearts (199), Gem Gun (500). Blue's ball costs 10 coins more because TikTok has no second 20-coin gift that every country gets; the settings say so, and on Creator any of the six can be swapped. They must be six different gifts, each side's climbing in price, or Hookline's stand.
+- **Any other gift** helps the side the giver is on (or the side that's behind, for someone who hasn't picked), by its price: under the cheapest power it heals 1 HP a coin, and from there it sets off the best power it reaches, like the battle's menu. So a Galaxy is a meteor, not 1,000 HP that would make a side unbeatable.
+- **Gift names are matched loosely**: case, spaces and punctuation don't count, and Donut is Doughnut.
+- **Typing** 1 or 2, a side's name, or red or blue picks a side for free.
+- **No score between rounds**, since the sides change: the top right says RIVALS where the battle shows its score.
+- **Rivalries are choices, never who people are.** Hookline's come in groups: sports, games and tech, food and fun, places, and politics (Republicans vs Democrats). Religion, race, where people are from and who they love are off limits: none of the presets touch them, and a streamer's own rivalry with one of those words in it is refused when saved, and dropped if it's in saved settings anyway. TikTok's rules on hate protect exactly those things, and a LIVE that sets them against each other for gifts turns its chat on people and gets cut.
+- **Politics is off until a streamer turns it on**, with a warning beside it: TikTok is strict about LIVEs that stir up politics for gifts, and in 2024 it banned some creators who ran political fights from LIVE matches.
+- **Plans**: Rivals comes with Pro, each side's own gifts with Creator (like the battle's own menu), and a streamer's own rivalries, up to 12 of them at 12 letters a side, with any plan that has Rivals.
+
 ## Accounts and billing
 
 - **Signing in** is Supabase Auth: an email link or Google, no passwords. On a developer's own machine (`HOOKLINE_DEV_LOGIN=1` and not a production build) there's also a sign-in without email, so the app can be worked on offline. It can't be switched on in a deploy.

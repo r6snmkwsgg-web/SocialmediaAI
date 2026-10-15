@@ -5,7 +5,7 @@ Content that makes itself. Lives that pay.
 Hookline is one place to make money from short video and TikTok LIVE, in four sections:
 
 - **Shorts**: every morning, a few faceless Shorts drawn by code (ball battles, quizzes, would you rather, text stories, rankings, bar-chart races). Swipe right to keep one, left to bin it. Kept ones are rendered, titled by Claude and posted to YouTube and TikTok at the channel's best times, and whatever does well gets made more.
-- **Live**: games for a TikTok LIVE that viewers play with chat and gifts (a ball battle, Ball Race, Last One Standing), with a vote for the next round, settings per account and each session's real numbers.
+- **Live**: games for a TikTok LIVE that viewers play with chat and gifts (a ball battle, Rivals, Ball Race, Last One Standing), with a vote for the next round, settings per account and each session's real numbers. In Rivals the sides are a new rivalry every round, like Messi vs Ronaldo, and each side has its own gifts.
 - **Trends**: the Shorts growing fastest right now in the niches you follow, from YouTube's official API, the hours your own Shorts do best, and which formats are working.
 - **Earnings**: real figures from YouTube, TikTok, the LIVE games and Stripe, one chart per measure, with goals.
 

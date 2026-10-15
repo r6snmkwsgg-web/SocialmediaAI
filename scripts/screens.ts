@@ -2,8 +2,9 @@
  * Screenshots of every page, at desktop and phone sizes, and the LIVE
  * games at full 1080×1920 in each state, into docs/screens:
  *
- *   pnpm screens [http://localhost:3000]
+ *   pnpm screens [http://localhost:3000] [site] [app] [games]
  *
+ * Naming parts takes only those; with none named, it takes them all.
  * Needs the app running with HOOKLINE_DEV_LOGIN=1 (it signs in as a new
  * test account), and a database. The app's screens show that account's
  * real state: a new account's empty states, its first Shorts, and so on.
@@ -14,6 +15,8 @@ import { mkdirSync } from "node:fs";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
 
 const BASE = (process.argv[2] ?? "http://localhost:3000").replace(/\/$/, "");
+const ONLY = process.argv.slice(3);
+const wanted = (part: string) => ONLY.length === 0 || ONLY.includes(part);
 const OUT = "docs/screens";
 const DESKTOP = { width: 1440, height: 900 };
 const PHONE = { width: 390, height: 844 };
@@ -147,7 +150,7 @@ async function app(browser: Browser) {
 /** Each game at the size it's streamed: counting down, mid-round, and the vote between rounds. */
 async function games(browser: Browser) {
   const ctx = await browser.newContext({ viewport: { width: 1080, height: 1920 } });
-  for (const game of ["battle", "race", "royale"]) {
+  for (const game of ["battle", "rivals", "race", "royale"]) {
     const page = await ctx.newPage();
     await page.goto(`${BASE}/live/play?demo=1&clean=1&game=${game}`, { waitUntil: "domcontentloaded" });
     await settle(page, 2500);
@@ -174,9 +177,9 @@ async function main() {
   mkdirSync(OUT, { recursive: true });
   const browser = await chromium.launch({ executablePath: process.env.CHROME_PATH || undefined });
   try {
-    await site(browser);
-    await app(browser);
-    await games(browser);
+    if (wanted("site")) await site(browser);
+    if (wanted("app")) await app(browser);
+    if (wanted("games")) await games(browser);
   } finally {
     await browser.close();
   }
