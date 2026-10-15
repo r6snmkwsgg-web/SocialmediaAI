@@ -4,7 +4,7 @@ import { rng, type BattleEvent, type World } from "@/lib/battle/sim";
 import { demoTick, demoViewer, GIFTS } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
 import { Show } from "@/lib/live/round";
-import { LIKES_PER_HP, tierFor } from "@/lib/live/rules";
+import { LIKES_PER_HP, TEAMS } from "@/lib/live/rules";
 import { draw, H, W } from "./draw";
 import { LiveSound } from "./sound";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
@@ -97,7 +97,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
     const step = (now: number) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      if (demo.current) for (const e of demoTick(dt, rand, s.names)) s.handle(e);
+      if (demo.current) for (const e of demoTick(dt, rand)) s.handle(e);
       s.update(dt);
       // sounds for whatever happened since the last frame
       if (s.world !== world) {
@@ -174,19 +174,22 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
   }, [startSound]);
 
   // the test panel's buttons: as if a viewer on that side did it
-  const as = (side: 0 | 1) => {
-    const s = show.current!;
-    const v = TESTERS[side];
-    s.join(v, side, s.sideOf(v.id) !== null);
+  const fresh = useRef(0);
+  const newcomer = (side: 0 | 1): Viewer => {
+    const i = fresh.current++;
+    const v = { ...demoViewer(i * 2 + side), id: `test-new-${i}` };
+    show.current!.join(v, side);
     return v;
   };
-  const gift = (side: 0 | 1, g: (typeof GIFTS)[number], count = 1) => handle({ kind: "gift", viewer: as(side), gift: g.name, coins: g.coins, count });
-  const crowd = (side: 0 | 1) => {
-    for (let i = 0; i < 6; i++) {
-      const v = demoViewer(side * 10 + i);
-      handle({ kind: "chat", viewer: { ...v, id: `test-crowd-${side}-${i}` }, text: side === 0 ? "1" : "2" });
-    }
+  const tester = (side: 0 | 1) => {
+    show.current!.join(TESTERS[side], side);
+    return TESTERS[side];
   };
+  const gift = (viewer: Viewer, g: (typeof GIFTS)[number]) => handle({ kind: "gift", viewer, gift: g.name, coins: g.coins, count: 1 });
+  const crowd = (side: 0 | 1) => {
+    for (let i = 0; i < 6; i++) handle({ kind: "chat", viewer: { ...demoViewer(i * 2 + side), id: `test-crowd-${side}-${fresh.current++}` }, text: String(side + 1) });
+  };
+  const btn = "border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10";
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-[#050506]" onClick={startSound}>
@@ -220,29 +223,25 @@ export function LiveGame({ src, url, demo: demoAtStart, clean }: Props) {
           <p className="mt-1 leading-relaxed text-paper/55">Every button acts like a viewer did it. Nothing is sent to TikTok.</p>
           {([0, 1] as const).map((side) => (
             <div key={side} className="mt-4">
-              <p className="mb-2 uppercase tracking-[0.16em] text-paper/60">Team {side + 1}</p>
+              <p className="mb-2 uppercase tracking-[0.16em]" style={{ color: TEAMS[side].color }}>{TEAMS[side].name} · type {side + 1}</p>
               <div className="grid grid-cols-2 gap-1.5">
                 {GIFTS.map((g) => (
-                  <button key={g.name} type="button" onClick={() => gift(side, g)} className="border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10">
+                  <button key={g.name} type="button" onClick={() => gift(newcomer(side), g)} className={btn}>
                     <span className="block text-paper">{g.name}</span>
-                    <span className="block text-[10px] text-dim">{g.coins} · {tierFor(g.coins).short}</span>
+                    <span className="block text-[10px] text-dim">{g.coins} · new viewer joins</span>
                   </button>
                 ))}
-                <button type="button" onClick={() => gift(side, GIFTS[0], 10)} className="border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10">
-                  <span className="block text-paper">10 roses</span>
-                  <span className="block text-[10px] text-dim">a streak</span>
+                <button type="button" onClick={() => gift(tester(side), GIFTS[2])} className={btn}>
+                  <span className="block text-paper">Gift again</span>
+                  <span className="block text-[10px] text-dim">same viewer, ball grows</span>
                 </button>
-                <button type="button" onClick={() => handle({ kind: "like", viewer: as(side), count: LIKES_PER_HP })} className="border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10">
+                <button type="button" onClick={() => handle({ kind: "like", viewer: tester(side), count: LIKES_PER_HP })} className={btn}>
                   <span className="block text-paper">{LIKES_PER_HP} likes</span>
                   <span className="block text-[10px] text-dim">+1 HP</span>
                 </button>
-                <button type="button" onClick={() => crowd(side)} className="border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10">
+                <button type="button" onClick={() => crowd(side)} className={btn}>
                   <span className="block text-paper">6 join</span>
-                  <span className="block text-[10px] text-dim">type {side + 1}</span>
-                </button>
-                <button type="button" onClick={() => handle({ kind: "share", viewer: { id: `test-share-${Date.now()}`, name: "a sharer" } })} className="border border-paper/20 px-2 py-1.5 text-left hover:border-paper hover:bg-paper/10">
-                  <span className="block text-paper">Share</span>
-                  <span className="block text-[10px] text-dim">mini ball</span>
+                  <span className="block text-[10px] text-dim">type {side + 1} in chat</span>
                 </button>
               </div>
             </div>

@@ -3,45 +3,29 @@ import Link from "next/link";
 import { Eyebrow, Wordmark } from "@/components/brand";
 import { Setup } from "@/components/live/setup";
 import { Phone } from "@/components/phone";
-import { LIKES_PER_HP, RAGE_SECONDS, SHIELD_SECONDS, TIERS } from "@/lib/live/rules";
+import { FOLLOW_HP, LIKES_PER_HP, SIZES, TEAMS } from "@/lib/live/rules";
 
 export const metadata: Metadata = {
   title: "Live ball battles for TikTok LIVE · Hookline",
-  description: "A ball battle your TikTok LIVE plays. Viewers pick a side in chat, and every gift lands in the fight.",
+  description: "Red against blue on your TikTok LIVE. Viewers type 1 or 2 to pick a team, and every gift drops the gifter's own ball into the fight.",
 };
 
-const LADDER = [
-  ...TIERS.map((t) => ({
-    what: `${t.min.toLocaleString("en-US")} ${t.min === 1 ? "coin" : "coins"}`,
-    example: `${t.example} and up`,
-    does:
-      t.effect === "heal" ? "+1 HP for your side, per coin. Ten roses, ten HP."
-      : t.effect === "small" ? "A small ball joins your side, with your name and face on it."
-      : t.effect === "ball" ? "A full ball with your side's ability joins the fight, with your face on it."
-      : t.effect === "rage" ? `Your whole side hits twice as hard for ${RAGE_SECONDS} seconds.`
-      : t.effect === "shield" ? `Your side takes no damage for ${SHIELD_SECONDS} seconds, and gets 10 HP.`
-      : "A meteor lands on the other side's strongest ball. 5,000 coins and up brings three.",
-    gold: t.min >= 99,
-  })),
-];
-
-const FREE = [
-  { what: "Type 1 or 2", does: "Joins that side. You stay on it round after round until you switch." },
-  { what: `${LIKES_PER_HP} likes`, does: "+1 HP for your side. Everyone tapping adds up." },
-  { what: "Share the LIVE", does: "A small ball with your name, once a round." },
-  { what: "Follow", does: "+3 HP for your side." },
+const RULES = [
+  { n: "1", title: "Type 1 or 2", body: "Joins RED or BLUE. You stay on your team round after round.", color: TEAMS[0].color },
+  { n: "2", title: "Send a gift", body: "Your ball drops into the fight with your face on it. Gift again and it grows.", color: "#FFD60A" },
+  { n: "3", title: "Tap to like", body: `Every ${LIKES_PER_HP} likes heals your team 1 HP. A follow is worth ${FOLLOW_HP}.`, color: "#FF6FB5" },
 ];
 
 const WHY = [
-  { title: "Every gift does something", body: "A rose is a heal you can see land. A Galaxy is a meteor with a countdown. Gifters get their face on a ball and their name on a banner, so the gift is the show." },
-  { title: "Two sides, one rivalry", body: "Viewers pick a side and stay on it. The series score carries from round to round, and the side that's behind is where unpicked gifts go, so nobody is ever out of it." },
-  { title: "Rounds are short", body: "Most fights last under a minute, then there's a new matchup. There's always a reason to stay for one more." },
+  { title: "Anyone gets it in two seconds", body: "Two colours, two numbers, one arena. Someone scrolling past sees RED vs BLUE and TYPE 1 OR 2, and that's all they need." },
+  { title: "Every gift is visible", body: "The gifter's face is on a ball in the fight, the bigger the gift the bigger the ball, and everyone watches it hit. That's the reason to send one." },
+  { title: "Rounds are short", body: "Most fights last under a minute, then the next round starts. The score carries over, so there's always a reason to stay for one more." },
 ];
 
 const TIPS = [
-  "Say it every round: type 1 or type 2.",
-  "Read out every banner. The name on it is your cue to thank them.",
-  "Hype the side that's losing. Comebacks are where the gifts come from.",
+  "Say it every round: type 1 for red, 2 for blue.",
+  "When a face drops in, say their name. That's what makes the next person gift.",
+  "Hype the team that's losing. Comebacks are where the gifts come from.",
   "Let the countdown breathe. The moment before FIGHT is when people pick.",
 ];
 
@@ -74,7 +58,7 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              A ball battle that runs on your stream. Viewers type 1 or 2 to pick a side, and every gift lands in the fight: a rose heals, a Perfume drops in a ball with the gifter&rsquo;s face on it, a Galaxy calls down a meteor.
+              Red against blue, live on your stream. Viewers type 1 or 2 to pick a team, and every gift drops the gifter&rsquo;s own ball into the fight with their face on it. The bigger the gift, the bigger the ball.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
@@ -113,38 +97,40 @@ export default function Live() {
         </div>
       </section>
 
-      {/* gifts */}
+      {/* the rules */}
       <section id="gifts" className="scroll-mt-16 bg-paper text-ink">
-        <div className="mx-auto grid max-w-7xl gap-12 px-4 py-20 sm:px-8 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)] lg:py-28">
-          <div className="flex flex-col gap-5">
-            <Eyebrow dark>The gift ladder</Eyebrow>
-            <h2 className="font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">The more it costs, the bigger it hits.</h2>
-            <p className="max-w-md text-lg leading-relaxed text-ink/75">
-              The same ladder runs along the top of the game, so viewers can read it mid-fight. Gifts from someone who hasn&rsquo;t picked a side go to whoever&rsquo;s losing.
-            </p>
-            <div className="mt-4 border-t-2 border-ink">
-              <p className="pt-4 font-mono text-[11px] uppercase tracking-[0.18em] text-ink/55">Free, for everyone</p>
-              <ul className="mt-3 flex flex-col">
-                {FREE.map((f) => (
-                  <li key={f.what} className="grid grid-cols-[130px_minmax(0,1fr)] gap-4 border-b border-rule py-3 text-[15px]">
-                    <span className="font-display text-xl uppercase">{f.what}</span>
-                    <span className="text-ink/75">{f.does}</span>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          </div>
-          <ol className="flex flex-col border-t-2 border-ink">
-            {LADDER.map((l) => (
-              <li key={l.what} className="grid grid-cols-[120px_minmax(0,1fr)] gap-5 border-b-2 border-ink py-5 sm:grid-cols-[170px_minmax(0,1fr)]">
-                <span className="flex flex-col">
-                  <span className={`font-display text-3xl uppercase sm:text-4xl ${l.gold ? "text-[#B8860B]" : ""}`}>{l.what}</span>
-                  <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-ink/55">{l.example}</span>
-                </span>
-                <span className="self-center text-[16px] leading-snug text-ink/85">{l.does}</span>
+        <div className="mx-auto max-w-7xl px-4 py-20 sm:px-8 lg:py-28">
+          <Eyebrow dark>The whole game</Eyebrow>
+          <h2 className="mt-4 max-w-4xl font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Three rules. That&rsquo;s it.</h2>
+          <ol className="mt-12 grid gap-px border-2 border-ink bg-ink md:grid-cols-3">
+            {RULES.map((r) => (
+              <li key={r.n} className="flex flex-col gap-3 bg-paper p-6 sm:p-7">
+                <span className="flex h-14 w-14 items-center justify-center rounded-full border-2 border-ink font-display text-3xl" style={{ background: r.color }}>{r.n}</span>
+                <h3 className="font-display text-4xl uppercase tracking-wide">{r.title}</h3>
+                <p className="text-[16px] leading-relaxed text-ink/75">{r.body}</p>
               </li>
             ))}
           </ol>
+
+          <div className="mt-16 grid gap-10 lg:grid-cols-[minmax(0,0.7fr)_minmax(0,1.3fr)] lg:items-end">
+            <div>
+              <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">Bigger gift, bigger ball.</h3>
+              <p className="mt-4 max-w-md text-[16px] leading-relaxed text-ink/75">
+                A ball&rsquo;s size and health come from everything that viewer has sent this round. A rose gets you in. A Galaxy makes you the biggest thing in the arena. Gifts from someone who hasn&rsquo;t picked a team go to the one that&rsquo;s losing.
+              </p>
+            </div>
+            <ul className="flex flex-wrap items-end gap-x-8 gap-y-6">
+              {SIZES.map((g) => (
+                <li key={g.gift} className="flex flex-col items-center gap-3">
+                  <span className="rounded-full border-[5px] bg-[#26262A]" style={{ width: g.r * 1.1, height: g.r * 1.1, borderColor: TEAMS[1].color }} aria-hidden="true" />
+                  <span className="text-center">
+                    <span className="block font-display text-2xl uppercase">{g.gift}</span>
+                    <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-ink/55">{g.coins.toLocaleString("en-US")} {g.coins === 1 ? "coin" : "coins"} · {g.hp} HP</span>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
         </div>
       </section>
 

@@ -102,10 +102,9 @@ export class LiveSound {
         if (e.dmg >= 3) this.thump(0.25);
       } else if (e.type === "boom") this.thump(0.55, 0.6);
       else if (e.type === "ko") this.thump(e.last ? 0.7 : 0.4, 0.3);
-      else if (e.type === "spawn" || e.type === "summon") this.tone(700, now, 0.16, 0.16, "sine", 3300);
-      else if (e.type === "block") this.tone(1400, now, 0.12, 0.12, "square", 900);
-      else if (e.type === "meteor") this.tone(1200, now, 1.1, 0.12, "sawtooth", 90);
-      else if (e.type === "buff") [0, 4, 7].forEach((n, i) => this.pluck(midi(67 + n), 0.22, i * 0.05));
+      else if (e.type === "spawn") this.tone(700, now, 0.16, 0.16, "sine", 3300);
+      // a viewer's ball dropping in gets a rising chord; growing, a higher one
+      else if (e.type === "summon") [0, 4, 7].forEach((n, i) => this.pluck(midi((e.grew ? 72 : 67) + n), 0.24, i * 0.05));
     }
   }
 

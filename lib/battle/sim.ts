@@ -61,6 +61,8 @@ export type Ball = {
   /** when it appeared */
   born: number;
   tag?: Tag;
+  /** a viewer's ball on a live: no ability, just a ball with their face on it */
+  plain?: boolean;
 };
 
 export type Mine = { id: number; team: Team; x: number; y: number; born: number; alive: boolean };
@@ -77,13 +79,8 @@ export type BattleEvent =
   | { f: number; type: "spawn"; x: number; y: number; team: Team; n: number }
   | { f: number; type: "heal"; x: number; y: number; team: Team; n?: number }
   | { f: number; type: "ko"; x: number; y: number; team: Team; last: boolean }
-  /** the rest only happen live, when viewers send something */
-  | { f: number; type: "block"; x: number; y: number; team: Team }
-  | { f: number; type: "summon"; x: number; y: number; team: Team; kind: AbilityId; name?: string }
-  | { f: number; type: "buff"; team: Team; buff: Buff }
-  | { f: number; type: "meteor"; x: number; y: number; team: Team; target: number };
-
-export type Buff = "rage" | "shield";
+  /** only live: a viewer's ball dropping in, or growing when they give more */
+  | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; grew: boolean };
 
 export type Battle = {
   a: AbilityId;
@@ -130,19 +127,14 @@ export type WorldOptions = {
 /**
  * The arena and everything in it, one physics step at a time. A video runs
  * it start to finish in one go; a live stream runs it in real time and
- * reaches in while it runs: viewers summon balls, heal their side, set it
- * raging or shielded, or call a meteor down on the other one.
+ * reaches in while it runs: viewers' gifts drop in balls with their faces
+ * on, and likes heal their side.
  */
 export class World {
   readonly rand: () => number;
   readonly balls: Ball[] = [];
   readonly mines: Mine[] = [];
   readonly events: BattleEvent[] = [];
-  /** meteors on their way down, and who they're aimed at */
-  readonly meteors: { id: number; team: Team; target: number; x: number; y: number; at: number; from: number }[] = [];
-  /** until when each team is raging (double damage) or shielded (takes none) */
-  readonly rage: [number, number] = [0, 0];
-  readonly shield: [number, number] = [0, 0];
   readonly suddenDeath: number;
   readonly maxTeam: number;
   /** physics steps run so far */
@@ -189,14 +181,6 @@ export class World {
     return this.balls.reduce((n, x) => n + (x.alive && x.team === t ? x.hp : 0), 0);
   }
 
-  raging(t: Team): boolean {
-    return this.rage[t] > this.clock;
-  }
-
-  shielded(t: Team): boolean {
-    return this.shield[t] > this.clock;
-  }
-
   private ready(key: string, now: number, gap: number): boolean {
     const last = this.hitAt.get(key);
     if (last !== undefined && now - last < gap) return false;
@@ -204,23 +188,18 @@ export class World {
     return true;
   }
 
-  /** what a team's hits are worth: double while it's raging */
-  private power(t: Team): number {
-    return this.raging(t) ? 2 : 1;
-  }
-
   /** Damage that lands on a ball, with what it sets off: a Fibonacci split, or a knockout. */
   private hurt(target: Ball, dmg: number, f: number) {
-    if (!target.alive || this.shielded(target.team)) return;
+    if (!target.alive) return;
     target.hp = Math.max(0, target.hp - dmg);
     if (target.hp <= 0) {
       target.alive = false;
       const left = this.count(target.team);
       this.events.push({ f, type: "ko", x: target.x, y: target.y, team: target.team, last: left === 0 });
-      if (target.kind === "bomb" && !target.child) this.blast(target.x, target.y, 170, 4 * this.power(target.team), target.team, f);
+      if (target.kind === "bomb" && !target.child) this.blast(target.x, target.y, 170, 4, target.team, f);
       return;
     }
-    if (target.kind === "fibonacci" && this.clock - this.lastSplit[target.team] >= SPLIT_GAP) {
+    if (target.kind === "fibonacci" && !target.plain && this.clock - this.lastSplit[target.team] >= SPLIT_GAP) {
       const t = target.team;
       this.lastSplit[t] = this.clock;
       this.splits[t]++;
@@ -241,12 +220,6 @@ export class World {
       if (Math.hypot(o.x - x, o.y - y) <= radius + o.r) this.hurt(o, dmg, f);
     }
     this.events.push({ f, type: "boom", x, y, dmg, to: (1 - from) as Team });
-  }
-
-  /** a hit landing on a ball, or bouncing off its shield */
-  private struck(o: Ball, dmg: number, f: number, cx: number, cy: number) {
-    if (this.shielded(o.team)) this.events.push({ f, type: "block", x: cx, y: cy, team: o.team });
-    else this.events.push({ f, type: "hit", x: o.x, y: o.y - o.r, cx, cy, dmg, to: o.team });
   }
 
   /** One physics step. */
@@ -272,7 +245,9 @@ export class World {
       if (p.y + p.r > hi) { p.y = hi - p.r; p.vy = -Math.abs(p.vy); bounced = true; }
       if (!bounced) continue;
       p.bounces++;
-      if (p.kind === "grow" && !p.child) {
+      if (p.plain) {
+        // a viewer's ball has no ability
+      } else if (p.kind === "grow" && !p.child) {
         p.r = Math.min(p.r + 2, 130);
         if (p.bounces % 2 === 0) { p.maxHp += 1; p.hp += 1; }
         p.touch = 1 + Math.floor((p.r - ABILITIES.grow.radius) / 40);
@@ -292,7 +267,7 @@ export class World {
 
     // bombs leave mines behind them
     for (const p of balls) {
-      if (!p.alive || p.kind !== "bomb" || p.child || now - p.lastMine < MINE_EVERY) continue;
+      if (!p.alive || p.kind !== "bomb" || p.child || p.plain || now - p.lastMine < MINE_EVERY) continue;
       p.lastMine = now;
       this.mines.push({ id: this.nextId++, team: p.team, x: p.x, y: p.y, born: now, alive: true });
       const mine = this.mines.filter((m) => m.alive && m.team === p.team);
@@ -304,18 +279,9 @@ export class World {
       const hit = balls.some((o) => o.alive && o.team !== m.team && o.fresh <= now && Math.hypot(o.x - m.x, o.y - m.y) < o.r + MINE_R);
       if (hit) {
         m.alive = false;
-        this.blast(m.x, m.y, 110, 3 * this.power(m.team), m.team, f);
+        this.blast(m.x, m.y, 110, 3, m.team, f);
       }
     }
-
-    // meteors land where their target is now
-    for (const m of this.meteors) {
-      if (m.at > now) continue;
-      const t = balls.find((b) => b.id === m.target && b.alive);
-      if (t) { m.x = t.x; m.y = t.y; }
-      this.blast(m.x, m.y, 150, 8, m.team, f);
-    }
-    for (let i = this.meteors.length - 1; i >= 0; i--) if (this.meteors[i].at <= now) this.meteors.splice(i, 1);
 
     // balls hitting each other: bounce apart, and enemies trade damage
     for (let i = 0; i < balls.length; i++) {
@@ -338,9 +304,9 @@ export class World {
         }
         if (p.team === q.team || p.fresh > now || q.fresh > now || !this.ready(`h${p.id}-${q.id}`, now, HIT_GAP)) continue;
         const cx = p.x + nx * p.r, cy = p.y + ny * p.r;
-        const toQ = p.touch * this.power(p.team), toP = q.touch * this.power(q.team);
-        this.struck(q, toQ, f, cx, cy);
-        this.struck(p, toP, f, cx, cy);
+        const toQ = p.touch, toP = q.touch;
+        this.events.push({ f, type: "hit", x: q.x, y: q.y - q.r, cx, cy, dmg: toQ, to: q.team });
+        this.events.push({ f, type: "hit", x: p.x, y: p.y - p.r, cx, cy, dmg: toP, to: p.team });
         this.hurt(q, toQ, f);
         this.hurt(p, toP, f);
       }
@@ -348,7 +314,7 @@ export class World {
 
     // sword blades cut whatever they sweep through
     for (const p of balls) {
-      if (!p.alive || p.kind !== "sword") continue;
+      if (!p.alive || p.kind !== "sword" || p.plain) continue;
       const ux = Math.cos(p.angle), uy = Math.sin(p.angle);
       const x0 = p.x + ux * p.r, y0 = p.y + uy * p.r;
       for (const o of balls) {
@@ -356,10 +322,8 @@ export class World {
         const along = Math.max(0, Math.min(p.blade, (o.x - x0) * ux + (o.y - y0) * uy));
         const px = x0 + ux * along, py = y0 + uy * along;
         if (Math.hypot(o.x - px, o.y - py) > o.r || !this.ready(`c${p.id}-${o.id}`, now, CUT_GAP)) continue;
-        const dmg = 3 * this.power(p.team);
-        if (this.shielded(o.team)) this.events.push({ f, type: "block", x: px, y: py, team: o.team });
-        else this.events.push({ f, type: "cut", x: px, y: py, dmg, to: o.team });
-        this.hurt(o, dmg, f);
+        this.events.push({ f, type: "cut", x: px, y: py, dmg: 3, to: o.team });
+        this.hurt(o, 3, f);
         p.blade = Math.min(p.blade + 16, 300);
       }
     }
@@ -402,23 +366,30 @@ export class World {
   // ── what viewers can do, live ──
 
   /**
-   * A new ball for a team, dropped in on its own side. A small one is a
-   * plain ball with a little health; a full one has its ability. Nothing
-   * happens if the team is already full.
+   * A viewer's ball, dropped in on their side with their face on it: a
+   * plain ball, no ability, as big and tough as their gift made it.
+   * Nothing happens if the side is already full.
    */
-  summon(team: Team, kind: AbilityId, o: { small?: boolean; tag?: Tag } = {}): Ball | null {
+  summon(team: Team, kind: AbilityId, o: { tag?: Tag; r: number; hp: number; touch: number }): Ball | null {
     if (this.count(team) >= this.maxTeam) return null;
     const { lo, size } = this.arena();
-    const r = o.small ? 30 : ABILITIES[kind].radius;
-    const x = lo + size * (team === 0 ? 0.12 + this.rand() * 0.2 : 0.68 + this.rand() * 0.2);
+    const r = Math.min(o.r, size / 2 - 8);
+    const x = lo + r + (size - 2 * r) * (team === 0 ? 0.05 + this.rand() * 0.25 : 0.7 + this.rand() * 0.25);
     const y = lo + r + this.rand() * (size - 2 * r);
-    const ball = this.add(team, kind, x, y, {
-      fresh: this.clock + 0.8,
-      tag: o.tag,
-      ...(o.small ? { hp: 4, maxHp: 4, r, child: true } : {}),
-    });
-    this.events.push({ f: this.f, type: "summon", x: ball.x, y: ball.y, team, kind, name: o.tag?.name });
+    const ball = this.add(team, kind, x, y, { r, hp: o.hp, maxHp: o.hp, touch: o.touch, plain: true, child: true, fresh: this.clock + 0.8, tag: o.tag });
+    this.events.push({ f: this.f, type: "summon", x: ball.x, y: ball.y, team, name: o.tag?.name, grew: false });
     return ball;
+  }
+
+  /** A viewer gave more: their ball gets bigger and tougher. */
+  grow(ball: Ball, o: { r: number; hp: number; touch: number }) {
+    const gain = Math.max(0, o.hp - ball.maxHp);
+    ball.maxHp = Math.max(ball.maxHp, o.hp);
+    ball.hp += gain;
+    ball.r = Math.max(ball.r, Math.min(o.r, this.arena().size / 2 - 8));
+    ball.touch = Math.max(ball.touch, o.touch);
+    ball.born = this.clock;
+    this.events.push({ f: this.f, type: "summon", x: ball.x, y: ball.y, team: ball.team, name: ball.tag?.name, grew: true });
   }
 
   /** Health for a team, onto its strongest ball; past full, it raises the ball's maximum. */
@@ -430,27 +401,6 @@ export class World {
     best.maxHp = Math.max(best.maxHp, best.hp);
     this.events.push({ f: this.f, type: "heal", x: best.x, y: best.y, team, n });
     return best;
-  }
-
-  /** Rage (double damage) or a shield (no damage) for a while; more of it adds on. */
-  buff(team: Team, buff: Buff, seconds: number) {
-    const until = buff === "rage" ? this.rage : this.shield;
-    until[team] = Math.max(until[team], this.clock) + seconds;
-    this.events.push({ f: this.f, type: "buff", team, buff });
-  }
-
-  /**
-   * A meteor on one of the other team's balls (the strongest, or the
-   * nth strongest for a shower), landing a moment later.
-   */
-  meteor(team: Team, nth = 0, delay = 0): boolean {
-    const foes = this.balls.filter((b) => b.alive && b.team !== team).sort((x, y) => y.hp - x.hp);
-    if (foes.length === 0) return false;
-    const target = foes[nth % foes.length];
-    const from = this.clock + delay;
-    this.meteors.push({ id: this.nextId++, team, target: target.id, x: target.x, y: target.y, at: from + 1.1, from });
-    this.events.push({ f: this.f, type: "meteor", x: target.x, y: target.y, team, target: target.id });
-    return true;
   }
 }
 

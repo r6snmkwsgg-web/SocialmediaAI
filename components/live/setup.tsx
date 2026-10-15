@@ -1,7 +1,6 @@
 "use client";
 import { useEffect, useMemo, useState } from "react";
 import type { LiveEvent } from "@/lib/live/events";
-import { tierFor } from "@/lib/live/rules";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
 
 type Heard = { at: number; e: LiveEvent };
@@ -9,7 +8,7 @@ type Heard = { at: number; e: LiveEvent };
 function describe(e: LiveEvent): string {
   switch (e.kind) {
     case "gift":
-      return `${e.count > 1 ? `${e.count}× ` : ""}${e.gift} (${e.coins} ${e.coins === 1 ? "coin" : "coins"}): ${tierFor(e.coins).label}`;
+      return `sent ${e.count > 1 ? `${e.count}× ` : ""}${e.gift} (${(e.coins * e.count).toLocaleString("en-US")} ${e.coins * e.count === 1 ? "coin" : "coins"})`;
     case "chat":
       return `said “${e.text}”`;
     case "like":
