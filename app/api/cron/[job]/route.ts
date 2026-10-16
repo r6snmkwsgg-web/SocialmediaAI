@@ -1,12 +1,13 @@
 import { env } from "@/lib/server/env";
 import { recapLives } from "@/lib/server/live";
-import { dueForShorts, makeDailyShorts } from "@/lib/server/shorts/generate";
+import { runDailyShorts } from "@/lib/server/shorts/generate";
 import { postDue } from "@/lib/server/shorts/post";
 import { collectStats } from "@/lib/server/shorts/stats";
 import { syncEarnings } from "@/lib/server/earnings";
 import { refreshTrends } from "@/lib/server/trends";
 
-export const maxDuration = 60;
+// a channel's Shorts can take a minute or two while Claude writes new material: 300 seconds is what Vercel allows on every plan with fluid compute, which is on by default
+export const maxDuration = 300;
 
 /**
  * The worker's periodic jobs, for a scheduler to call instead (Vercel Cron
@@ -21,11 +22,9 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
   let log: string[];
   if (job === "post") log = await postDue();
   else if (job === "stats") log = await collectStats();
-  else if (job === "shorts") {
-    log = [];
-    // a few at a time: the rest are picked up on the next run
-    for (const id of await dueForShorts(new Date(), 5)) log.push(`${await makeDailyShorts(id)} for ${id}`);
-  } else if (job === "trends") log = await refreshTrends();
+  // a few at a time, and nobody new after two and a half minutes, so the request always finishes: the rest are picked up on the next run
+  else if (job === "shorts") log = await runDailyShorts(new Date(), 5, 150_000);
+  else if (job === "trends") log = await refreshTrends();
   else if (job === "live") log = await recapLives();
   else if (job === "earnings") log = await syncEarnings();
   else return new Response("No such job", { status: 404 });

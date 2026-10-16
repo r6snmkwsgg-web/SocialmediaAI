@@ -45,7 +45,7 @@ export function Pricing() {
         })}
       </ul>
       <p className="mt-6 max-w-2xl text-[14px] leading-relaxed text-ink/65">
-        Prices in US dollars. Everyone starts on Free; upgrade inside the app when it&rsquo;s worth it. Cancel any time and keep your plan to the end of what you paid for.
+        Prices in US dollars. Everyone starts on Free; upgrade inside the app when it&rsquo;s worth it. Cancel any time and keep your plan to the end of what you paid for. The LIVE games run on TikTok gifts, which TikTok only allows from 18, usually with about 1,000 followers, and they need a computer to go LIVE from.
       </p>
     </div>
   );

@@ -1,6 +1,6 @@
 "use client";
 import { useRouter } from "next/navigation";
-import { useCallback, useEffect, useRef, useState, useTransition } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { Phone } from "@/components/phone";
 import { Icons } from "@/components/app/icons";
 import { LocalTime } from "@/components/app/local-time";
@@ -8,6 +8,7 @@ import { button, Pill } from "@/components/app/ui";
 import type { TikTokChoices } from "@/lib/shorts/tiktok";
 import { seconds } from "@/lib/shorts/timing";
 import type { Spec } from "@/lib/shorts/types";
+import { keptNote, whyFor, withAudience, type Keeping } from "@/lib/shorts/youtube";
 import { toast } from "@/components/app/toast";
 import { ShortPlayer } from "./player";
 import { EditCopy } from "./edit-copy";
@@ -22,25 +23,37 @@ type Props = {
   schedules: boolean;
   /** on a plan that posts for you, waiting only for an account to post to */
   paid?: boolean;
+  /**
+   * the YouTube channel Shorts go to: whether Hookline uploads to it itself, its answer to "made for kids?",
+   * and whether YouTube has set the whole channel as made for kids
+   */
+  youtube?: { auto: boolean; kids: boolean | null; youtubeKids?: boolean | null } | null;
+  /** Hookline posts to YouTube for everyone (YouTube's audit has passed) */
+  youtubeApi?: boolean;
   /** set when approved Shorts also go straight to TikTok: asks TikTok about the account */
   creator?: () => Promise<CreatorResult>;
-  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null }>;
+  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null, kids?: boolean | null) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null; how?: Keeping }>;
   edit: (id: string, title: string, description: string) => Promise<{ ok: boolean; message?: string }>;
 };
 
 /**
  * The swipe queue: one Short at a time in a phone, playing. Right (or →)
  * to post it, left (or ←) for a different one. The title can be changed
- * before it goes. When it's going to TikTok too, a yes first asks
- * TikTok's questions for that Short, next to the Short itself.
+ * before it goes, and so can who it's for: the channel's answer to "made
+ * for kids?" unless the creator says otherwise for this one. When it's
+ * going to TikTok too, a yes first asks TikTok's questions for that
+ * Short, next to the Short itself.
  */
-export function SwipeQueue({ items, tag, schedules, paid = false, creator, decide, edit }: Props) {
+export function SwipeQueue({ items, tag, schedules, paid = false, youtube = null, youtubeApi = false, creator, decide, edit }: Props) {
   const router = useRouter();
   const [list, setList] = useState(items);
   const [dx, setDx] = useState(0);
   const [pending, start] = useTransition();
   const [editing, setEditing] = useState(false);
   const [asking, setAsking] = useState(false);
+  // made for kids, for this Short: starts as the channel's answer
+  const channelKids = youtube?.kids ?? false;
+  const [kids, setKids] = useState(channelKids);
   const drag = useRef<{ x: number; moved: boolean } | null>(null);
   const cur = list[0];
 
@@ -48,7 +61,8 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
   useEffect(() => {
     setEditing(false);
     setAsking(false);
-  }, [cur?.id]);
+    setKids(channelKids);
+  }, [cur?.id, channelKids]);
 
   const finish = useCallback(
     (yes: boolean, tiktok: TikTokChoices | null = null) => {
@@ -56,16 +70,17 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
       const id = cur.id;
       setList((l) => l.filter((x) => x.id !== id));
       setDx(0);
+      // only a choice that differs from the channel's answer goes with it
+      const audience = yes && kids !== channelKids ? kids : null;
       start(async () => {
-        const r = await decide(id, yes, tiktok);
+        const r = await decide(id, yes, tiktok, audience);
         if (!r.ok) toast("That didn't save. Try again.", "bad");
         else if (!yes) toast(r.replaced ? "Skipped. A different one is on its way." : "Skipped.");
-        else if (r.at) toast(`Posting ${new Date(r.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" })}`, "good");
-        else toast("Kept. It's being made into a video now.", "good");
+        else toast(keptNote(r.how ?? "self", r.at ? new Date(r.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : null), "good");
         router.refresh();
       });
     },
-    [cur, decide, router],
+    [cur, decide, router, kids, channelKids],
   );
 
   const go = useCallback(
@@ -93,7 +108,15 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
     return () => window.removeEventListener("keydown", key);
   }, [go, editing, asking]);
 
-  if (!cur) return null;
+  // YouTube has the whole channel as made for kids: comments are off whatever's ticked
+  const channelLocked = youtube?.youtubeKids === true;
+  // the preview ends the way the video will, for who it's for
+  const preview = useMemo(() => (cur ? withAudience(cur.spec, kids || channelLocked) : null), [cur, kids, channelLocked]);
+  // its time is when it posts only where Hookline posts it; otherwise it's the best time to post it
+  const autoPost = !!youtube?.auto || (schedules && !youtube);
+  const why = useMemo(() => (cur ? whyFor(cur.why, autoPost) : []), [cur, autoPost]);
+
+  if (!cur || !preview) return null;
 
   const onDown = (e: React.PointerEvent) => {
     if (asking) return;
@@ -131,7 +154,7 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
         style={{ transform: `translateX(${dx}px) rotate(${dx / 24}deg)`, transition: drag.current?.moved ? "none" : "transform 160ms ease" }}
       >
         <Phone>
-          <ShortPlayer key={cur.id} spec={cur.spec} tag={tag} />
+          <ShortPlayer key={cur.id} spec={preview} tag={tag} />
         </Phone>
         {Math.abs(dx) > 40 && (
           <span className={`pointer-events-none absolute top-14 border-4 px-3 py-1 font-display text-3xl uppercase tracking-wider ${dx > 0 ? "right-6 rotate-12 border-[#34c759] text-[#34c759]" : "left-6 -rotate-12 border-signal text-signal"}`}>
@@ -185,7 +208,7 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
             <div>
               <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Why this one</p>
               <ul className="flex flex-col gap-2 text-[14px] leading-snug">
-                {cur.why.map((w) => (
+                {why.map((w) => (
                   <li key={w} className="flex gap-2.5">
                     <Icons.check className="mt-[3px] h-4 w-4 shrink-0 text-signal" />
                     {w}
@@ -194,17 +217,36 @@ export function SwipeQueue({ items, tag, schedules, paid = false, creator, decid
               </ul>
             </div>
 
+            <label className="flex items-start gap-2.5 text-[14px] leading-snug">
+              <input type="checkbox" checked={kids} onChange={(e) => setKids(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-signal)]" />
+              <span>
+                Made for kids
+                <span className="block text-[13px] text-muted">
+                  {youtube?.kids === null || !youtube ? "YouTube needs you to say. " : kids === channelKids ? "Your channel's answer. " : "Just for this one. "}
+                  {channelLocked
+                    ? "YouTube marked your channel Made for Kids: comments are off, so it ends without asking for them."
+                    : "Made for kids turns comments off, so it ends without asking for them."}
+                </span>
+              </span>
+            </label>
+
             <p className="border-l-4 border-signal pl-3 text-[14px]">
-              {schedules ? (
+              {autoPost ? (
                 cur.suggestedFor ? (
                   <>Swipe right and it posts <b><LocalTime iso={cur.suggestedFor} /></b>. Nothing posts without your yes.</>
                 ) : (
                   "Swipe right and it posts at your next free time. Nothing posts without your yes."
                 )
+              ) : paid && youtube ? (
+                cur.suggestedFor ? (
+                  <>Swipe right and it&rsquo;s made into a video for you to post on YouTube, best <b><LocalTime iso={cur.suggestedFor} /></b>. Until YouTube finishes reviewing Hookline, you post it yourself.</>
+                ) : (
+                  "Swipe right and it's made into a video for you to post on YouTube. Until YouTube finishes reviewing Hookline, you post it yourself."
+                )
               ) : paid ? (
-                "Swipe right and it's made into a video. Connect YouTube and the ones you keep post themselves."
+                youtubeApi ? "Swipe right and it's made into a video. Connect YouTube and the ones you keep post themselves." : "Swipe right and it's made into a video you post yourself."
               ) : (
-                "Swipe right and it's made into a video you download and post yourself. Pro posts it for you."
+                `Swipe right and it's made into a video you download and post yourself.${youtubeApi ? " Pro posts it for you." : ""}`
               )}
             </p>
 

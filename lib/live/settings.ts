@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { ABILITY_IDS, type AbilityId } from "../battle/abilities";
 import { validGifts } from "./menu";
-import { NAME_MAX, ownRivalryProblem, RIVAL_GROUP_IDS, RIVAL_GROUPS, validSideGifts } from "./rivals";
+import { knownGroups, NAME_MAX, ownRivalryProblem, RIVAL_GROUPS, sidesProblem, validSideGifts } from "./rivals";
 
 /**
  * A streamer's settings for their live game, saved on their account and
@@ -34,7 +34,8 @@ export const liveSettingsSchema = z.object({
   vote: z.boolean(),
   /** Rivals: which of Hookline's rivalries come up, the streamer's own, and each side's gifts (null keeps Hookline's) */
   rivals: z.object({
-    groups: z.array(z.enum(RIVAL_GROUP_IDS)).max(RIVAL_GROUP_IDS.length),
+    // a group since taken away (Places) is dropped, rather than throwing out the streamer's own rivalries with it
+    groups: z.array(z.string().max(32)).max(32).transform(knownGroups),
     own: z.array(z.object({ red: z.string().trim().max(NAME_MAX), blue: z.string().trim().max(NAME_MAX) })).max(12),
     gifts: z.object({ red: z.array(gift).length(3), blue: z.array(gift).length(3) }).nullable(),
   }),
@@ -74,6 +75,8 @@ export function parseSettings(raw: unknown): LiveSettings {
   const s = out as LiveSettings;
   // a menu has to start at 1 coin and climb, or the game's own stands
   if (s.gifts && !validGifts(s.gifts)) s.gifts = null;
+  // team names that set people against each other go back to Red and Blue, in the streamer's colours
+  if (sidesProblem(s.teams[0].name, s.teams[1].name)) s.teams = [{ ...s.teams[0], name: base.teams[0].name }, { ...s.teams[1], name: base.teams[1].name }];
   // rivalries Hookline won't run are dropped, and side gifts that don't make a game fall back to Hookline's
   s.rivals = {
     ...s.rivals,

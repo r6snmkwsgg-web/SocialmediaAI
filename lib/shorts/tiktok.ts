@@ -77,6 +77,17 @@ export function postSettings(c: TikTokChoices, creator: Creator) {
   };
 }
 
+/** The caption on TikTok: the title and description, without YouTube's own #shorts tag. */
+export function tiktokCaption(title: string, description: string): string {
+  const d = description
+    .replace(/(^|\s)#shorts\b/gi, "$1")
+    .split("\n")
+    .map((l) => l.replace(/[ \t]{2,}/g, " ").trim())
+    .join("\n")
+    .trim();
+  return (d ? `${title}\n\n${d}` : title).slice(0, 2200);
+}
+
 /** TikTok's reasons for turning a post down, in words a creator can act on. */
 const REASONS: Record<string, string> = {
   spam_risk_too_many_posts: "TikTok won't take more posts from this account today.",

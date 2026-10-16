@@ -16,7 +16,8 @@ export type Overview = {
   paying: { pro: number; creator: number };
   revenue: number;
   connected: { youtube: number; tiktok: number; lost: number };
-  day: { made: number; approved: number; posted: number; lives: number; coins: number };
+  /** LIVE coins are gift coins seen on streamers' own verified LIVEs; `unverified` are the rest, apart */
+  day: { made: number; approved: number; posted: number; lives: number; verifiedLives: number; coins: number; unverified: number };
   queue: { queued: number; running: number; failedDay: number; oldest: Date | null };
   workers: WorkerStatus;
   signups: Map<string, number>;
@@ -29,7 +30,7 @@ export async function overview(): Promise<Overview> {
   return admin(async (tx) => {
     const [a] = await tx<{
       accounts: number; new_week: number; onboarded: number; youtube: number; tiktok: number; lost: number;
-      made: number; approved: number; posted: number; lives: number; coins: string; queued: number; running: number; failed: number; oldest: Date | null;
+      made: number; approved: number; posted: number; lives: number; verified_lives: number; coins: string; unverified: string; queued: number; running: number; failed: number; oldest: Date | null;
     }[]>`
       select
         (select count(*) from auth.users)::int as accounts,
@@ -42,7 +43,9 @@ export async function overview(): Promise<Overview> {
         (select count(*) from public.videos where decided_at > now() - interval '24 hours' and status not in ('review', 'rejected'))::int as approved,
         (select count(*) from public.videos where posted_at > now() - interval '24 hours')::int as posted,
         (select count(*) from public.live_sessions where started_at > now() - interval '24 hours')::int as lives,
-        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '24 hours') as coins,
+        (select count(*) from public.live_sessions where started_at > now() - interval '24 hours' and verified)::int as verified_lives,
+        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '24 hours' and verified) as coins,
+        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '24 hours' and not verified) as unverified,
         (select count(*) from public.render_jobs where status = 'queued')::int as queued,
         (select count(*) from public.render_jobs where status = 'running')::int as running,
         (select count(*) from public.render_jobs where status = 'failed' and finished_at > now() - interval '24 hours')::int as failed,
@@ -68,7 +71,7 @@ export async function overview(): Promise<Overview> {
       paying: { pro: live.filter((s) => s.plan === "pro").length, creator: live.filter((s) => s.plan === "creator").length },
       revenue: monthlyRevenue(subs),
       connected: { youtube: a.youtube, tiktok: a.tiktok, lost: a.lost },
-      day: { made: a.made, approved: a.approved, posted: a.posted, lives: a.lives, coins: Number(a.coins) },
+      day: { made: a.made, approved: a.approved, posted: a.posted, lives: a.lives, verifiedLives: a.verified_lives, coins: Number(a.coins), unverified: Number(a.unverified) },
       queue: { queued: a.queued, running: a.running, failedDay: a.failed, oldest: a.oldest },
       workers,
       signups: new Map(signups.map((r) => [r.day, r.n])),

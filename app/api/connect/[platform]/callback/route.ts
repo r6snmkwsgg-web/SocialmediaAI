@@ -1,7 +1,10 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { currentUser } from "@/lib/server/auth";
+import { channelsOf } from "@/lib/server/channels";
 import { saveChannel } from "@/lib/server/channels-store";
 import { origin } from "@/lib/server/http";
+import { rememberTikTok } from "@/lib/server/live";
+import { fitAudience } from "@/lib/server/shorts/queue";
 import { finishOAuth } from "@/lib/server/oauth";
 import { tiktokExchange, tiktokUser } from "@/lib/server/tiktok";
 import { youtubeChannel, youtubeExchange } from "@/lib/server/youtube";
@@ -24,11 +27,20 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
     if (platform === "youtube") {
       const t = await youtubeExchange(code, redirect);
       const info = await youtubeChannel(t.access);
-      await saveChannel(me.id, "youtube", info, t);
+      const id = await saveChannel(me.id, "youtube", info, t);
+      // YouTube may have the whole channel as made for kids: Shorts waiting for it get endings that don't ask for comments
+      await fitAudience(me.id);
+      // a new channel has a question to answer (made for kids or not) before anything posts to it: Settings and onboarding ask it
+      const fresh = (await channelsOf(me.id)).find((c) => c.id === id);
+      if (fresh?.madeForKids === null && !/^\/app\/(settings|welcome)/.test(next)) {
+        return NextResponse.redirect(`${base}/app/settings?connected=youtube#audience`);
+      }
     } else if (platform === "tiktok") {
       const t = await tiktokExchange(code, redirect);
-      const info = await tiktokUser(t.access);
-      await saveChannel(me.id, "tiktok", info, t);
+      const info = await tiktokUser(t.access, t.scopes);
+      const id = await saveChannel(me.id, "tiktok", info, t);
+      // the username TikTok gave us is what makes a LIVE the game hears count as theirs
+      if (info.handle) await rememberTikTok(me.id, id, info.handle);
     } else {
       return go("error=platform");
     }

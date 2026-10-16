@@ -4,7 +4,8 @@ import type { Point } from "@/lib/earnings/series";
  * One measure, day by day, as bars from a shared baseline: one colour, one
  * axis, the biggest day marked, and every bar's exact figure on hover and
  * in a table for screen readers. Days a source didn't report are left
- * empty rather than drawn as zero.
+ * empty rather than drawn as zero; for a source that reports late, the
+ * days after `through` say they aren't reported yet.
  */
 
 export type Unit = "count" | "money" | "coins";
@@ -17,12 +18,13 @@ export function say(v: number, unit: Unit, currency = "USD", compact = false): s
 
 const day = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
 
-export function DailyBars({ points, unit, currency, label }: { points: Point[]; unit: Unit; currency?: string; label: string }) {
+export function DailyBars({ points, unit, currency, label, through }: { points: Point[]; unit: Unit; currency?: string; label: string; through?: string }) {
   const W = 320, H = 110, base = 92, top = 14;
   const n = points.length;
   const max = Math.max(0, ...points.map((p) => p.value ?? 0));
   const step = W / n;
   const gap = n > 45 ? 1 : 2;
+  const missing = (d: string) => (through && d > through ? "not reported yet" : "not reported");
   return (
     <figure className="flex flex-col gap-1">
       <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label={`${label}, day by day`}>
@@ -34,7 +36,13 @@ export function DailyBars({ points, unit, currency, label }: { points: Point[]; 
           </>
         )}
         {points.map((p, i) => {
-          if (p.value === null) return null;
+          if (p.value === null) {
+            return (
+              <rect key={p.day} x={i * step} y={top} width={step} height={base - top} fill="transparent">
+                <title>{`${day(p.day)}: ${missing(p.day)}`}</title>
+              </rect>
+            );
+          }
           const h = max > 0 ? Math.max(p.value > 0 ? 1.5 : 0, ((base - top) * p.value) / max) : 0;
           return (
             <rect key={p.day} x={i * step + gap / 2} y={base - h} width={Math.max(1, step - gap)} height={h} rx={Math.min(1.5, (step - gap) / 2)} fill="var(--color-signal)">
@@ -53,7 +61,7 @@ export function DailyBars({ points, unit, currency, label }: { points: Point[]; 
             {points.map((p) => (
               <tr key={p.day}>
                 <th scope="row">{day(p.day)}</th>
-                <td>{p.value === null ? "not reported" : say(p.value, unit, currency)}</td>
+                <td>{p.value === null ? missing(p.day) : say(p.value, unit, currency)}</td>
               </tr>
             ))}
           </tbody>

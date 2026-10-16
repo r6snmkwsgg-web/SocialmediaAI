@@ -21,18 +21,28 @@ export const KO_HOLD = 1.8;
 export const WIN = 7;
 /** with the vote on, the win screen is the vote, and runs this long */
 export const VOTE = 10;
-/** this many likes is worth 1 HP (or 1 weight, in a race) */
+/** this many likes is worth 1 HP (or 1 weight, in a race), while likes come in at a trickle */
 export const LIKES_PER_HP = 30;
+/**
+ * likes a second (per team, or per viewer) that each still get their full
+ * worth; past this, each like is worth less, so likes add at most
+ * LIKES_FREE / LIKES_PER_HP HP a second however fast a crowd taps
+ */
+export const LIKES_FREE = 5;
+/** how many seconds of likes the rate looks back over */
+const LIKE_WINDOW = 10;
 export const FOLLOW_HP = 3;
-/** a gift during the vote adds a vote per coin, up to this many per gift */
-export const GIFT_VOTES_MAX = 50;
+/** a gift during the vote adds a vote per coin */
+export const VOTES_PER_COIN = 1;
+/** a stretch this long with nothing from a real viewer ends a session; the next thing starts a new one */
+export const SESSION_IDLE = 20 * 60_000;
 export const LETTERS = ["A", "B", "C"] as const;
 
 export type Member = { viewer: Viewer; side: Team | null; coins: number };
 /** one line about what just happened, shown briefly */
 export type Toast = { id: number; at: number; side: Team | null; viewer: Viewer; text: string };
-/** a big gift going off: its moment on screen */
-export type Blast = { id: number; at: number; side: Team | null; viewer: Viewer; tier: Tier; count: number };
+/** a big gift going off: its moment on screen, bigger for more coins; `many` is how many of its power it set off, `extra` what else it set off */
+export type Blast = { id: number; at: number; side: Team | null; viewer: Viewer; tier: Tier; count: number; coins: number; many?: number; extra?: string[] };
 export type Cue = { at: number; kind: "count" | "fight" | "ko" | "win" | "gift" | "join" | "vote"; n?: number };
 
 export type Vote = {
@@ -68,11 +78,23 @@ type Pending =
   | { kind: "share"; viewer: Viewer; side: Team | null }
   | { kind: "enter"; viewer: Viewer };
 
-/** Which team someone means in chat: "1" or "2", a team's name, left or right. */
-export function sideFromChat(text: string, names: [string, string] = ["red", "blue"]): Team | null {
+/**
+ * Which team someone means in chat: "1" or "2", "left" or "right", a team's
+ * name, or its first letter ("r" for Red, "b" for Blue). `also` are more
+ * names for each side: in Rivals, red and blue as well as the rivalry's. A
+ * first letter that could be either side (Bulls and Bears) means neither.
+ */
+export function sideFromChat(text: string, names: [string, string] = ["Red", "Blue"], also?: [string, string]): Team | null {
   const t = clean(text).replace(/^team\s*/, "");
-  if (t === "1" || t === "1️⃣" || t === "left" || t === "l" || t === names[0].toLowerCase()) return 0;
-  if (t === "2" || t === "2️⃣" || t === "right" || t === "r" || t === names[1].toLowerCase()) return 1;
+  const words: [string[], string[]] = [[names[0]], [names[1]]];
+  if (also) words.forEach((w, i) => w.push(also[i]));
+  const said = words.map((w) => w.map((x) => clean(x)).filter((x) => x.length > 0));
+  if (t === "1" || t === "1️⃣" || t === "left" || said[0].includes(t)) return 0;
+  if (t === "2" || t === "2️⃣" || t === "right" || said[1].includes(t)) return 1;
+  if (t.length === 1) {
+    const first = said.map((w) => w.some((x) => x[0] === t));
+    if (first[0] !== first[1]) return first[0] ? 0 : 1;
+  }
   return null;
 }
 
@@ -110,9 +132,9 @@ export class Show {
   readonly members = new Map<string, Member>();
   /** what each viewer has given this round, in coins */
   readonly roundCoins = new Map<string, number>();
-  /** likes toward the next HP: per team in team games, per viewer otherwise */
-  readonly likes: [number, number] = [0, 0];
-  private readonly viewerLikes = new Map<string, number>();
+  /** likes toward the next HP: per team in team games, per viewer otherwise, and how fast they're coming in */
+  readonly likes: [Likes, Likes] = [newLikes(), newLikes()];
+  private readonly viewerLikes = new Map<string, Likes>();
   readonly toasts: Toast[] = [];
   readonly blasts: Blast[] = [];
   /** when each menu item was last set off, so the menu can light up */
@@ -128,7 +150,8 @@ export class Show {
   vote: Vote | null = null;
   /** what the last vote picked, to announce as the next round starts */
   voted: { option: VoteOption; votes: number } | null = null;
-  readonly stats: SessionStats;
+  /** the session's numbers; a new session starts after SESSION_IDLE without a real viewer */
+  stats: SessionStats;
   /** the real viewers taking part this round */
   private readonly roundPlayers = new Set<string>();
   private readonly pending: Pending[] = [];
@@ -143,7 +166,7 @@ export class Show {
     this.settings = parseSettings({ ...DEFAULT_SETTINGS, ...o.settings });
     this.rand = rng(o.seed ?? Date.now() % 1_000_000_007);
     this.game = makeGame(this.settings);
-    this.stats = { id: newId(this.rand), startedAt: Date.now(), firstAt: null, lastAt: null, rounds: 0, coins: 0, peakPlayers: 0, gifters: new Map() };
+    this.stats = this.newStats();
     this.startRound();
   }
 
@@ -284,7 +307,8 @@ export class Show {
     if (r.champion && !r.champion.cpu) this.wins.set(r.champion.id, (this.wins.get(r.champion.id) ?? 0) + 1);
     const top = this.crown ? this.members.get(this.crown) : undefined;
     this.mvp = top && this.crown ? { viewer: top.viewer, coins: this.roundCoins.get(this.crown) ?? 0 } : null;
-    if (this.stats.firstAt !== null) this.stats.rounds++;
+    // a round counts once a real viewer has shown up, and not while they've all been gone a while
+    if (this.stats.lastAt !== null && Date.now() - this.stats.lastAt <= SESSION_IDLE) this.stats.rounds++;
     this.go("ko");
     this.cue("ko");
     return true;
@@ -334,7 +358,7 @@ export class Show {
       }
       if (g.teams) {
         // where the sides have a rivalry's names, red and blue still say which is which
-        const side = sideFromChat(e.text, [this.teams[0].name, this.teams[1].name]) ?? (g.names ? sideFromChat(e.text) : null);
+        const side = sideFromChat(e.text, [this.teams[0].name, this.teams[1].name], g.names ? ["Red", "Blue"] : undefined);
         if (side !== null) this.join(e.viewer, side);
       } else if (joinFromChat(e.text)) {
         this.join(e.viewer, null);
@@ -346,16 +370,9 @@ export class Show {
     const side = g.teams ? (this.sideOf(e.viewer.id) ?? this.underdog()) : null;
 
     if (e.kind === "like") {
-      let hp = 0;
-      if (side !== null) {
-        this.likes[side] += e.count;
-        hp = Math.floor(this.likes[side] / LIKES_PER_HP);
-        this.likes[side] -= hp * LIKES_PER_HP;
-      } else {
-        const n = (this.viewerLikes.get(e.viewer.id) ?? 0) + e.count;
-        hp = Math.floor(n / LIKES_PER_HP);
-        this.viewerLikes.set(e.viewer.id, n - hp * LIKES_PER_HP);
-      }
+      let l = side !== null ? this.likes[side] : this.viewerLikes.get(e.viewer.id);
+      if (!l) this.viewerLikes.set(e.viewer.id, (l = newLikes()));
+      const hp = likesToHp(l, e.count, this.now);
       this.taking(e.viewer);
       if (hp > 0) this.act({ kind: "heal", viewer: e.viewer, side, hp });
       return;
@@ -393,12 +410,13 @@ export class Show {
     }
     this.cue("gift", coins);
 
-    // during the vote, a gift is votes as well
+    // during the vote, a gift is votes as well, one a coin like everywhere else
     if (this.vote && this.phase === "win") {
-      const add = Math.min(GIFT_VOTES_MAX, coins);
+      const add = coins * VOTES_PER_COIN;
       this.vote.extra.set(e.viewer.id, (this.vote.extra.get(e.viewer.id) ?? 0) + add);
       const picked = this.vote.picks.has(e.viewer.id);
-      this.toast(team, m.viewer, picked ? `+${add} VOTES` : `+${add} VOTES · TYPE A, B OR C TO USE THEM`);
+      const n = `+${add.toLocaleString("en-US")} ${add === 1 ? "VOTE" : "VOTES"}`;
+      this.toast(team, m.viewer, picked ? n : `${n} · TYPE A, B OR C TO USE THEM`);
     }
     this.act({ kind: "gift", viewer: m.viewer, side: team, each: e.coins, count: e.count, gift: e.count > 1 ? `${e.count}x ${e.gift}` : e.gift, tier: routed?.tier });
   }
@@ -442,20 +460,32 @@ export class Show {
 
     const said = g.gift({ viewer, side, tier, count, each, total, gift });
     if (said.blast) {
-      this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, count });
+      this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, count, coins: each * count, many: said.many, extra: said.extra });
       if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
     } else if (took && top > 0) this.toast(side, viewer, `took the crown · ${gift}`);
     else if (said.toast) this.toast(side, viewer, said.toast);
   }
 
-  /** A viewer taking part: counted toward the session's numbers if they're real. */
+  /**
+   * A viewer taking part: counted toward the session's numbers if they're
+   * real. After SESSION_IDLE with nobody real, it's a new session: a game
+   * left open in OBS between LIVEs saves each LIVE as its own.
+   */
   private taking(viewer: Viewer) {
     if (viewer.pretend) return;
+    const now = Date.now();
+    if (this.stats.lastAt !== null && now - this.stats.lastAt > SESSION_IDLE) {
+      this.stats = this.newStats();
+      this.roundPlayers.clear();
+    }
     this.roundPlayers.add(viewer.id);
     this.stats.peakPlayers = Math.max(this.stats.peakPlayers, this.roundPlayers.size);
-    const now = Date.now();
     this.stats.firstAt ??= now;
     this.stats.lastAt = now;
+  }
+
+  private newStats(): SessionStats {
+    return { id: newId(this.rand), startedAt: Date.now(), firstAt: null, lastAt: null, rounds: 0, coins: 0, peakPlayers: 0, gifters: new Map() };
   }
 
   /** the session's top gifters, most first */
@@ -467,6 +497,27 @@ export class Show {
   winsOf(e: Entrant | null | undefined): number {
     return e && !e.cpu ? (this.wins.get(e.id) ?? 0) : 0;
   }
+}
+
+/** Likes on their way to the next HP, and how many a second have been coming in lately. */
+export type Likes = { left: number; rate: number; at: number };
+
+const newLikes = (): Likes => ({ left: 0, rate: 0, at: 0 });
+
+/**
+ * Some likes coming in at `now` (seconds): the HP they're worth. Up to
+ * LIKES_FREE a second, every LIKES_PER_HP likes is 1 HP; faster than that,
+ * each is worth less in step, so a crowd tapping as fast as it can adds
+ * about LIKES_FREE / LIKES_PER_HP HP a second, never a Galaxy's worth.
+ */
+export function likesToHp(l: Likes, count: number, now: number): number {
+  const dt = Math.max(0, now - l.at);
+  l.rate = l.rate * Math.exp(-dt / LIKE_WINDOW) + count / LIKE_WINDOW;
+  l.at = now;
+  l.left += count / Math.max(1, l.rate / LIKES_FREE);
+  const hp = Math.floor(l.left / LIKES_PER_HP);
+  l.left -= hp * LIKES_PER_HP;
+  return hp;
 }
 
 function newId(rand: () => number): string {

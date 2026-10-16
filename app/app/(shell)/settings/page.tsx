@@ -4,14 +4,19 @@ import { SettingsTabs } from "@/components/app/settings-tabs";
 import { button, Card, CardHead, PageHead } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
+import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
-import { deleteAccount, disconnect, saveProfile } from "./actions";
+import { deleteAccount, disconnect, saveAudience, saveProfile, saveShorts } from "./actions";
 
 export const metadata: Metadata = { title: "Settings" };
 
 const NOTES: Record<string, { text: string; bad?: boolean }> = {
   saved: { text: "Saved." },
-  youtube: { text: "YouTube is connected. Shorts you approve can post themselves now." },
+  youtube: { text: "YouTube is connected. Say who the channel is for below, and Shorts you approve can post themselves." },
+  youtubeSelf: { text: "YouTube is connected. Say who the channel is for below. Until YouTube finishes reviewing Hookline, you post Shorts yourself and Hookline checks them." },
+  youtubeFree: { text: "YouTube is connected. Say who the channel is for below. Hookline checks the Shorts you post there and reads their views." },
+  audience: { text: "Saved." },
+  audienceError: { text: "Pick whether the channel is made for kids, then save.", bad: true },
   tiktok: { text: "TikTok is connected." },
   channels: { text: "Your plan has room for one channel on each platform. Creator has room for five.", bad: true },
   connect: { text: "That didn't connect. Try again, and allow everything Hookline asks for.", bad: true },
@@ -35,9 +40,18 @@ export default async function Settings({ searchParams }: { searchParams: Search 
   const me = await account();
   const q = await searchParams;
   const channels = await channelsOf(me.id);
+  const [{ text_stories: stories }] = await asUser(me.id, (tx) => tx<{ text_stories: boolean }[]>`select text_stories from public.profiles where id = ${me.id}`);
   const c = configured();
+  const posting = channels.find((x) => x.platform === "youtube" && x.status === "connected");
   const key =
-    ["saved", "disconnected"].find((k) => q[k] === "1") ?? (typeof q.connected === "string" ? q.connected : undefined) ?? (typeof q.error === "string" ? q.error : undefined);
+    ["saved", "disconnected"].find((k) => q[k] === "1") ??
+    (q.saved === "audience" ? "audience" : undefined) ??
+    (q.error === "audience" ? "audienceError" : undefined) ??
+    // Free posts its own Shorts; paid plans do too until YouTube's review passes, except on test channels
+    (q.connected === "youtube" && !me.plan.scheduling ? "youtubeFree" : undefined) ??
+    (q.connected === "youtube" && posting && !posting.api ? "youtubeSelf" : undefined) ??
+    (typeof q.connected === "string" ? q.connected : undefined) ??
+    (typeof q.error === "string" ? q.error : undefined);
   const note = key ? NOTES[key] : undefined;
 
   return (
@@ -83,9 +97,37 @@ export default async function Settings({ searchParams }: { searchParams: Search 
         </Card>
 
         <Card>
+          <CardHead title="Shorts" />
+          <form action={saveShorts} className="flex flex-col gap-4 px-5 py-5">
+            <label className="flex items-start gap-3">
+              <input type="checkbox" name="textStories" defaultChecked={stories} className="mt-1 h-5 w-5 accent-[var(--color-signal)]" />
+              <span className="flex flex-col gap-1">
+                <span className="text-[15px] font-semibold">Make text stories too</span>
+                <span className="max-w-2xl text-[13px] leading-relaxed text-muted">
+                  Made-up text conversations, labelled as stories. They&rsquo;re off unless you turn them on, because YouTube is the least keen to pay for videos of scrolling text.
+                </span>
+              </span>
+            </label>
+            <div>
+              <button type="submit" className={button.secondary}>Save</button>
+            </div>
+          </form>
+        </Card>
+
+        <Card>
           <CardHead title="Connected accounts" />
           <div className="px-5 py-5">
-            <ConnectList platforms={["youtube", "tiktok"]} channels={channels} ready={{ youtube: c.youtube, tiktok: c.tiktok }} next="/app/settings" disconnect={disconnect} />
+            <ConnectList
+              platforms={["youtube", "tiktok"]}
+              channels={channels}
+              ready={{ youtube: c.youtube, tiktok: c.tiktok }}
+              next="/app/settings"
+              disconnect={disconnect}
+              audience={saveAudience}
+              youtubeApi={c.youtubeAudited}
+              tiktokProfile={c.tiktokProfile}
+              posts={me.plan.scheduling}
+            />
             <p className="mt-4 text-[13px] leading-relaxed text-muted">
               Hookline only posts videos you approved. Disconnecting stops posting and reading at once; you can also remove access from your Google or TikTok account settings.
             </p>

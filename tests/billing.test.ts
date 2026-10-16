@@ -114,6 +114,11 @@ describe("what someone's told when their plan changes", () => {
     expect(note({ status: "incomplete" })).toBeNull();
     expect(note({ status: "incomplete_expired" })).toBeNull();
   });
+
+  it("only promises Shorts post themselves once Hookline posts them", () => {
+    expect(note({})?.body).not.toMatch(/post themselves/);
+    expect(planNote(subscriptionRow(sub({}), prices), true)?.body).toBe("Your Shorts now post themselves at your best times.");
+  });
 });
 
 describe("Home's setup list", () => {
@@ -123,6 +128,13 @@ describe("Home's setup list", () => {
     expect(checklist("shorts", none)[0].id).toBe("youtube");
     expect(checklist("live", none)[0].id).toBe("liveSetUp");
     expect(checklist(null, none)).toHaveLength(6);
+  });
+
+  it("only says Shorts post themselves where Hookline posts them", () => {
+    const youtube = (posts: boolean) => checklist("shorts", none, posts).find((s) => s.id === "youtube")!.body;
+    expect(youtube(true)).toBe("So the Shorts you approve can post themselves.");
+    expect(youtube(false)).toBe("So Hookline can check the Shorts you post and read their views.");
+    expect(checklist("shorts", none, false).find((s) => s.id === "posted")!.body).toMatch(/I posted it/);
   });
 
   it("the next step is the first one not done, from real data", () => {

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { HEARD_MAX, type Heard } from "./proof";
 import { GAME_IDS } from "./settings";
 import type { Show } from "./show";
 
@@ -20,12 +21,16 @@ export const sessionSchema = z.object({
   coins: z.number().int().min(0).max(1_000_000_000),
   peakPlayers: z.number().int().min(0).max(1_000_000),
   topGifters: z.array(z.object({ id: z.string().max(64), name: z.string().max(64), coins: z.number().int().min(0) })).max(5),
+  /** the TikTok LIVEs it heard real viewers on, as the bridge named them */
+  heard: z.array(z.string().regex(/^[a-z0-9._]{2,24}$/)).max(HEARD_MAX).default([]),
+  /** some of it came from a source that didn't say whose LIVE it was (TikFinity), so it can't count */
+  unknown: z.boolean().default(false),
 });
 
 export type SessionPayload = z.infer<typeof sessionSchema>;
 
-/** The session so far, ready to send; null until a real viewer has done something. */
-export function sessionPayload(show: Show, key: string): SessionPayload | null {
+/** The session so far, ready to send, with the LIVEs it heard; null until a real viewer has done something. */
+export function sessionPayload(show: Show, key: string, { heard, unknown }: Heard = { heard: [], unknown: false }): SessionPayload | null {
   const s = show.stats;
   if (s.firstAt === null || s.lastAt === null) return null;
   return {
@@ -38,11 +43,13 @@ export function sessionPayload(show: Show, key: string): SessionPayload | null {
     coins: s.coins,
     peakPlayers: s.peakPlayers,
     topGifters: show.topGifters(5).map((g) => ({ id: g.viewer.id.slice(0, 64), name: g.viewer.name.slice(0, 64), coins: g.coins })),
+    heard: heard.slice(0, HEARD_MAX),
+    unknown,
   };
 }
 
 /** A session from the game is believable: it happened recently, and in order. */
-export function plausible(p: SessionPayload, now = Date.now()): boolean {
+export function plausible(p: Pick<SessionPayload, "startedAt" | "lastAt">, now = Date.now()): boolean {
   const week = 7 * 24 * 3600_000;
   return p.startedAt > now - week && p.lastAt >= p.startedAt && p.lastAt <= now + 5 * 60_000;
 }

@@ -51,7 +51,7 @@ export function ExampleEarnings() {
   const charts = [
     { label: "Views on YouTube", unit: "count" as const, points: wave(30, 900, 300, 60, 1) },
     { label: "Views on TikTok", unit: "count" as const, points: wave(30, 600, 250, 35, 2.4) },
-    { label: "Gift coins on your LIVEs", unit: "coins" as const, points: wave(30, 120, 110, 6, 0.7).map((p, i) => ({ ...p, value: i % 3 ? 0 : p.value })) },
+    { label: "Gift coins seen on your LIVEs", unit: "coins" as const, points: wave(30, 120, 110, 6, 0.7).map((p, i) => ({ ...p, value: i % 3 ? 0 : p.value })) },
   ];
   return (
     <div className="tokens-dark">

@@ -1,6 +1,6 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_GIFTS, DEFAULT_PRICES, withGifts, type Tier } from "../menu";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, timesOver, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
@@ -24,6 +24,8 @@ const GHOST_SECONDS = 4;
 const STUN_SECONDS = 1.2;
 const SHOCK_RANGE = 260;
 const HIT_GAP = 0.25;
+/** the most power-ups one gift sets off */
+const MAX_POWERS = 3;
 
 export const RACE_MENU: Tier[] = ([
   { effect: "enter", min: 1, name: "Join +weight", gift: "Rose", line: "Your ball joins the race, and every coin makes it heavier", color: "#FF6FB5", icon: "plus" },
@@ -31,7 +33,7 @@ export const RACE_MENU: Tier[] = ([
   { effect: "boost", min: 20, name: "Boost", gift: "Perfume", line: "A burst of speed for your ball", color: "#34C759", icon: "boost" },
   { effect: "ghost", min: 99, name: "Ghost", gift: "Hand Hearts", line: `Your ball slips through pegs and other balls for ${GHOST_SECONDS} seconds`, color: "#BF5AF2", icon: "ghost", big: true },
   { effect: "shock", min: 299, name: "Shockwave", gift: "Corgi", line: "Knocks every ball near yours back and stuns it", color: "#64D2FF", icon: "wave", big: true },
-  { effect: "rocket", min: 999, name: "Rocket", gift: "Galaxy", line: "Blasts your ball down to the last stretch", color: "#FF9F0A", icon: "rocket", big: true },
+  { effect: "rocket", min: 999, name: "Rocket", gift: "Galaxy", line: "Blasts your ball down to the last stretch, and a gift worth several of these adds a shockwave and a ghost", color: "#FF9F0A", icon: "rocket", big: true },
 ] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i], price: DEFAULT_GIFTS[i].coins }));
 
 export type Seg = { x1: number; y1: number; x2: number; y2: number };
@@ -224,7 +226,7 @@ export class RaceGame implements Game {
     return { toast: "joined the race" };
   }
 
-  gift({ viewer, tier, count, total, gift }: GiftAct): Said {
+  gift({ viewer, tier, count, each, total, gift }: GiftAct): Said {
     let r = this.find(viewer.id);
     let joined = false;
     if (!r) {
@@ -235,13 +237,22 @@ export class RaceGame implements Game {
     r.free = false;
     if (tier.effect === "heavy") r.bonus += 10 * count;
     this.reweigh(r, total);
-    if (tier.effect === "boost" || tier.effect === "ghost" || tier.effect === "shock" || tier.effect === "rocket") {
-      for (let i = 0; i < Math.min(count, 3); i++) {
-        if (this.running && r.finishedAt === null) this.power(r, tier.effect);
-        else r.queued.push(tier.effect);
-      }
+    let powers: string[] = [];
+    if (tier.effect === "rocket") {
+      // more than one rocket can't take a ball further, so a bigger gift adds the powers under it
+      powers = ["rocket", "shock", "ghost"].slice(0, Math.min(MAX_POWERS, count * timesOver(each, tier)));
+    } else if (tier.effect === "boost" || tier.effect === "ghost" || tier.effect === "shock") {
+      powers = Array<string>(Math.min(count, MAX_POWERS)).fill(tier.effect);
     }
-    if (tier.big) return { blast: true };
+    for (const p of powers) {
+      if (this.running && r.finishedAt === null) this.power(r, p);
+      else r.queued.push(p);
+    }
+    if (tier.big) {
+      // "×3" only for three of the same; a rocket's shockwave and ghost are named, not counted as rockets
+      const same = powers.every((p) => p === powers[0]);
+      return { blast: true, many: same && powers.length > 1 ? powers.length : undefined, extra: same ? undefined : powers.slice(1) };
+    }
     if (joined) return { toast: `joined the race · ${gift}` };
     if (tier.effect === "heavy") return { toast: `${gift} → HEAVY BALL` };
     if (tier.effect === "boost") return { toast: `${gift} → BOOST` };

@@ -12,7 +12,7 @@ const TARGETS: Record<string, { source: string; metric: string; noun: string }> 
   "youtube:subscribers": { source: "youtube", metric: "subscribers", noun: "new subscribers" },
   "youtube:revenue": { source: "youtube", metric: "revenue", noun: "in YouTube revenue" },
   "tiktok:views": { source: "tiktok", metric: "views_total", noun: "TikTok views" },
-  "live:coins": { source: "live", metric: "coins", noun: "gift coins" },
+  "live:coins": { source: "live", metric: "coins", noun: "gift coins seen on your LIVEs" },
 };
 
 const goal = z.object({

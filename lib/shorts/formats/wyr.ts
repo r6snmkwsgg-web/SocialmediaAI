@@ -1,55 +1,78 @@
-import type { Candidate, Choice, Context } from "../types";
+import type { Candidate, Context, Pair } from "../types";
 
 /**
  * Would you rather: five hard choices, one at a time, and viewers answer
  * in the comments. No made-up "68% picked" numbers: the video asks, and
- * the comments are the answer.
+ * the comments are the answer. The choices are grown-up ones (money,
+ * work, time, how you'd live); choices Claude writes for a channel
+ * (lib/server/shorts/fresh.ts) come first, and these are what's used
+ * without it.
  */
 
-type Pair = Choice & { theme: string; /** how torn people are, 1 to 3 */ pull: 1 | 2 | 3 };
+const P = (id: string, a: string, b: string, theme: string, pull: 1 | 2 | 3): Pair => ({ id: `wyr-${id}`, a, b, theme, pull });
 
+// a choice keeps its id for good, even when its name no longer fits it: channels that have had it are kept by the id
 export const PAIRS: Pair[] = [
-  { id: "wyr-fly-invisible", a: "Be able to fly", b: "Be able to turn invisible", theme: "powers", pull: 3 },
-  { id: "wyr-teleport-minds", a: "Teleport anywhere", b: "Read minds", theme: "powers", pull: 3 },
-  { id: "wyr-pause-rewind", a: "Pause time", b: "Rewind time", theme: "powers", pull: 3 },
-  { id: "wyr-strength-speed", a: "Have super strength", b: "Have super speed", theme: "powers", pull: 2 },
-  { id: "wyr-animals-languages", a: "Talk to animals", b: "Speak every language", theme: "powers", pull: 3 },
-  { id: "wyr-underwater-fly", a: "Breathe underwater", b: "Never need to sleep", theme: "powers", pull: 2 },
-  { id: "wyr-memory-forget", a: "Remember everything you see", b: "Forget anything you want", theme: "powers", pull: 3 },
-  { id: "wyr-past-future", a: "Travel to the past", b: "Travel to the future", theme: "time", pull: 3 },
-  { id: "wyr-late-early", a: "Always be 10 minutes late", b: "Always be 20 minutes early", theme: "life", pull: 2 },
-  { id: "wyr-famous-rich", a: "Be famous and broke", b: "Be rich and unknown", theme: "life", pull: 2 },
-  { id: "wyr-lottery-life", a: "Win the lottery", b: "Live twice as long", theme: "life", pull: 3 },
-  { id: "wyr-funny-smart", a: "Be the funniest person in the room", b: "Be the smartest person in the room", theme: "life", pull: 3 },
-  { id: "wyr-chef-driver", a: "Have a personal chef", b: "Have a personal driver", theme: "life", pull: 2 },
-  { id: "wyr-phone-wallet", a: "Lose your phone", b: "Lose your wallet", theme: "life", pull: 2 },
-  { id: "wyr-best-worst", a: "Be the best player on a losing team", b: "Be the worst player on a winning team", theme: "sport", pull: 3 },
-  { id: "wyr-youtuber-athlete", a: "Be a famous YouTuber", b: "Be a famous athlete", theme: "life", pull: 2 },
-  { id: "wyr-ads-lines", a: "Skip every ad forever", b: "Skip every line forever", theme: "life", pull: 3 },
-  { id: "wyr-wifi-coffee", a: "Free Wi-Fi everywhere you go", b: "Free food everywhere you go", theme: "life", pull: 2 },
-  { id: "wyr-cold-hot", a: "Never feel cold again", b: "Never feel too hot again", theme: "life", pull: 2 },
-  { id: "wyr-sweet-salty", a: "Only eat sweet food", b: "Only eat salty food", theme: "food", pull: 3 },
-  { id: "wyr-pizza-tacos", a: "Unlimited pizza for life", b: "Unlimited tacos for life", theme: "food", pull: 2 },
-  { id: "wyr-no-sugar-no-salt", a: "Give up dessert forever", b: "Give up fries forever", theme: "food", pull: 2 },
-  { id: "wyr-music-movies", a: "Live without music", b: "Live without movies and shows", theme: "life", pull: 3 },
-  { id: "wyr-social-games", a: "Give up social media", b: "Give up video games", theme: "life", pull: 3 },
-  { id: "wyr-whisper-shout", a: "Only be able to whisper", b: "Only be able to shout", theme: "silly", pull: 2 },
-  { id: "wyr-sing-dance", a: "Sing everything you say", b: "Dance everywhere you walk", theme: "silly", pull: 2 },
-  { id: "wyr-duck-horses", a: "Fight one horse-sized duck", b: "Fight 100 duck-sized horses", theme: "silly", pull: 3 },
-  { id: "wyr-dragon-unicorn", a: "Have a pet dragon", b: "Have a pet unicorn", theme: "silly", pull: 1 },
-  { id: "wyr-treehouse-boat", a: "Live in a giant treehouse", b: "Live on a houseboat", theme: "home", pull: 2 },
-  { id: "wyr-city-island", a: "Live in a huge city", b: "Live on a quiet island", theme: "home", pull: 2 },
-  { id: "wyr-space-ocean", a: "Explore deep space", b: "Explore the deep ocean", theme: "adventure", pull: 2 },
-  { id: "wyr-one-color", a: "Wear one colour forever", b: "Never wear the same outfit twice", theme: "silly", pull: 2 },
-  { id: "wyr-lie-detect", a: "Always know when someone's lying", b: "Always get away with lying", theme: "powers", pull: 3 },
-  { id: "wyr-older-younger", a: "Be 10 years older right now", b: "Be 10 years younger right now", theme: "time", pull: 2 },
-  { id: "wyr-no-internet-friends", a: "No internet for a month", b: "No talking to friends for a month", theme: "life", pull: 3 },
-  { id: "wyr-tiny-giant", a: "Be as tall as a giraffe", b: "Be as small as a mouse", theme: "silly", pull: 1 },
-  { id: "wyr-know-everything", a: "Know the ending of every movie", b: "Never be able to finish one", theme: "silly", pull: 2 },
-  { id: "wyr-1m-now", a: "$1 million right now", b: "$1,000 every week for life", theme: "money", pull: 3 },
-  { id: "wyr-job-love", a: "Love your job but earn little", b: "Hate your job but earn a lot", theme: "money", pull: 3 },
-  { id: "wyr-redo-skip", a: "Redo the last 5 years", b: "Skip ahead 5 years", theme: "time", pull: 3 },
+  P("fly-invisible", "Be able to fly", "Be able to turn invisible", "powers", 3),
+  P("teleport-minds", "Teleport anywhere", "Read minds", "powers", 3),
+  P("pause-rewind", "Pause time", "Rewind time", "powers", 3),
+  P("memory-forget", "Remember everything you see", "Forget anything you want", "powers", 3),
+  P("lie-detect", "Always know when someone's lying", "Always get away with lying", "powers", 3),
+  P("languages-instruments", "Speak every language fluently", "Play every instrument perfectly", "powers", 3),
+  P("sleep-eat", "Never need to sleep", "Never need to eat", "powers", 2),
+  P("future-past", "See 10 years into your future", "Change one day in your past", "time", 3),
+  P("past-future", "Travel to the past", "Travel to the future", "time", 3),
+  P("older-younger", "Be 10 years older right now", "Be 10 years younger right now", "time", 2),
+  P("redo-skip", "Redo the last 5 years", "Skip ahead 5 years", "time", 3),
+  P("late-early", "Always be 10 minutes late", "Always be 20 minutes early", "time", 2),
+  P("famous-rich", "Be famous and broke", "Be rich and unknown", "money", 2),
+  P("1m-now", "$1 million right now", "$1,000 every week for life", "money", 3),
+  P("job-love", "Love your job but earn little", "Hate your job but earn a lot", "work", 3),
+  P("four-day", "Work 4 days a week for your pay now", "Work 5 days for 30% more", "work", 3),
+  P("retire", "Retire at 40 with just enough", "Work until 65 and retire rich", "money", 3),
+  P("boss-work", "A great boss and boring work", "A bad boss and exciting work", "work", 2),
+  P("flights-rent", "Free flights for life", "Free rent for life", "money", 3),
+  P("lottery-life", "Win the lottery", "Live twice as long", "life", 3),
+  P("remote-office", "Work from home forever", "Work in an office with your best friends", "work", 2),
+  P("youtuber-athlete", "Be a famous YouTuber", "Be a famous athlete", "work", 2),
+  P("chef-driver", "Have a personal chef", "Have a personal driver", "life", 2),
+  P("phone-wallet", "Lose your phone", "Lose your wallet", "tech", 2),
+  P("search-texts", "Have your search history made public", "Have your texts made public", "tech", 3),
+  P("photos-messages", "Lose every photo you've taken", "Lose every message you've sent", "tech", 3),
+  P("social-games", "Give up social media for a year", "Give up video games for a year", "tech", 3),
+  P("music-movies", "Live without music", "Live without movies and shows", "life", 3),
+  P("ads-lines", "Skip every ad forever", "Skip every queue forever", "life", 3),
+  P("wifi-coffee", "Free Wi-Fi everywhere you go", "Free food everywhere you go", "life", 2),
+  P("cold-hot", "Never feel cold again", "Never feel too hot again", "life", 2),
+  P("no-internet-friends", "No internet for a month", "No talking to friends for a month", "tech", 3),
+  P("funny-smart", "Be the funniest person in the room", "Be the smartest person in the room", "life", 3),
+  P("know-everything", "Know the ending of every movie", "Never be able to finish one", "life", 2),
+  P("say-everything", "Always say exactly what you think", "Never be able to disagree out loud", "life", 2),
+  P("group-chats", "Be left out of every group chat", "Be in every group chat with alerts on", "tech", 2),
+  P("sweet-salty", "Only eat sweet food", "Only eat salty food", "food", 3),
+  P("pizza-tacos", "Unlimited pizza for life", "Unlimited tacos for life", "food", 2),
+  P("no-sugar-no-salt", "Give up dessert forever", "Give up fries forever", "food", 2),
+  P("cook-dishes", "Always do the cooking", "Always do the dishes", "home", 2),
+  P("city-island", "Live in a huge city", "Live on a quiet island", "home", 2),
+  P("tiny-huge", "A tiny flat anywhere you like", "A huge house somewhere boring", "home", 3),
+  P("space-ocean", "Explore deep space", "Explore the deep ocean", "adventure", 2),
+  P("mountains-beach", "Every holiday in the mountains", "Every holiday at the beach", "adventure", 2),
+  P("best-worst", "Be the best player on a losing team", "Be the worst player on a winning team", "sport", 3),
+  P("gold-cup", "Win an Olympic gold", "Win the World Cup", "sport", 2),
+  P("duck-horses", "Fight one horse-sized duck", "Fight 100 duck-sized horses", "silly", 3),
+  P("whisper-shout", "Only be able to whisper", "Only be able to shout", "silly", 2),
+  P("one-color", "Wear one colour forever", "Never wear the same outfit twice", "silly", 2),
+  P("sing-narrate", "Sing everything you say", "Narrate everything you do out loud", "silly", 2),
 ];
+
+/** Choices the bank had before it was aged up: channels may have had them, so they're never written again either. */
+const RETIRED = [
+  "Have super strength or Have super speed", "Talk to animals or Speak every language", "Breathe underwater or Never need to sleep", "Sing everything you say or Dance everywhere you walk",
+  "Have a pet dragon or Have a pet unicorn", "Live in a giant treehouse or Live on a houseboat", "Be as tall as a giraffe or Be as small as a mouse",
+];
+
+/** Every choice the bank has or had, in words, so nothing written for a channel asks one of them again. */
+export const bankPairs = (): string[] => [...PAIRS.map((p) => `${p.a} or ${p.b}`), ...RETIRED];
 
 function shuffle<T>(xs: T[], rand: () => number): T[] {
   const out = [...xs];
@@ -71,7 +94,9 @@ export function wyrScore(ps: Pair[]): number {
 }
 
 export function proposeWyr(ctx: Context, tries = 160, count = 5): Candidate | null {
-  const fresh = PAIRS.filter((p) => !ctx.used.has(p.id));
+  // what was written for this channel comes first; the bank fills in when there isn't enough of it
+  const written = (ctx.fresh?.pairs ?? []).filter((p) => !ctx.used.has(p.id));
+  const fresh = written.length >= count + 2 ? written : [...written, ...PAIRS.filter((p) => !ctx.used.has(p.id))];
   if (fresh.length < count) return null;
   let best: { ps: Pair[]; score: number } | null = null;
   for (let t = 0; t < tries; t++) {
@@ -87,9 +112,9 @@ export function proposeWyr(ctx: Context, tries = 160, count = 5): Candidate | nu
     params: { pairs: ps.map(({ id, a, b }) => ({ id, a, b })) },
     key: "wyr",
     score: best!.score,
-    why: [`${count} choices people split on, the toughest last, picked from ${tries} sets`, "None of them on your channel before"],
+    why: [`${count} choices people split on, the toughest last, picked from ${tries} sets`, "Never on your channel or anyone else's before"],
     facts: [
-      `A "would you rather" Short: ${count} choices, about 4 seconds each, and viewers comment their picks.`,
+      `A "would you rather" Short: ${count} choices, about 4 seconds each.`,
       `The choices: ${ps.map((p) => `"${p.a}" or "${p.b}"`).join("; ")}.`,
       "The video shows no poll results or percentages.",
     ],

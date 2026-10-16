@@ -17,6 +17,33 @@ export function fill(days: string[], values: Map<string, number>, missing: 0 | n
   return days.map((day) => ({ day, value: values.has(day) ? values.get(day)! : missing }));
 }
 
+/** The last day a source has reported, if any. */
+export function lastReported(values: Map<string, number>): string | null {
+  return [...values.keys()].sort().at(-1) ?? null;
+}
+
+/**
+ * A value for every day from a source that reports days late, like
+ * YouTube Analytics (2 to 3 days behind): a day it skipped between ones
+ * it reported had nothing, but a day after its last report, or before
+ * its first, isn't reported yet and stays unknown, never zero.
+ */
+export function fillReported(days: string[], values: Map<string, number>): Point[] {
+  const known = [...values.keys()].sort();
+  const first = known[0], last = known.at(-1);
+  return days.map((day) => ({ day, value: values.has(day) ? values.get(day)! : first && last && day > first && day < last ? 0 : null }));
+}
+
+/**
+ * A value for every day from a source that's only been read back to a
+ * day, like Stripe (from 35 days before it was connected): a day from
+ * then on with nothing reported had nothing, and a day before it is
+ * unknown, never zero.
+ */
+export function fillSince(days: string[], values: Map<string, number>, since: string | null): Point[] {
+  return days.map((day) => ({ day, value: values.has(day) ? values.get(day)! : since !== null && day >= since ? 0 : null }));
+}
+
 /**
  * Daily amounts from a running total that's read now and then (TikTok
  * only gives each video's total views): each day is the rise since the

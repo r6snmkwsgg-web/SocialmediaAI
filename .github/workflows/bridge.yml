@@ -6,6 +6,10 @@
 # release can go to a public repo instead: set the repository variable
 # BRIDGE_RELEASE_REPO (owner/name) and the secret BRIDGE_RELEASE_TOKEN (a
 # token that can write that repo's contents). Without them it releases here.
+#
+# The repository variable HOOKLINE_SITE is the site's address
+# (https://<site>): only its pages can use the bridge, and the bridge
+# asks it whether bridges are switched off. The build stops without it.
 name: bridge
 
 on:
@@ -33,6 +37,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm bridge:build
+        env:
+          HOOKLINE_SITE: ${{ vars.HOOKLINE_SITE }}
       - uses: actions/upload-artifact@v4
         with:
           name: bridge-${{ matrix.os }}

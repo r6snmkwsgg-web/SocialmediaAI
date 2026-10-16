@@ -36,16 +36,47 @@ export function rankingScore(p: RankingParams): { score: number; gap: number; cl
   return { score: 2 * (1 - gap) + 0.3 * close, gap, close };
 }
 
+/** A channel has each figure, region and decade once, so its rankings don't all look alike. */
+export const rankingDecadeId = (p: Pick<RankingParams, "metric" | "region" | "year">) => `ranking:${p.metric}:${p.region}:${Math.floor(p.year / 10) * 10}s`;
+
+/**
+ * Each countdown goes to one channel only: the figure, the region and the
+ * countries in their order. Neighbouring years mostly rank the same
+ * countries the same way, and those are the same video with other
+ * numbers, so the order is what's claimed, not the year.
+ */
+export const rankingOrderId = (p: Pick<RankingParams, "metric" | "region" | "items">) => `ranking:${p.metric}:${p.region}:${p.items.map((x) => x.iso).join(",")}`;
+
+/** How many a region's countdown has: ten, or fewer where the region hasn't many countries. */
+export const topOf = (region: Region) => Math.min(10, Math.floor(Object.keys(COUNTRIES).filter((iso) => inRegion(iso, region)).length * 0.6));
+
+/**
+ * The years a ranking can be made for: most countries have a figure that
+ * year, and so does every country at the top today, so nobody who'd be
+ * near the top is missing from it.
+ */
+export function rankingYears(metric: Metric, region: Region): number[] {
+  const d = DATA[metric];
+  const latest = latestYear(metric);
+  const leaders = ranking(metric, region, topOf(region), latest).items.map((x) => x.iso);
+  const isos = Object.keys(d.values);
+  return d.years.filter((y, i) => y <= latest && isos.filter((k) => d.values[k][i] !== null).length >= isos.length * 0.9 && leaders.every((iso) => d.values[iso]?.[i] != null));
+}
+
 export function proposeRanking(ctx: Context): Candidate | null {
   const options: { p: RankingParams; s: ReturnType<typeof rankingScore>; key: string }[] = [];
   for (const metric of METRICS) {
+    const latest = latestYear(metric);
     for (const region of REGIONS) {
-      const key = `ranking:${metric}:${region}`;
-      if (ctx.used.has(key)) continue;
-      const count = Object.keys(COUNTRIES).filter((iso) => inRegion(iso, region)).length;
-      const p = ranking(metric, region, Math.min(10, Math.floor(count * 0.6)));
-      if (p.items.length < 5) continue;
-      options.push({ p, s: rankingScore(p), key });
+      const top = topOf(region);
+      for (const year of rankingYears(metric, region)) {
+        if (ctx.used.has(rankingDecadeId({ metric, region, year }))) continue;
+        const p = ranking(metric, region, top, year);
+        if (p.items.length < 5 || ctx.used.has(rankingOrderId(p))) continue;
+        const s = rankingScore(p);
+        // the way things stand now is what most people want to see
+        options.push({ p, s: { ...s, score: s.score + (year === latest ? 0.5 : 0) }, key: `ranking:${metric}:${region}` });
+      }
     }
   }
   if (!options.length) return null;
@@ -55,7 +86,7 @@ export function proposeRanking(ctx: Context): Candidate | null {
   const why = [
     s.gap < 0.15 ? `Close at the top: #1 and #2 are ${Math.max(1, Math.round(s.gap * 100))}% apart` : `${s.close} near neighbours in the top ${n}, so the order isn't obvious`,
     `Real figures: ${DATA[p.metric].source}, ${p.year}`,
-    "Not on your channel before",
+    `No other channel has had these ${n} in this order, and yours hasn't had this chart for the ${Math.floor(p.year / 10) * 10}s`,
   ];
   return {
     format: "ranking",

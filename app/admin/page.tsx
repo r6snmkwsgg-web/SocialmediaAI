@@ -61,8 +61,8 @@ export default async function Admin() {
               <Stat label="Shorts made" value={n(o.day.made)} />
               <Stat label="Said yes to" value={n(o.day.approved)} />
               <Stat label="Posted" value={n(o.day.posted)} />
-              <Stat label="LIVEs" value={n(o.day.lives)} />
-              <Stat label="Gift coins" value={n(o.day.coins)} sub="Coins, not cash" />
+              <Stat label="LIVEs" value={n(o.day.lives)} sub={`${n(o.day.verifiedLives)} verified as the streamer's own`} />
+              <Stat label="Gift coins seen" value={n(o.day.coins)} sub={`Verified LIVEs only. ${n(o.day.unverified)} more not verified`} />
             </div>
           </Card>
 

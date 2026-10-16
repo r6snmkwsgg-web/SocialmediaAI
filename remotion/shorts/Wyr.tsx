@@ -1,18 +1,18 @@
 import { AbsoluteFill, useCurrentFrame } from "remotion";
-import { WYR } from "../../lib/shorts/timing";
+import { endingOf, WYR } from "../../lib/shorts/timing";
 import type { WyrParams } from "../../lib/shorts/types";
-import { ANTON, BLUE, fit, INK, Outro, PAPER, RED, rise, SIGNAL, Tag, W } from "./kit";
+import { Back, Backdrop, caps, EndBand, face, fit, lookOf, Opening, Outro, rise, size, Tag, textOn, W } from "./kit";
 
-/** Two choices, top and bottom, and a clock. The comments are the poll. */
-export function WyrVideo({ params, tag }: { params: WyrParams; tag: boolean }) {
-  const frame = useCurrentFrame();
+/** One moment of a would-you-rather: two choices, top and bottom, and a clock. The first choice is there from the first frame. */
+function WyrScene({ params, frame }: { params: WyrParams; frame: number }) {
+  const L = lookOf(params);
   const n = params.pairs.length;
   const i = Math.min(n - 1, Math.max(0, Math.floor((frame - WYR.intro) / WYR.each)));
   const local = frame - WYR.intro - i * WYR.each;
   const p = params.pairs[i];
-  const inA = rise(local, 0, 10), inB = rise(local, 4, 10);
+  const inA = i === 0 ? 1 : rise(local, 0, 10), inB = i === 0 ? 1 : rise(local, 4, 10);
   const left = Math.max(0, 1 - local / WYR.each);
-  const outroAt = WYR.intro + n * WYR.each;
+  const comments = params.allowComments !== false;
 
   const half = (text: string, color: string, letter: string, k: number, top: boolean) => (
     <div
@@ -30,36 +30,52 @@ export function WyrVideo({ params, tag }: { params: WyrParams; tag: boolean }) {
         transform: `translateX(${(top ? -1 : 1) * (1 - k) * W}px)`,
       }}
     >
-      <span style={{ position: "absolute", top: top ? 200 : 70, left: 70, fontSize: 64, color: INK, opacity: 0.55 }}>{letter}</span>
-      <span style={{ fontSize: fit(text, 112, 14, 3), lineHeight: 1, textAlign: "center", color: "#FFFFFF" }}>{text.toUpperCase()}</span>
+      <span style={{ position: "absolute", top: top ? 200 : 70, left: 70, fontSize: size(L, 64), color: textOn(color), opacity: 0.55 }}>{letter}</span>
+      <span style={{ fontSize: size(L, fit(text, 112, 14, 3)), lineHeight: 1.02, textAlign: "center", color: textOn(color) }}>{caps(L, text)}</span>
     </div>
   );
 
   return (
-    <AbsoluteFill style={{ background: INK, color: PAPER, fontFamily: ANTON }}>
-      {frame < WYR.intro ? (
-        <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" }}>
-          {["WOULD", "YOU", "RATHER"].map((t, k) => (
-            <div key={t} style={{ fontSize: 250, lineHeight: 0.92, color: k === 2 ? SIGNAL : PAPER, transform: `translateY(${(1 - rise(frame, k * 6, 10)) * 120}px)`, opacity: rise(frame, k * 6, 8) }}>
-              {t}
-            </div>
-          ))}
-        </div>
+    <AbsoluteFill style={{ color: L.text, ...face(L) }}>
+      <Backdrop look={L} />
+      {half(p.a, L.a, "A", inA, true)}
+      {half(p.b, L.b, "B", inB, false)}
+      <div style={{ position: "absolute", left: 0, top: 952, height: 16, width: `${left * 100}%`, background: L.text, opacity: 0.85 }} />
+      <div style={{ position: "absolute", left: W / 2 - 110, top: 850, width: 220, height: 220, borderRadius: 110, background: L.bg, border: `10px solid ${L.text}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: size(L, 96), transform: `scale(${i === 0 ? 1 : rise(local, 8, 10)})` }}>
+        {caps(L, "or")}
+      </div>
+      <div style={{ position: "absolute", top: 120, width: "100%", textAlign: "center", fontSize: size(L, 50), letterSpacing: L.face === "anton" ? 4 : 0, color: textOn(L.a) }}>
+        {i + 1} / {n} · {caps(L, comments ? "Comment A or B" : "A or B?")}
+      </div>
+      <Opening frame={frame} look={L} lines={["Would you rather", `${n} choices`]} top={830} />
+    </AbsoluteFill>
+  );
+}
+
+/** Two choices at a time. The comments are the poll. */
+export function WyrVideo({ params, tag, total }: { params: WyrParams; tag: boolean; total: number }) {
+  const frame = useCurrentFrame();
+  const L = lookOf(params);
+  const n = params.pairs.length;
+  const end = WYR.intro + n * WYR.each;
+  const ending = endingOf(params);
+
+  return (
+    <AbsoluteFill>
+      <WyrScene params={params} frame={Math.min(frame, end - 1)} />
+      {ending === "loop" ? (
+        <EndBand frame={frame} from={end} text="Which ones did you pick?" look={L} top={880} />
+      ) : ending === "comment" ? (
+        <Outro frame={frame} from={end} lines={["Comment", `all ${n} picks`]} small={`Like this: ${"ABBAB".slice(0, n)}`} look={L} />
       ) : (
-        <>
-          {half(p.a, RED, "A", inA, true)}
-          {half(p.b, BLUE, "B", inB, false)}
-          <div style={{ position: "absolute", left: 0, top: 952, height: 16, width: `${left * 100}%`, background: PAPER, opacity: 0.85 }} />
-          <div style={{ position: "absolute", left: W / 2 - 110, top: 850, width: 220, height: 220, borderRadius: 110, background: INK, border: `10px solid ${PAPER}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 96, transform: `scale(${rise(local, 8, 10)})` }}>
-            OR
-          </div>
-          <div style={{ position: "absolute", top: 120, width: "100%", textAlign: "center", fontSize: 50, letterSpacing: 4, color: INK }}>
-            {i + 1} / {n} · COMMENT A OR B
-          </div>
-        </>
+        <Outro frame={frame} from={end} lines={["Which ones", "did you pick?"]} look={L} />
       )}
-      <Outro frame={frame} from={outroAt} lines={["COMMENT", `ALL ${n} PICKS`]} small={`LIKE THIS: ${"ABBAB".slice(0, n)}`} />
-      <Tag show={tag} />
+      {ending === "loop" && (
+        <Back frame={frame} total={total} look={L}>
+          <WyrScene params={params} frame={0} />
+        </Back>
+      )}
+      <Tag show={tag} look={L} />
     </AbsoluteFill>
   );
 }

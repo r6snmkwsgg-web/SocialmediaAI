@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { fill, fromMinor, fromTotals, goalProgress, lastDays, sum } from "@/lib/earnings/series";
+import { fill, fillReported, fillSince, fromMinor, fromTotals, goalProgress, lastDays, lastReported, sum } from "@/lib/earnings/series";
 import { heatmap, isoSeconds, middle, NICHES, perHour } from "@/lib/trends/niches";
 import { FORMAT_IDS } from "@/lib/shorts/types";
 
@@ -51,6 +51,25 @@ describe("earnings", () => {
     const v = new Map([["2026-10-12", 40], ["2026-10-15", 10]]);
     expect(fill(days, v, 0).map((p) => p.value)).toEqual([0, 40, 0, 0, 10]);
     expect(fill(days, v, null).map((p) => p.value)).toEqual([null, 40, null, null, 10]);
+  });
+
+  it("shows YouTube's days not reported yet as unknown, never as zero", () => {
+    // YouTube runs a few days behind: it has reported up to the 13th
+    const v = new Map([["2026-10-11", 40], ["2026-10-13", 10]]);
+    expect(fillReported(days, v).map((p) => p.value)).toEqual([40, 0, 10, null, null]);
+    expect(lastReported(v)).toBe("2026-10-13");
+    // before its first report is unknown too
+    expect(fillReported(["2026-10-09", "2026-10-10", ...days], v).map((p) => p.value).slice(0, 2)).toEqual([null, null]);
+    expect(fillReported(days, new Map()).every((p) => p.value === null)).toBe(true);
+    expect(lastReported(new Map())).toBeNull();
+    expect(sum(fillReported(days, v))).toBe(50);
+  });
+
+  it("shows days from before a source was first read as unknown, and quiet days after as zero", () => {
+    // Stripe read back to the 12th: the 11th is unknown, the 14th had no sales
+    const v = new Map([["2026-10-13", 40]]);
+    expect(fillSince(days, v, "2026-10-12").map((p) => p.value)).toEqual([null, 0, 40, 0, 0]);
+    expect(fillSince(days, v, null).map((p) => p.value)).toEqual([null, null, 40, null, null]);
   });
 
   it("turns running totals into daily views, and doesn't guess the gaps", () => {

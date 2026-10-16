@@ -190,6 +190,8 @@ export const raceDraw: GameDraw = {
     const name = b.viewer.name.toUpperCase();
     if (b.tier.effect === "ghost") return `${name} SLIPS THROUGH EVERYTHING`;
     if (b.tier.effect === "shock") return `EVERYONE NEAR ${name} GETS KNOCKED BACK`;
+    if (b.extra?.includes("ghost")) return `${name} BLASTS DOWN, KNOCKS EVERYONE BACK AND SLIPS THROUGH`;
+    if (b.extra?.includes("shock")) return `${name} BLASTS DOWN AND KNOCKS EVERYONE BACK`;
     return `${name} BLASTS DOWN TO THE LAST STRETCH`;
   },
 };

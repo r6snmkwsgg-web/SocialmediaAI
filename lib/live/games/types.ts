@@ -48,6 +48,10 @@ export type Said = {
   toast?: string;
   /** the big banner, for the menu's big items */
   blast?: boolean;
+  /** how many of its power a big gift set off, when it's more than one: a shower of meteors */
+  many?: number;
+  /** other powers a big gift set off along with its own, when it's worth more than one of them: a rocket's shockwave and ghost */
+  extra?: string[];
 };
 
 export type RoundStart = {

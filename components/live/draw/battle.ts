@@ -3,7 +3,7 @@ import type { BattleGame } from "@/lib/live/games/battle";
 import type { Blast, Show } from "@/lib/live/show";
 import {
   AX, AY, blade, circle, crown, face, flame, FX, heart, INK, M, PAPER, roundRect, SCALE, shakeFrom, SIDE, spikeRing, text, W,
-  type Ctx, type View, ease, measure, meteorFall,
+  type Ctx, type View, ease, measure, meteorFall, meteorSize,
 } from "./kit";
 import type { GameDraw } from "./types";
 
@@ -61,6 +61,11 @@ function drawBall(ctx: Ctx, show: Show, view: View, b: Ball, turn: number, crown
     const pulse = 0.5 + 0.5 * Math.sin(turn * 6);
     circle(ctx, b.x, b.y, r + 16 + pulse * 4, "rgba(100,210,255,0.14)", "#64D2FF", 5);
   }
+  if (w.hanging[b.team] > w.clock) {
+    // hanging on: a ring that beats fast, until the team's paid off what it owes or goes down
+    const beat = 0.5 + 0.5 * Math.sin(turn * 14);
+    circle(ctx, b.x, b.y, r + 12 + beat * 10, undefined, "#FF3B30", 6 + beat * 4);
+  }
   if (crowned) crown(ctx, b.x, b.y - r - 26, Math.min(76, Math.max(40, r * 0.8)));
 }
 
@@ -106,10 +111,18 @@ export function drawEffects(ctx: Ctx, show: Show, events: Show["game"]["events"]
       }
       case "boom": {
         const kk = age / (FX * 2);
+        const big = meteorSize(e.hit ?? 0);
         ctx.globalAlpha = Math.max(0, 1 - kk);
-        circle(ctx, e.x, e.y, 40 + 200 * kk, "rgba(255,159,10,0.3)", "#FF9F0A", 12 * (1 - kk));
+        circle(ctx, e.x, e.y, (40 + 200 * kk) * big, "rgba(255,159,10,0.3)", "#FF9F0A", 12 * (1 - kk) * big);
+        // what a meteor took off the ball it landed on, in big numbers; a mine's little blast doesn't need one
+        if (e.hit && e.dmg > 0) text(ctx, `-${e.dmg.toLocaleString("en-US")}`, e.x, e.y - 40 - 70 * kk, { size: Math.round(64 * big), align: "center", color: "#FF9F0A", stroke: 9 });
         break;
       }
+      case "saved":
+        if (fade <= 0) break;
+        ctx.globalAlpha = fade;
+        text(ctx, "SAVED!", e.x, e.y - 70 - 50 * k, { size: 72, align: "center", color: color(e), stroke: 9 });
+        break;
       default:
         break;
     }
@@ -188,7 +201,8 @@ export const battleDraw: GameDraw = {
       text(ctx, `${show.teams[t].name.toUpperCase()} · ${g.ability(t).toUpperCase()}`, inner, y + 122, { size: 30, color: "#fff", align: a, spacing: 2, alpha: 0.85, max: cw - 200 });
       const m = show.memberCount(t);
       if (m > 0) text(ctx, `${m} ${m === 1 ? "PLAYER" : "PLAYERS"}`, inner, y + 152, { size: 22, color: "#fff", align: a, spacing: 2, alpha: 0.7 });
-      text(ctx, String(Math.ceil(g.world.hp(t))), outer, y + 104, { size: 96, color: "#fff", align: b });
+      // a big gift can take health into the thousands: it shrinks to fit rather than run into the team's name
+      text(ctx, String(Math.ceil(g.world.hp(t))), outer, y + 104, { size: 96, color: "#fff", align: b, max: 190 });
       text(ctx, "HP", outer, y + 142, { size: 26, color: "#fff", align: b, spacing: 3, alpha: 0.75 });
     });
     // who's ahead, as one bar
@@ -231,12 +245,19 @@ export const battleDraw: GameDraw = {
     drawEffects(ctx, show, w.events, w.clock, (e) => e.color ?? teamColor(show, (e.team ?? 0) as Team));
     for (const m of w.meteors) {
       if (w.clock < m.from) continue;
-      const t = w.balls.find((b) => b.id === m.target && b.alive);
-      meteorFall(ctx, t ? t.x : m.x, t ? t.y : m.y, t ? t.r : 60, Math.min(1, (w.clock - m.from) / (m.at - m.from)), turn);
+      // where it'll really land: the next strongest ball, once the one it was aimed at is gone
+      const t = w.landsOn(m);
+      meteorFall(ctx, t ? t.x : m.x, t ? t.y : m.y, t ? t.r : 60, Math.min(1, (w.clock - m.from) / (m.at - m.from)), turn, meteorSize(m.hit));
     }
     ctx.restore();
     ctx.restore();
     if (sudden && show.phase === "play") text(ctx, "THE WALLS ARE CLOSING IN", W / 2, AY + SIDE - 28, { size: 40, align: "center", color: "#FF3B30", spacing: 3, stroke: 8 });
+    // a team hanging on: what it takes to save it, and how long is left
+    const hung = ([0, 1] as Team[]).filter((t) => w.hanging[t] > w.clock);
+    hung.forEach((t, i) => {
+      const line = `${show.teams[t].name.toUpperCase()} NEEDS ${Math.ceil(w.owed[t]).toLocaleString("en-US")} HP · ${Math.ceil(w.hanging[t] - w.clock)}S`;
+      text(ctx, line, W / 2, AY + SIDE - (sudden ? 84 : 28) - i * 56, { size: 44, align: "center", color: teamColor(show, t), spacing: 2, stroke: 9, max: SIDE - 60 });
+    });
   },
 
   rules(ctx, show) {
@@ -278,7 +299,9 @@ export const battleDraw: GameDraw = {
     // a side named for many (CELTICS, DOGS) reads as plural: CELTICS HIT, CELTICS' BALL
     const many = (name: string) => /[^S]S$/.test(name);
     if (b.tier.effect === "rage") return `${us} ${many(us) ? "HIT" : "HITS"} TWICE AS HARD`;
-    if (b.tier.effect === "shield") return `${us} CAN'T BE HURT`;
+    // a meteor still gets through, so it's shielded, not unhurtable
+    if (b.tier.effect === "shield") return `${us} ${many(us) ? "ARE" : "IS"} SHIELDED`;
+    if (b.many) return `${b.many} METEORS ON ${them}`;
     return `ON ${many(them) ? `${them}'` : `${them}'S`} BIGGEST BALL`;
   },
 };

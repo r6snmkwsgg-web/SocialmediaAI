@@ -1,6 +1,6 @@
 import "server-only";
 import Stripe from "stripe";
-import { lastDays, fill, fromMinor, fromTotals, goalProgress, sum, type Point } from "../earnings/series";
+import { lastDays, fill, fillReported, fillSince, fromMinor, fromTotals, goalProgress, lastReported, sum, type Point } from "../earnings/series";
 import { localParts, validTimezone } from "../shorts/times";
 import { open, seal } from "./crypto";
 import { admin, asUser } from "./db";
@@ -10,10 +10,17 @@ import { youtubeAccess } from "./youtube";
 /**
  * Earnings: real numbers only, from where they really are. YouTube
  * Analytics for views, subscribers and (for monetized channels) YouTube's
- * estimated revenue; TikTok's view counts; the LIVE game's gift coins;
- * and, for people who sell things, their Stripe sales through a read-only
- * key. Synced every few hours; nothing here is made up or projected.
+ * estimated revenue; TikTok's view counts; the gift coins the LIVE game
+ * saw on the streamer's own TikTok LIVEs (what viewers sent, not what
+ * TikTok pays them); and, for people who sell things, their Stripe sales
+ * through a read-only key. Synced every few hours; nothing here is made
+ * up or projected. YouTube runs 2 to 3 days behind, so its latest days
+ * are "not reported yet", never zero, and Stripe's days from before it
+ * was first read back to are unknown too.
  */
+
+/** how far back Stripe is read, at each sync */
+const STRIPE_DAYS = 35;
 
 export type Series = {
   id: string;
@@ -24,14 +31,27 @@ export type Series = {
   points: Point[];
   total: number;
   note?: string;
+  /** the last day the source has reported, for one that reports days late */
+  through?: string;
+  /** the first day the source has been read back to, for one that can't be read further */
+  from?: string;
 };
 
 export type Goal = { id: string; source: string; metric: string; target: number; period: "month" | "all"; label: string; progress: number; unit: Series["unit"]; currency?: string };
 
 const iso = (d: Date) => d.toISOString().slice(0, 10);
 
+/** what the LIVE figure is called everywhere: coins viewers sent that the game saw, never earnings or money */
+export const LIVE_COINS = "Gift coins seen on your LIVEs";
+
+/** LIVEs the game played that aren't verified as the streamer's own, so their coins aren't counted. */
+export type Unverified = { lives: number; coins: number };
+
 /** Everything the Earnings page shows, for the last `days` days. */
-export async function earningsOf(userId: string, days: number): Promise<{ series: Series[]; goals: Goal[]; latest: Date | null }> {
+export async function earningsOf(userId: string, days: number): Promise<{ series: Series[]; goals: Goal[]; unverified: Unverified }> {
+  // Stripe is read back 35 days from when it was connected; the first whole day after that is where its figures start
+  const [key] = await admin((tx) => tx<{ connected_at: Date }[]>`select connected_at from public.stripe_keys where user_id = ${userId}`);
+  const stripeSince = key ? iso(new Date(key.connected_at.getTime() - (STRIPE_DAYS - 1) * 86400_000)) : null;
   return asUser(userId, async (tx) => {
     const [p] = await tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`;
     const tz = validTimezone(p?.timezone);
@@ -41,9 +61,10 @@ export async function earningsOf(userId: string, days: number): Promise<{ series
     // goals count the whole month (or all time), so read back far enough for both
     const rows = await tx<{ source: string; metric: string; day: Date; value: string }[]>`
       select source, metric, day, value from public.metrics where day > now() - interval '400 days'`;
-    const sessions = await tx<{ day: string; coins: number }[]>`
-      select to_char(started_at at time zone ${tz}, 'YYYY-MM-DD') as day, sum(coins)::int as coins from public.live_sessions group by 1`;
-    const [s] = await tx<{ at: Date | null }[]>`select max(day)::timestamptz as at from public.metrics`;
+    // only LIVEs heard on their own TikTok count; the rest are shown apart, plainly
+    const sessions = await tx<{ day: string; verified: boolean; lives: number; coins: number }[]>`
+      select to_char(started_at at time zone ${tz}, 'YYYY-MM-DD') as day, verified, count(*)::int as lives, sum(coins)::int as coins
+      from public.live_sessions group by 1, 2`;
 
     const by = new Map<string, Map<string, number>>();
     for (const r of rows) {
@@ -51,7 +72,8 @@ export async function earningsOf(userId: string, days: number): Promise<{ series
       if (!by.has(k)) by.set(k, new Map());
       by.get(k)!.set(iso(r.day), Number(r.value));
     }
-    const live = new Map(sessions.map((x) => [x.day, x.coins]));
+    const live = new Map(sessions.filter((x) => x.verified).map((x) => [x.day, x.coins]));
+    const unverified = sessions.filter((x) => !x.verified && range.includes(x.day)).reduce((a, x) => ({ lives: a.lives + x.lives, coins: a.coins + x.coins }), { lives: 0, coins: 0 });
     const allDays = [...new Set([...rows.map((r) => iso(r.day)), ...live.keys(), today])].sort();
     const out: Series[] = [];
     const add = (id: string, source: Series["source"], label: string, unit: Series["unit"], all: Point[], extra: Partial<Series> = {}) => {
@@ -59,17 +81,25 @@ export async function earningsOf(userId: string, days: number): Promise<{ series
       out.push({ id, source, label, unit, points, total: sum(points), ...extra });
     };
 
+    // YouTube reports days late: what it hasn't reported yet is unknown, not zero
+    const youtube = (metric: string): [Point[], Partial<Series>] => {
+      const m = by.get(`youtube:${metric}`) ?? new Map<string, number>();
+      return [fillReported(range, m), { through: lastReported(m) ?? undefined }];
+    };
     if (by.has("youtube:views")) {
-      add("youtube:views", "youtube", "Views on YouTube", "count", fill(range, by.get("youtube:views")!, 0));
-      add("youtube:subscribers", "youtube", "New subscribers", "count", fill(range, by.get("youtube:subscribers") ?? new Map(), 0));
+      add("youtube:views", "youtube", "Views on YouTube", "count", ...youtube("views"));
+      add("youtube:subscribers", "youtube", "New subscribers", "count", ...youtube("subscribers"));
     }
-    if (by.has("youtube:revenue")) add("youtube:revenue", "youtube", "YouTube revenue", "money", fill(range, by.get("youtube:revenue")!, 0), { currency: "USD", note: "YouTube's own estimate" });
+    if (by.has("youtube:revenue")) {
+      const [points, extra] = youtube("revenue");
+      add("youtube:revenue", "youtube", "YouTube revenue", "money", points, { ...extra, currency: "USD", note: "YouTube's own estimate" });
+    }
     if (by.has("tiktok:views_total")) add("tiktok:views", "tiktok", "Views on TikTok", "count", fromTotals(range, by.get("tiktok:views_total")!), { note: "From your videos' view counts, read every few hours" });
-    if (live.size) add("live:coins", "live", "Gift coins on your LIVEs", "coins", fill(range, live, 0), { note: "Coins your game saw: an estimate, not cash" });
+    if (live.size) add("live:coins", "live", LIVE_COINS, "coins", fill(range, live, 0), { note: "What viewers sent on your own LIVEs, as the game counted it. Not what TikTok pays you" });
     for (const [k, m] of by) {
       if (!k.startsWith("stripe:revenue:")) continue;
       const cur = k.split(":")[2].toUpperCase();
-      add(k, "stripe", `Sales through Stripe (${cur})`, "money", fill(range, m, 0), { currency: cur, note: "Charges less refunds, before Stripe's fees" });
+      add(k, "stripe", `Sales through Stripe (${cur})`, "money", fillSince(range, m, stripeSince), { currency: cur, note: "Charges less refunds, before Stripe's fees", from: stripeSince ?? undefined });
     }
 
     const goals = await tx<{ id: string; source: string; metric: string; target: string; period: "month" | "all"; label: string }[]>`
@@ -77,7 +107,8 @@ export async function earningsOf(userId: string, days: number): Promise<{ series
     const everything = (source: string, metric: string): Point[] => {
       if (source === "live") return fill(allDays, live, 0);
       if (source === "tiktok") return fromTotals(allDays, by.get("tiktok:views_total") ?? new Map());
-      return fill(allDays, by.get(`${source}:${metric}`) ?? new Map(), 0);
+      if (source === "youtube") return fillReported(allDays, by.get(`${source}:${metric}`) ?? new Map());
+      return fillSince(allDays, by.get(`${source}:${metric}`) ?? new Map(), stripeSince);
     };
     return {
       series: out,
@@ -86,7 +117,7 @@ export async function earningsOf(userId: string, days: number): Promise<{ series
         const currency = g.metric.startsWith("revenue:") ? g.metric.split(":")[1].toUpperCase() : g.metric === "revenue" ? "USD" : undefined;
         return { id: g.id, source: g.source, metric: g.metric, target: Number(g.target), period: g.period, label: g.label, progress: goalProgress(everything(g.source, g.metric), g.period, today), unit, currency };
       }),
-      latest: s?.at ?? null,
+      unverified,
     };
   });
 }
@@ -143,7 +174,7 @@ async function syncTikTok(userId: string, channelId: string, today: string): Pro
 /** Stripe sales by day and currency, from the seller's read-only key. */
 async function syncStripe(userId: string, sealedKey: string, now: Date): Promise<string> {
   const s = new Stripe(open(sealedKey));
-  const since = Math.floor((now.getTime() - 35 * 86400_000) / 1000);
+  const since = Math.floor((now.getTime() - STRIPE_DAYS * 86400_000) / 1000);
   const days = new Map<string, number>();
   for await (const t of s.balanceTransactions.list({ created: { gte: since }, limit: 100 })) {
     if (!["charge", "payment", "refund", "payment_refund"].includes(t.type)) continue;

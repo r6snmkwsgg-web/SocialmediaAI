@@ -1,4 +1,5 @@
 import "server-only";
+import { cleanUser } from "../live/bridge";
 import { PRIVACY, postSettings, problemWith, type Creator, type Privacy, type TikTokChoices } from "../shorts/tiktok";
 import { markExpired, tokensOf, updateTokens, type Tokens } from "./channels-store";
 import { configured, env } from "./env";
@@ -21,6 +22,10 @@ export class TikTokError extends Error {
   get retry(): boolean {
     return this.status >= 500 || this.status === 429 || this.code === "rate_limit_exceeded";
   }
+  /** TikTok's daily cap on creators for an app under review is full: worth trying again tomorrow, not giving up on */
+  get tomorrow(): boolean {
+    return this.code === "reached_active_user_cap";
+  }
 }
 
 function creds() {
@@ -29,9 +34,16 @@ function creds() {
   return { key: e.TIKTOK_CLIENT_KEY, secret: e.TIKTOK_CLIENT_SECRET };
 }
 
-/** what we ask TikTok for: who they are, their videos' views, and uploading; posting only when direct posting is on */
+/**
+ * What we ask TikTok for: who they are, their videos' views, and
+ * uploading; their username (so a LIVE the game hears can be checked as
+ * theirs) only once the TikTok app has that scope, since TikTok refuses
+ * the whole sign-in over a scope the app doesn't have; posting only when
+ * direct posting is on.
+ */
 export function tiktokScopes(): string[] {
-  return ["user.info.basic", "video.list", "video.upload", ...(configured().tiktokDirect ? ["video.publish"] : [])];
+  const c = configured();
+  return ["user.info.basic", ...(c.tiktokProfile ? ["user.info.profile"] : []), "video.list", "video.upload", ...(c.tiktokDirect ? ["video.publish"] : [])];
 }
 
 export function tiktokAuthUrl(state: string, redirectUri: string): string {
@@ -73,9 +85,19 @@ async function call<T>(path: string, access: string, init: { method?: string; bo
   return j.data as T;
 }
 
-export async function tiktokUser(access: string): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null }> {
-  const d = await call<{ user: { open_id: string; display_name?: string; avatar_url?: string } }>("/user/info/?fields=open_id,display_name,avatar_url", access, { method: "GET" });
-  return { externalId: d.user.open_id, title: d.user.display_name ?? null, handle: null, avatarUrl: d.user.avatar_url ?? null };
+/**
+ * Who they are on TikTok. The username needs user.info.profile; someone
+ * who connected before Hookline asked for it (TIKTOK_PROFILE), or who said
+ * no to it, has no username here until they connect again.
+ */
+export async function tiktokUser(access: string, scopes: string | null): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null }> {
+  const profile = (scopes ?? "").split(/[,\s]+/).includes("user.info.profile");
+  const d = await call<{ user: { open_id: string; display_name?: string; avatar_url?: string; username?: string } }>(
+    `/user/info/?fields=open_id,display_name,avatar_url${profile ? ",username" : ""}`,
+    access,
+    { method: "GET" },
+  );
+  return { externalId: d.user.open_id, title: d.user.display_name ?? null, handle: cleanUser(d.user.username), avatarUrl: d.user.avatar_url ?? null };
 }
 
 export async function tiktokAccess(channelId: string): Promise<string> {

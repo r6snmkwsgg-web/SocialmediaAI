@@ -14,7 +14,8 @@ export type HomeData = {
   wentLive: boolean;
   goal: boolean;
   inReview: number;
-  week: { posted: number; views: number | null; lives: number; rounds: number; coins: number };
+  /** coins are gift coins seen on their own LIVEs only; `unverified` is what LIVEs not verified as theirs saw */
+  week: { posted: number; views: number | null; lives: number; rounds: number; coins: number; unverified: number };
   /** the next few Shorts to post, soonest first */
   upcoming: { id: string; title: string; at: Date }[];
 };
@@ -23,7 +24,7 @@ export async function homeData(userId: string): Promise<HomeData> {
   return asUser(userId, async (tx) => {
     const [r] = await tx<{
       youtube: boolean; swiped: boolean; posted: boolean; live_set_up: boolean; went_live: boolean; goal: boolean;
-      in_review: number; posted_week: number; views_week: string | null; lives_week: number; rounds_week: number; coins_week: number;
+      in_review: number; posted_week: number; views_week: string | null; lives_week: number; rounds_week: number; coins_week: number; unverified_week: number;
     }[]>`
       select
         exists (select 1 from public.channels where platform = 'youtube' and status = 'connected') as youtube,
@@ -39,7 +40,8 @@ export async function homeData(userId: string): Promise<HomeData> {
            where v.status = 'posted' and v.posted_at > now() - interval '7 days') as views_week,
         (select count(*) from public.live_sessions where started_at > now() - interval '7 days')::int as lives_week,
         (select coalesce(sum(rounds), 0) from public.live_sessions where started_at > now() - interval '7 days')::int as rounds_week,
-        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '7 days')::int as coins_week`;
+        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '7 days' and verified)::int as coins_week,
+        (select coalesce(sum(coins), 0) from public.live_sessions where started_at > now() - interval '7 days' and not verified)::int as unverified_week`;
     const next = await tx<{ id: string; title: string; scheduled_for: Date }[]>`
       select id, title, scheduled_for from public.videos
       where status in ('approved', 'rendering', 'ready', 'scheduled') and scheduled_for > now() order by scheduled_for limit 3`;
@@ -51,7 +53,7 @@ export async function homeData(userId: string): Promise<HomeData> {
       wentLive: r.went_live,
       goal: r.goal,
       inReview: r.in_review,
-      week: { posted: r.posted_week, views: r.views_week === null ? null : Number(r.views_week), lives: r.lives_week, rounds: r.rounds_week, coins: r.coins_week },
+      week: { posted: r.posted_week, views: r.views_week === null ? null : Number(r.views_week), lives: r.lives_week, rounds: r.rounds_week, coins: r.coins_week, unverified: r.unverified_week },
       upcoming: next.map((v) => ({ id: v.id, title: v.title, at: v.scheduled_for })),
     };
   });

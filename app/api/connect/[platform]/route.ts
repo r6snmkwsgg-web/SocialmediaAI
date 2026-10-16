@@ -20,10 +20,12 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
   const c = configured();
   if (platform === "youtube" ? !c.youtube : !c.tiktok) return back("setup");
 
-  // more channels than the plan has room for: reconnecting one they have is fine
+  // more channels than the plan has room for: reconnecting one they have is fine, and so is a
+  // TikTok connected before Hookline read usernames, which needs connecting again for its LIVEs to count
   const plan = (await billingFor(me.id)).plan;
   const mine = (await channelsOf(me.id)).filter((x) => x.platform === platform);
-  if (mine.length >= plan.channels && !mine.some((x) => x.status !== "connected")) return back("channels");
+  const noUsername = (x: (typeof mine)[number]) => c.tiktokProfile && x.platform === "tiktok" && !x.handle;
+  if (mine.length >= plan.channels && !mine.some((x) => x.status !== "connected" || noUsername(x))) return back("channels");
 
   const state = await startOAuth(platform, next);
   const redirect = `${base}/api/connect/${platform}/callback`;

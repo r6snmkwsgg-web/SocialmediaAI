@@ -17,7 +17,7 @@ import { bundle } from "@remotion/bundler";
 import { renderMedia, selectComposition } from "@remotion/renderer";
 import { soundFor, wav } from "../lib/shorts/sound";
 import { claimJob, failJob, finishJob, jobProgress, type Job } from "../lib/server/shorts/render";
-import { dueForShorts, makeDailyShorts } from "../lib/server/shorts/generate";
+import { runDailyShorts } from "../lib/server/shorts/generate";
 import { postDue } from "../lib/server/shorts/post";
 import { collectStats } from "../lib/server/shorts/stats";
 import { syncEarnings } from "../lib/server/earnings";
@@ -43,16 +43,15 @@ let serveUrl = "";
 const workerId = `${hostname()}-${process.pid}`;
 let rendering: string | null = null;
 
-async function render(job: Job) {
-  const dir = mkdtempSync(join(tmpdir(), "hookline-render-"));
+/** One video for a job, with or without the free plan's tag, reporting progress from `from` to `to`. */
+async function renderOne(job: Job, tag: boolean, out: string, from: number, to: number) {
   // the soundtrack goes in the bundle's public folder for this one render
   const sound = `sound-${job.videoId}.wav`;
   const soundPath = join(serveUrl, "public", sound);
   writeFileSync(soundPath, wav(soundFor(job.spec)));
   try {
-    const inputProps = { spec: job.spec, tag: job.tag, soundFile: sound };
+    const inputProps = { spec: job.spec, tag, soundFile: sound };
     const composition = await selectComposition({ serveUrl, id: "Short", inputProps, browserExecutable });
-    const out = join(dir, `${job.videoId}.mp4`);
     let last = 0;
     await renderMedia({
       composition,
@@ -64,17 +63,47 @@ async function render(job: Job) {
       onProgress: ({ progress }) => {
         if (Date.now() - last > 1500) {
           last = Date.now();
-          void jobProgress(job.id, progress);
+          void jobProgress(job.id, from + (to - from) * progress);
         }
       },
     });
+  } finally {
+    rmSync(soundPath, { force: true });
+  }
+}
+
+/**
+ * A job's video, kept in storage. A tagged one whose owner has TikTok
+ * gets a second copy without the tag, since TikTok doesn't allow app
+ * watermarks; a clean-only job makes just that copy.
+ */
+async function render(job: Job) {
+  const dir = mkdtempSync(join(tmpdir(), "hookline-render-"));
+  const cleanKey = `${job.userId}/${job.videoId}-clean.mp4`;
+  try {
+    if (job.clean) {
+      const out = join(dir, `${job.videoId}-clean.mp4`);
+      await renderOne(job, false, out, 0, 1);
+      await putVideo(cleanKey, out);
+      await finishJob(job, cleanKey);
+      say(`made TikTok's copy of ${job.videoId}`);
+      return;
+    }
+    const out = join(dir, `${job.videoId}.mp4`);
+    await renderOne(job, job.tag, out, 0, job.alsoClean ? 0.5 : 1);
     const key = `${job.userId}/${job.videoId}.mp4`;
     await putVideo(key, out);
-    await finishJob(job, key);
-    say(`rendered ${job.videoId} (${job.spec.format})`);
+    let clean: string | null = null;
+    if (job.alsoClean) {
+      const cleanOut = join(dir, `${job.videoId}-clean.mp4`);
+      await renderOne(job, false, cleanOut, 0.5, 1);
+      await putVideo(cleanKey, cleanOut);
+      clean = cleanKey;
+    }
+    await finishJob(job, key, clean);
+    say(`rendered ${job.videoId} (${job.spec.format})${clean ? ", and TikTok's copy" : ""}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
-    rmSync(soundPath, { force: true });
   }
 }
 
@@ -140,14 +169,7 @@ async function main() {
   every(30 * 60_000, "trends", () => refreshTrends());
   every(6 * 3600_000, "earnings", () => syncEarnings());
   every(5 * 60_000, "live recaps", () => recapLives());
-  every(5 * 60_000, "daily shorts", async () => {
-    const out: string[] = [];
-    for (const id of await dueForShorts()) {
-      const n = await makeDailyShorts(id);
-      if (n) out.push(`${n} for ${id}`);
-    }
-    return out;
-  });
+  every(5 * 60_000, "daily shorts", () => runDailyShorts());
   await renderLoop();
 }
 

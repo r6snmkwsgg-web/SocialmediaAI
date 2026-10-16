@@ -1,11 +1,13 @@
 import type { Metadata } from "next";
 import Image from "next/image";
+import Link from "next/link";
 import { LocalTime } from "@/components/app/local-time";
 import { button, Card, CardHead, Empty, NotSetUp, PageHead, Pill } from "@/components/app/ui";
 import { FORMATS } from "@/lib/shorts/formats";
 import type { FormatId } from "@/lib/shorts/types";
 import { NICHES, nicheOf } from "@/lib/trends/niches";
 import { account } from "@/lib/server/account";
+import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { followedNiches, leaderboard, postingTimes, rising } from "@/lib/server/trends";
 import { follow, makeLike } from "./actions";
@@ -27,7 +29,14 @@ export default async function Trends({ searchParams }: { searchParams: Search })
   const me = await account();
   const q = await searchParams;
   const niches = await followedNiches(me.id);
-  const [videos, board, times] = await Promise.all([rising(me.id, niches), leaderboard(me.id), postingTimes(me.id)]);
+  const [videos, board, times, [profile]] = await Promise.all([
+    rising(me.id, niches),
+    leaderboard(me.id),
+    postingTimes(me.id),
+    asUser(me.id, (tx) => tx<{ text_stories: boolean }[]>`select text_stories from public.profiles where id = ${me.id}`),
+  ]);
+  // text stories are only made once the creator turns them on
+  const makes = (f: FormatId) => f !== "texts" || !!profile?.text_stories;
   const ready = configured().youtubeTrends;
   const top = Math.max(...board.rows.map((r) => r.typical ?? 0), 1);
 
@@ -45,6 +54,12 @@ export default async function Trends({ searchParams }: { searchParams: Search })
       />
       {!ready && <div className="mb-6"><NotSetUp what="Trends" keys={["YOUTUBE_API_KEY"]} /></div>}
       {q.error === "allowance" && <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">That&rsquo;s all the Shorts your plan makes for now. More arrive with your next batch.</p>}
+      {q.error === "dry" && <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">There&rsquo;s nothing new of that kind left to make for you right now. Hookline never makes the same thing twice, for your channel or anyone else&rsquo;s.</p>}
+      {q.error === "off" && (
+        <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">
+          Text stories are off for your channel. <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Turn them on in Settings</Link> first.
+        </p>
+      )}
 
       <form action={follow} className="mb-8 flex flex-wrap items-center gap-2" aria-label="Niches to show">
         {NICHES.map((n) => (
@@ -82,11 +97,16 @@ export default async function Trends({ searchParams }: { searchParams: Search })
                     </div>
                     <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-[15px] font-semibold leading-snug hover:underline">{v.title}</a>
                     <p className="text-[13px] text-muted">{v.channel} · {compact(v.views)} views · {age(v.publishedAt)}</p>
-                    {n?.format && (
+                    {n?.format && makes(n.format) && (
                       <form action={makeLike} className="mt-auto">
                         <input type="hidden" name="niche" value={n.id} />
                         <button type="submit" className={button.secondary}>Make one like this</button>
                       </form>
+                    )}
+                    {n?.format && !makes(n.format) && (
+                      <p className="mt-auto text-[13px] text-muted">
+                        Text stories are off for your channel. <Link href="/app/settings" className="underline underline-offset-4">Turn them on</Link> to make one like this.
+                      </p>
                     )}
                   </div>
                 </li>
@@ -136,7 +156,7 @@ export default async function Trends({ searchParams }: { searchParams: Search })
           <CardHead title="Your best times" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{times.posts} posts</span>} />
           {times.posts === 0 ? (
             <p className="px-5 py-5 text-[14px] leading-relaxed text-muted">
-              When your posts did best, by day and time, from your own Shorts&rsquo; views at 24 hours. It fills in as you post; until then, Shorts post at a starting guess.
+              When your posts did best, by day and time, from your own Shorts&rsquo; views at 24 hours. It fills in as you post. Until there&rsquo;s enough to go on, Shorts post at a starting guess, and about one in five at another hour to learn from.
             </p>
           ) : (
             <div className="overflow-x-auto px-5 py-5">

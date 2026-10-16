@@ -54,12 +54,13 @@ Every setting is in [.env.example](.env.example), with what it's for. Locally th
 | Site address | `NEXT_PUBLIC_SITE_URL` | Sign-in links, OAuth redirects, the sitemap and share images. |
 | Supabase | `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` | Sign-in by email link and Google, video storage, deleting accounts. |
 | Stripe | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, the four `STRIPE_PRICE_*` | The Pro and Creator plans. |
-| Claude | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Titles and descriptions. Without them, each format writes its own plain title. |
+| Claude | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | Titles and descriptions, and new quiz questions, would-you-rathers and text stories for each channel. Without them, each format writes its own plain title and uses its built-in questions and choices, which run out. |
 | Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Connecting YouTube channels: posting, views and analytics. |
-| YouTube data | `YOUTUBE_API_KEY` | Trends. |
-| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_DIRECT_POST` | Connecting TikTok: Shorts to the creator's drafts, or posted straight to their TikTok. |
+| YouTube data | `YOUTUBE_API_KEY` | Trends, and checking the links people paste. |
+| YouTube audit | `YOUTUBE_TEST_CHANNELS`, `YOUTUBE_AUDITED` | Which channels Hookline uploads to: only the test channels until YouTube's API audit passes, then all of them. |
+| TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_DIRECT_POST`, `TIKTOK_PROFILE` | Connecting TikTok: Shorts to the creator's drafts, or posted straight to their TikTok; with `TIKTOK_PROFILE=1`, the username that makes a LIVE count as theirs. |
 | Scheduler | `CRON_SECRET` | The `/api/cron/*` routes, for a scheduler running the background jobs. |
-| Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY` | Where the bridge downloads come from, and a signing key if TikTok starts refusing it. |
+| Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY`, `BRIDGE_OFF` | Where the bridge downloads come from, a signing key if TikTok starts refusing it, and `BRIDGE_OFF=1` to switch every bridge off (games move to TikFinity). |
 | Rendering | `CHROME_PATH` | The Chrome the worker renders with, if not Remotion's own. |
 | Contact | `NEXT_PUBLIC_CONTACT_EMAIL` | Shown on the privacy and terms pages. |
 | Admin | `ADMIN_EMAILS` | Who can open `/admin`: sign-ups, plans, revenue, the render queue and problems. |
@@ -93,17 +94,17 @@ Wherever this says `https://<site>`, use the site's real address, and `http://lo
 3. An OAuth client (Web application) with the redirect URI `https://<site>/api/connect/youtube/callback`; its ID and secret go in `GOOGLE_*`. The same client can be the one Supabase uses for Google sign-in, with Supabase's redirect URI added to it.
 4. An API key restricted to the YouTube Data API, in `YOUTUBE_API_KEY`.
 
-Until Google verifies the app and YouTube audits it, only test users can connect and uploads stay private. NEXT.md has the steps.
+Until Google verifies the app and YouTube audits it, only test users can connect and uploads stay private, so Hookline only uploads to the channels in `YOUTUBE_TEST_CHANNELS` and everyone else posts their own. NEXT.md has the steps.
 
 ### TikTok
 
 1. At developers.tiktok.com, an app with **Login Kit** and the **Content Posting API**, and the redirect URI `https://<site>/api/connect/tiktok/callback`.
-2. The scopes `user.info.basic`, `video.list` and `video.upload`, plus `video.publish` once direct posting is approved.
+2. The scopes `user.info.basic`, `video.list` and `video.upload`, plus `video.publish` once direct posting is approved, and `user.info.profile` (the username, which is how a LIVE is checked as the creator's own) once `TIKTOK_PROFILE=1`. Add a scope to the app before switching it on: TikTok refuses the sign-in over one the app doesn't have.
 3. The client key and secret go in `TIKTOK_CLIENT_*`. Without `TIKTOK_DIRECT_POST`, Shorts go to the creator's TikTok drafts. With `TIKTOK_DIRECT_POST=1` they post straight to TikTok, after the creator answers TikTok's questions for each one; until TikTok's Direct Post audit passes, that only works for private accounts and the posts stay private.
 
 ### Claude
 
-An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the model that writes the titles in `ANTHROPIC_MODEL`. Both are needed; with either missing, Shorts keep their plain titles.
+An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the model that writes the titles and the new quiz questions, would-you-rathers and stories in `ANTHROPIC_MODEL`. Both are needed; with either missing, Shorts keep their plain titles and only use the built-in banks.
 
 ## Deploying
 
@@ -139,7 +140,7 @@ The LIVE games hear a stream through something on the streamer's computer: **Tik
 
 - From source: `pnpm live:bridge [username] [--port 21214] [--key <Euler Stream key>]`.
 - For streamers it's one program to download and double-click. The setup on `/live` and `/app/live` finds it, tells it which account to connect to and checks the connection. It remembers the account in `~/.hookline-bridge.json`.
-- `pnpm bridge:build` builds it into `dist-bridge/` for the computer it runs on, as a Node single executable.
+- `pnpm bridge:build` builds it into `dist-bridge/` for the computer it runs on, as a Node single executable. `HOOKLINE_SITE=https://<site>` bakes in the site: only its pages and pages on the streamer's own computer can use the bridge, and the bridge asks the site's `/api/live/bridge` every 10 minutes whether it's been switched off (`--site` overrides it when run from source).
 - To release it, push a tag like `bridge-v1.0.0`: `.github/workflows/bridge.yml` builds it for Windows, macOS (Apple silicon and Intel) and Linux and attaches them to a GitHub release. The setup page links to the latest release in `NEXT_PUBLIC_BRIDGE_REPO`.
 - TikTok makes outside apps sign their connection. The connector does that through Euler Stream, which works without a key at low volume; if it starts refusing, get a free key at eulerstream.com and pass it with `--key` or `EULER_API_KEY`.
 

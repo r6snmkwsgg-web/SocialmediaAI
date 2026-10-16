@@ -6,14 +6,15 @@ import { button } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
 import { channelsOf, type Platform } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
+import { saveAudience } from "../(shell)/settings/actions";
 import { finish, pickGoal } from "./actions";
 
 export const metadata: Metadata = { title: "Welcome" };
 
 const GOALS = [
-  { id: "shorts", title: "Make Shorts for me", body: "A few videos a day, made for you. Swipe yes or no; it posts the yeses at your best times.", n: "01" },
-  { id: "live", title: "Games for my LIVE", body: "Your chat plays a game on your TikTok LIVE, and every gift does something in it.", n: "02" },
-  { id: "both", title: "Both", body: "Shorts to grow, LIVEs to get paid.", n: "03" },
+  { id: "shorts", title: "Make Shorts for me", body: "A few videos a day, made for you. Swipe yes or no, and the yeses are made for your best times.", n: "01" },
+  { id: "live", title: "Games for my LIVE", body: "Your chat plays a game on your TikTok LIVE, and every gift does something in it. For streamers 18 and over who go LIVE from a computer.", n: "02" },
+  { id: "both", title: "Both", body: "Shorts to grow, LIVE games for your gifts once TikTok lets you have them.", n: "03" },
 ] as const;
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
@@ -58,13 +59,14 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
           </form>
         </section>
       ) : (
-        <Connect goal={goal ?? "both"} userId={me.id} />
+        <Connect goal={goal ?? "both"} userId={me.id} posts={me.plan.scheduling} />
       )}
     </div>
   );
 }
 
-async function Connect({ goal, userId }: { goal: "shorts" | "live" | "both"; userId: string }) {
+/** `posts` is whether their plan posts Shorts for them. */
+async function Connect({ goal, userId, posts }: { goal: "shorts" | "live" | "both"; userId: string; posts: boolean }) {
   const channels = await channelsOf(userId);
   const c = configured();
   const platforms: Platform[] = goal === "live" ? ["tiktok"] : ["youtube", "tiktok"];
@@ -75,11 +77,24 @@ async function Connect({ goal, userId }: { goal: "shorts" | "live" | "both"; use
         <h1 id="connect" className="font-display text-[clamp(2.6rem,7vw,4.4rem)] uppercase leading-[0.92]">Connect where you post</h1>
         <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-muted">
           {goal === "live"
-            ? "The LIVE game doesn't need this: it reads your LIVE through the Hookline Bridge. Connecting TikTok adds your views to Earnings."
-            : "So Hookline can post the Shorts you approve, and show you what they earn. Nothing posts without your yes. You can do this later in Settings."}
+            ? c.tiktokProfile
+              ? "Connecting TikTok shows Hookline which LIVEs are yours, so the gift coins seen on them count in Earnings, and adds your views."
+              : "Connecting TikTok adds your views to Earnings. You can do this later in Settings."
+            : c.youtubeAudited && posts
+              ? "So Hookline can post the Shorts you approve, and show you what they earn. Nothing posts without your yes. You can do this later in Settings."
+              : "So Hookline can check the Shorts you post, and show you what they earn. You can do this later in Settings."}
         </p>
       </div>
-      <ConnectList platforms={platforms} channels={channels} ready={{ youtube: c.youtube, tiktok: c.tiktok }} next="/app/welcome?step=connect" />
+      <ConnectList
+        platforms={platforms}
+        channels={channels}
+        ready={{ youtube: c.youtube, tiktok: c.tiktok }}
+        next="/app/welcome?step=connect"
+        audience={saveAudience}
+        youtubeApi={c.youtubeAudited}
+        tiktokProfile={c.tiktokProfile}
+        posts={posts}
+      />
       <form action={finish} className="flex flex-wrap items-center gap-5">
         <button type="submit" className={button.primary}>
           {channels.length ? "Done" : "Skip for now"} <span aria-hidden="true">→</span>

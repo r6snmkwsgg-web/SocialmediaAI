@@ -1,6 +1,6 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
 import type { Viewer } from "../events";
-import { DEFAULT_GIFTS, DEFAULT_PRICES, withGifts, type Tier } from "../menu";
+import { DEFAULT_GIFTS, DEFAULT_PRICES, timesOver, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
@@ -30,6 +30,8 @@ const BLADE = 100;
 const METEOR_HIT = 15;
 const METEOR_SPLASH = 6;
 const METEOR_FALL = 1.2;
+/** the most meteors one gift brings down: a gift worth several of the top item brings that many, each onto a different rival, and never more than there are */
+export const METEORS_MAX = 5;
 
 export const ROYALE_MENU: Tier[] = ([
   { effect: "join", min: 1, name: "Join +HP", gift: "Rose", line: "Your ball joins the fight, and every coin is +1 HP", color: "#FF6FB5", icon: "heart" },
@@ -37,7 +39,7 @@ export const ROYALE_MENU: Tier[] = ([
   { effect: "spikes", min: 20, name: "Spikes 2X", gift: "Perfume", line: `Your hits do double damage for ${SPIKES_SECONDS} seconds`, color: "#FF3B30", icon: "spikes" },
   { effect: "shield", min: 99, name: "Shield", gift: "Hand Hearts", line: `Nothing can hurt your ball for ${SHIELD_SECONDS} seconds`, color: "#64D2FF", icon: "shield", big: true },
   { effect: "sword", min: 299, name: "Sword", gift: "Corgi", line: `A blade spins around your ball for ${SWORD_SECONDS} seconds`, color: "#F4F1EA", icon: "sword", big: true },
-  { effect: "meteor", min: 999, name: "Meteor", gift: "Galaxy", line: "Smashes your biggest rival", color: "#FF9F0A", icon: "meteor", big: true },
+  { effect: "meteor", min: 999, name: "Meteor", gift: "Galaxy", line: "Smashes your biggest rival, and a gift worth several of these smashes several", color: "#FF9F0A", icon: "meteor", big: true },
 ] as Tier[]).map((t, i) => ({ ...t, min: DEFAULT_PRICES[i], price: DEFAULT_GIFTS[i].coins }));
 
 export const ARENAS: VoteOption[] = [
@@ -187,8 +189,13 @@ export class RoyaleGame implements Game {
       f.shieldUntil = Math.max(f.shieldUntil, this.clock) + SHIELD_SECONDS * count;
       this.events.push({ f: this.f, type: "power", team: 0, power: "shield" });
     } else if (tier.effect === "sword") f.swordUntil = Math.max(f.swordUntil, this.clock) + SWORD_SECONDS * count;
-    else if (tier.effect === "meteor") for (let i = 0; i < Math.min(count, 5); i++) this.meteor(f, i, i * 0.4);
-    if (tier.big) return { blast: true };
+    let many = 0;
+    if (tier.effect === "meteor") {
+      const rivals = this.alive().filter((x) => x !== f).length;
+      many = Math.min(METEORS_MAX, count * timesOver(each, tier), rivals);
+      for (let i = 0; i < many; i++) this.meteor(f, i, i * 0.4);
+    }
+    if (tier.big) return { blast: true, many: many > 1 ? many : undefined };
     if (joined) return { toast: `joined the fight · ${gift}` };
     if (tier.effect === "spikes") return { toast: `${gift} → SPIKES 2X` };
     if (tier.effect === "big") return { toast: `${gift} → BIG BALL` };
@@ -263,11 +270,13 @@ export class RoyaleGame implements Game {
       if (m.at > this.clock) continue;
       const t = this.fighters.find((f) => f.id === m.target && f.alive);
       if (t) { m.x = t.x; m.y = t.y; }
+      // what its target took, for the number over it: nothing, if it's shielded or already out
+      const before = t?.hp ?? 0;
       for (const o of this.alive()) {
         if (o === t) this.hurt(o, METEOR_HIT);
         else if (Math.hypot(o.x - m.x, o.y - m.y) <= 160 + o.r) this.hurt(o, METEOR_SPLASH);
       }
-      this.events.push({ f: this.f, type: "boom", x: m.x, y: m.y, dmg: METEOR_HIT, to: 0 });
+      this.events.push({ f: this.f, type: "boom", x: m.x, y: m.y, dmg: t ? before - t.hp : 0, to: 0, hit: METEOR_HIT });
     }
     for (let i = this.meteors.length - 1; i >= 0; i--) if (this.meteors[i].at <= this.clock) this.meteors.splice(i, 1);
 

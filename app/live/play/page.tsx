@@ -2,8 +2,9 @@ import type { Metadata } from "next";
 import { Play } from "@/components/live/play";
 import { SOURCES, type SourceId } from "@/components/live/source";
 import { PLANS } from "@/lib/billing/plans";
+import { OLD_ADDRESS } from "@/lib/live/last-good";
 import { allowedBy, DEFAULT_SETTINGS, GAME_IDS, type GameId, type LiveSettings } from "@/lib/live/settings";
-import { overlayFor } from "@/lib/server/live";
+import { lookUp, overlayFor } from "@/lib/server/live";
 
 export const metadata: Metadata = {
   title: "Live game",
@@ -20,6 +21,10 @@ const one = (v: string | string[] | undefined) => (Array.isArray(v) ? v[0] : v);
  * ?key=… (a streamer's own settings, and saves their stats),
  * ?src=tikfinity|bridge, ?game=battle|race|royale|rivals (without a key),
  * ?demo=1, ?clean=1, ?ws=ws://… for a custom port.
+ *
+ * A key that's been replaced shows a bar asking for the new address. A key
+ * whose settings can't be read right now (the database is down) is not
+ * that: the game keeps the streamer's last settings, or reconnects.
  */
 export default async function LivePlay({ searchParams }: { searchParams: Search }) {
   const q = await searchParams;
@@ -35,19 +40,21 @@ export default async function LivePlay({ searchParams }: { searchParams: Search 
   let settings: LiveSettings = { ...DEFAULT_SETTINGS, game };
   let tag = true;
   let notice: string | undefined;
+  let unsure = false;
   if (key) {
-    const o = await overlayFor(key).catch(() => null);
-    if (o) {
-      settings = o.settings;
-      tag = o.plan.tag;
+    const o = await lookUp(() => overlayFor(key));
+    if (o.state === "ok") {
+      settings = o.value.settings;
+      tag = o.value.plan.tag;
     } else {
       settings = allowedBy(settings, PLANS.free);
-      notice = "OLD GAME ADDRESS · COPY THE NEW ONE FROM HOOKLINE";
+      if (o.state === "gone") notice = OLD_ADDRESS;
+      else unsure = true;
     }
   } else if (!demo) {
     // no account behind it: the free game
     settings = allowedBy(settings, PLANS.free);
   }
 
-  return <Play src={src} url={url} demo={demo} clean={one(q.clean) === "1"} settings={settings} tag={tag} notice={notice} overlayKey={key && !notice ? key : undefined} />;
+  return <Play src={src} url={url} demo={demo} clean={one(q.clean) === "1"} settings={settings} tag={tag} notice={notice} unsure={unsure} overlayKey={key && !notice ? key : undefined} />;
 }

@@ -11,6 +11,7 @@ import { BATTLE_MENU as TIERS } from "@/lib/live/games/battle";
 import { DEFAULT_SIDE_GIFTS, RIVAL_POWERS } from "@/lib/live/rivals";
 import { DEFAULT_SETTINGS } from "@/lib/live/settings";
 import { FOLLOW_HP, LIKES_PER_HP } from "@/lib/live/show";
+import { configured } from "@/lib/server/env";
 
 const TEAMS = DEFAULT_SETTINGS.teams;
 
@@ -22,13 +23,13 @@ export const metadata: Metadata = {
 
 const RULES = [
   { n: "1", title: "Type 1 or 2", body: "Joins RED or BLUE. You stay on your team round after round.", color: TEAMS[0].color },
-  { n: "2", title: "Send a gift", body: "Every gift does something, from a heal to a meteor. The menu is on screen the whole time.", color: "#FFD60A" },
-  { n: "3", title: "Tap to like", body: `Every ${LIKES_PER_HP} likes heals your team 1 HP. A follow is worth ${FOLLOW_HP}.`, color: "#FF6FB5" },
+  { n: "2", title: "Send a gift", body: "Every gift does something, from a heal to a meteor shower, and every coin counts. The menu is on screen the whole time.", color: "#FFD60A" },
+  { n: "3", title: "Tap to like", body: `Every ${LIKES_PER_HP} likes heals your team 1 HP. When likes pour in, each one counts for less, so taps can't outweigh a big gift. A follow is worth ${FOLLOW_HP}.`, color: "#FF6FB5" },
 ];
 
 const WHY = [
   { title: "Anyone gets it in two seconds", body: "Two colours, two numbers, one arena. Someone scrolling past sees RED vs BLUE and TYPE 1 OR 2, and that's all they need." },
-  { title: "Six things to spend on", body: "From a rose that heals to a Galaxy that calls down a meteor, every price does something different, and the menu shows it by gift name. Big ones get the gifter's face and name across the arena, and the biggest gifter wears the crown." },
+  { title: "Six things to spend on", body: "From a rose that heals to a Galaxy that calls down meteors, every price does something different, and the menu shows it by gift name. Every coin counts about the same, so a bigger gift always does more, and gets a bigger moment: the gifter's face and name across the arena. The biggest gifter wears the crown." },
   { title: "Rounds are short", body: "Most fights last under a minute, then the next round starts. The score carries over, so there's always a reason to stay for one more." },
 ];
 
@@ -58,13 +59,16 @@ export default function Live() {
               <span className="text-signal">picks the winner.</span>
             </h1>
             <p className="max-w-xl text-lg leading-relaxed text-paper/80 sm:text-xl">
-              Four games for your stream. In Ball Battle it&rsquo;s red against blue: viewers type 1 or 2 to pick a team, and every gift does something in the fight. A rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down a meteor.
+              Four games for your stream. In Ball Battle it&rsquo;s red against blue: viewers type 1 or 2 to pick a team, and every gift does something in the fight. A rose heals, a Perfume drops in a fighter with the gifter&rsquo;s face, a Galaxy calls down meteors.
             </p>
             <div className="flex flex-wrap items-center gap-x-6 gap-y-4 pt-1">
               <a href="/live/play?demo=1" className="press bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Try it now →</a>
               <a href="#setup" className="font-display text-2xl uppercase tracking-wider text-paper underline decoration-signal decoration-[3px] underline-offset-[6px] transition hover:text-signal">Set it up</a>
             </div>
             <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-dim">Works with TikFinity · Runs in OBS and LIVE Studio</p>
+            <p className="max-w-xl text-[14px] leading-relaxed text-paper/60">
+              For streamers who can get gifts on TikTok LIVE: TikTok asks for 18 or older and, in most places, about 1,000 followers. The games run on a computer, in TikTok LIVE Studio or OBS.
+            </p>
           </div>
 
           <div className="relative mx-auto w-full max-w-[380px]">
@@ -115,7 +119,7 @@ export default function Live() {
           <div className="mt-16 border-t-2 border-ink pt-10">
             <h3 className="font-display text-[clamp(2.2rem,4vw,3.4rem)] uppercase leading-[0.95]">The gift menu.</h3>
             <p className="mt-3 max-w-2xl text-[16px] leading-relaxed text-ink/75">
-              Six items, always on screen, by the gift viewers know. Any gift worth at least that many coins does the same thing. When one lands, its item lights up and the same picture shows up in the fight, so viewers learn the menu by watching. Gifts from someone who hasn&rsquo;t picked a team go to whichever one is losing.
+              Six items, always on screen, by the gift viewers know. Any gift worth at least that many coins does the same thing, and every coin counts as about 1 HP, so a pricier gift always does more: a gift worth ten Galaxies hits about ten times as hard. No gift ends a round on the spot, though: a team a meteor would knock out hangs on for a few seconds, and its side can still save it. When one lands, its item lights up and the same picture shows up in the fight, so viewers learn the menu by watching. Gifts from someone who hasn&rsquo;t picked a team go to whichever one is losing.
             </p>
             <ul className="mt-8 grid gap-px border-2 border-ink bg-ink sm:grid-cols-2 lg:grid-cols-3">
               {TIERS.map((t) => (
@@ -166,7 +170,7 @@ export default function Live() {
               </ul>
             </div>
             <p className="max-w-2xl text-[14px] leading-relaxed text-paper/60">
-              Any other gift helps the side its sender is on. The rivalries come from sports, games, food and places, plus your own. Politics is there too, switched off until you turn it on. Matchups about religion, race, where people are from or who they love never come up, and can&rsquo;t be added.
+              Any other gift helps the side its sender is on, and one that costs more than the meteor brings down more of them. The rivalries come from sports, games and tech, food and drink, and cars, plus your own. Politics and an all-ages group are there too, off until you turn them on. Hookline&rsquo;s never touch countries, religion, race, gender or who people love, and your own are checked for them too.
             </p>
             <a href="/live/play?demo=1&game=rivals" className="w-fit font-display text-xl uppercase tracking-wider underline decoration-signal decoration-[3px] underline-offset-[6px] hover:text-signal">Try Rivals →</a>
           </div>
@@ -212,7 +216,7 @@ export default function Live() {
           </div>
           <div className="mt-14 flex flex-col items-start gap-5 border-t border-line pt-10 sm:flex-row sm:items-center sm:justify-between">
             <p className="max-w-xl text-lg leading-relaxed text-paper/80">
-              Sign up to keep your game set up: your teams, round length, your own gift prices on Creator, and every LIVE&rsquo;s rounds, coins and top gifters.
+              Sign up to keep your game set up: your teams, round length, your own gift prices on Creator, and every LIVE&rsquo;s rounds, gift coins seen and top gifters.
             </p>
             <Link href="/login" className="press shrink-0 bg-signal px-7 py-3.5 font-display text-2xl uppercase tracking-wider text-ink">Start free →</Link>
           </div>
@@ -227,8 +231,11 @@ export default function Live() {
           <p className="mt-5 max-w-2xl text-lg leading-relaxed text-paper/75">
             It never asks for your TikTok password. It only reads your LIVE&rsquo;s public events, the same chats, likes and gifts anyone watching can see.
           </p>
+          <p className="mt-4 max-w-2xl text-[15px] leading-relaxed text-paper/60">
+            You need what TikTok needs before anyone can send you a gift: you&rsquo;re 18 or older, your account can go LIVE (usually from about 1,000 followers), and you go LIVE from a computer. Not there yet? <Link href="/shorts" className="text-paper underline decoration-signal decoration-2 underline-offset-4">Shorts</Link> can grow your account in the meantime.
+          </p>
           <div className="tokens-dark mt-12">
-            <Setup locked={["race", "royale", "rivals"]} />
+            <Setup locked={["race", "royale", "rivals"]} bridgeOff={configured().bridgeOff} />
           </div>
         </div>
       </section>

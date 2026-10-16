@@ -1,7 +1,7 @@
 import { ABILITIES } from "../battle/abilities";
 import type { AbilityId } from "../battle/abilities";
 import { FORMATS } from "./formats";
-import { odds, type Weight } from "./learn";
+import { odds, steady, type Weight } from "./learn";
 import { FORMAT_IDS, type FormatId } from "./types";
 
 /**
@@ -31,7 +31,7 @@ export function kindName(group: string): string | null {
   return null;
 }
 
-/** A kind only stands out after a few results, and when it's clearly above or below usual. */
+/** A kind only stands out after a few results, and when its steady score is clearly above or below usual. */
 const STANDS_OUT = 1.15;
 
 export function insights(weights: Weight[]): Insights {
@@ -41,7 +41,7 @@ export function insights(weights: Weight[]): Insights {
     return { format: f, name: FORMATS[f].name, plural: FORMATS[f].plural, score: w?.score ?? 1, samples: w?.samples ?? 0, share: share[f] };
   }).sort((a, b) => Number(b.samples > 0) - Number(a.samples > 0) || b.score - a.score);
   const kinds = weights
-    .filter((w) => w.kind === "key" && w.samples >= 3 && (w.score >= STANDS_OUT || w.score <= 1 / STANDS_OUT))
+    .filter((w) => w.kind === "key" && w.samples >= 3 && (steady(w) >= STANDS_OUT || steady(w) <= 1 / STANDS_OUT))
     .map((w) => ({ group: w.name, name: kindName(w.name), score: w.score, samples: w.samples }))
     .filter((k): k is KindInsight => k.name !== null)
     .sort((a, b) => b.score - a.score);
@@ -51,4 +51,17 @@ export function insights(weights: Weight[]): Insights {
 /** "2.1×", "0.6×": how a result compares with usual. */
 export function times(x: number): string {
   return `${x >= 10 ? Math.round(x) : x.toFixed(1)}×`;
+}
+
+/**
+ * How long after posting a reading was taken, in whole hours or days
+ * rounded down so it's always true: "After 1 day" for one on time, and
+ * "After 30 hours" for one that came late because the worker was down.
+ */
+export function readAfter(hours: number): string {
+  const h = Math.max(1, Math.floor(hours));
+  const d = Math.floor(h / 24);
+  if (d >= 1 && h - d * 24 < 2) return `After ${d} day${d === 1 ? "" : "s"}`;
+  if (h < 72) return `After ${h} hour${h === 1 ? "" : "s"}`;
+  return `After ${d} days`;
 }

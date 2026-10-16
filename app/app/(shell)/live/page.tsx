@@ -1,18 +1,23 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { LiveSettingsForm } from "@/components/app/live-settings";
 import { LocalTime } from "@/components/app/local-time";
-import { button, Card, CardHead, Empty, PageHead } from "@/components/app/ui";
+import { button, Card, CardHead, Empty, PageHead, Pill } from "@/components/app/ui";
 import { Setup } from "@/components/live/setup";
 import { ABILITIES } from "@/lib/battle/abilities";
 import { GAMES } from "@/lib/live/games";
 import { BATTLE_MENU } from "@/lib/live/games/battle";
 import { RACE_MENU } from "@/lib/live/games/race";
 import { ROYALE_MENU } from "@/lib/live/games/royale";
+import { liveFit, sellLive } from "@/lib/live/eligibility";
+import { NO_USERNAMES, whyNotCounted } from "@/lib/live/proof";
 import { RIVAL_POWERS } from "@/lib/live/rivals";
 import { allowedBy, LIVE_ABILITIES } from "@/lib/live/settings";
 import { account } from "@/lib/server/account";
-import { liveSettingsOf, overlayKeyOf, sessionsOf, type LiveSession } from "@/lib/server/live";
-import { newKey, saveLive } from "./actions";
+import { channelsOf } from "@/lib/server/channels";
+import { configured } from "@/lib/server/env";
+import { liveSettingsOf, overlayKeyOf, sessionsOf, tiktokUsernamesOf, type LiveSession } from "@/lib/server/live";
+import { checkLive, newKey, recheckLive, saveLive } from "./actions";
 
 export const metadata: Metadata = { title: "Live" };
 
@@ -31,9 +36,15 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 export default async function Live({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
-  const [{ settings }, key, sessions] = await Promise.all([liveSettingsOf(me.id), overlayKeyOf(me.id), sessionsOf(me.id)]);
+  const [{ settings }, key, sessions, accounts, channels] = await Promise.all([liveSettingsOf(me.id), overlayKeyOf(me.id), sessionsOf(me.id), tiktokUsernamesOf(me.id), channelsOf(me.id)]);
+  // usernames come from TikTok only once Hookline asks for them; until then no LIVE can count
+  const checking = configured().tiktokProfile;
+  // a TikTok connected without its username (before Hookline asked for it) needs connecting again
+  const noUsername = !accounts.length && channels.some((c) => c.platform === "tiktok");
   const running = allowedBy(settings, me.plan);
   const game = GAMES.find((g) => g.id === running.game)!;
+  const fit = liveFit(me.profile.liveCheck);
+  const at = (users: string[]) => users.map((u) => `@${u}`).join(", ");
 
   return (
     <>
@@ -44,9 +55,54 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
         action={<a href={`/live/play?key=${key}`} target="_blank" rel="noreferrer" className={button.secondary}>Try it with the test panel</a>}
       />
 
-      <section aria-labelledby="go-live" className="mb-8">
-        <h2 id="go-live" className="mb-4 font-display text-2xl uppercase tracking-wide">Go live in three steps</h2>
-        <Setup overlayKey={key} game={running.game} />
+      {typeof q.error === "string" && <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">TikTok didn&rsquo;t connect. Try again from Settings.</p>}
+
+      <section aria-labelledby="go-live" className="mb-8 scroll-mt-20">
+        {!fit.asked ? (
+          <>
+            <h2 id="go-live" className="mb-4 font-display text-2xl uppercase tracking-wide">Before you set it up</h2>
+            <Card>
+              <form action={checkLive} className="flex flex-col gap-4 px-5 py-5">
+                <p className="max-w-2xl text-[15px] leading-relaxed text-muted">TikTok has its own rules for who can go LIVE and get gifts. Tick what&rsquo;s true for you.</p>
+                {[
+                  { name: "adult", label: "I'm 18 or older" },
+                  { name: "canGoLive", label: "My TikTok can go LIVE", sub: "TikTok usually opens it up at about 1,000 followers" },
+                  { name: "computer", label: "I'll go LIVE from a computer", sub: "The games run in TikTok LIVE Studio or OBS, not the phone app" },
+                ].map((q) => (
+                  <label key={q.name} className="flex items-start gap-3">
+                    <input type="checkbox" name={q.name} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
+                    <span className="flex flex-col gap-0.5">
+                      <span className="text-[15px]">{q.label}</span>
+                      {q.sub && <span className="text-[13px] text-muted">{q.sub}</span>}
+                    </span>
+                  </label>
+                ))}
+                <button type="submit" className={`${button.primary} w-fit`}>Continue</button>
+              </form>
+            </Card>
+          </>
+        ) : !fit.ok ? (
+          <>
+            <h2 id="go-live" className="mb-4 font-display text-2xl uppercase tracking-wide">You can&rsquo;t earn gifts with these yet</h2>
+            <Card>
+              <div className="flex flex-col gap-4 px-5 py-5">
+                <ul className="flex max-w-2xl flex-col gap-1.5 text-[15px] leading-relaxed">
+                  {fit.reasons.map((r) => <li key={r}>{r}</li>)}
+                </ul>
+                <p className="max-w-2xl text-[15px] leading-relaxed text-muted">You can make and post Shorts now, while you work toward LIVE. You can still try the games with the test panel.</p>
+                <div className="flex flex-wrap items-center gap-4">
+                  <Link href="/app/shorts" className={button.primary}>Go to Shorts</Link>
+                  <form action={recheckLive}><button type="submit" className={button.quiet}>Change my answers</button></form>
+                </div>
+              </div>
+            </Card>
+          </>
+        ) : (
+          <>
+            <h2 id="go-live" className="mb-4 font-display text-2xl uppercase tracking-wide">Go live in three steps</h2>
+            <Setup overlayKey={key} game={running.game} accounts={accounts} checking={checking} bridgeOff={configured().bridgeOff} />
+          </>
+        )}
       </section>
 
       <Card className="mb-8">
@@ -57,17 +113,33 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
           menus={labels}
           abilities={LIVE_ABILITIES.map((id) => ({ id, name: ABILITIES[id].name, color: ABILITIES[id].color, line: ABILITIES[id].line }))}
           allowed={{ games: me.plan.games, customMenus: me.plan.customMenus, planName: me.plan.name }}
+          upsell={sellLive(me.profile.liveCheck)}
           action={saveLive}
         />
       </Card>
 
       <Card className="mb-8">
         <CardHead title="Your LIVEs" action={sessions.length ? <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Real viewers only</span> : undefined} />
+        <p className="border-b-2 border-edge px-5 py-3 text-[13px] leading-relaxed text-muted">
+          {accounts.length ? (
+            <>A LIVE counts as yours when the game hears your connected TikTok ({at(accounts)}) through Hookline Bridge the whole way through. Gift coins seen are what viewers sent, not what TikTok pays you.</>
+          ) : !checking ? (
+            <>{NO_USERNAMES} Gift coins seen are what viewers sent, not what TikTok pays you.</>
+          ) : noUsername ? (
+            <>
+              Hookline doesn&rsquo;t have your TikTok username yet. <a href={`/api/connect/tiktok?next=${encodeURIComponent("/app/live")}`} className="text-fg underline decoration-signal decoration-2 underline-offset-4">Connect TikTok again</a> and allow your profile, so Hookline can tell your LIVEs are yours. Until then, their gift coins seen don&rsquo;t count in Earnings.
+            </>
+          ) : (
+            <>
+              <Link href="/app/settings" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Connect your TikTok</Link> so Hookline can tell your LIVEs are yours. Until then, their gift coins seen don&rsquo;t count in Earnings.
+            </>
+          )}
+        </p>
         {sessions.length === 0 ? (
           <div className="p-5">
             <Empty
               title="No LIVEs yet"
-              body="After you play it on a LIVE, each one shows up here: how long it ran, rounds, the most people playing at once, gift coins and your top gifters. Only real viewers count; demo and test-panel viewers never do."
+              body="After you play it on a LIVE, each one shows up here: how long it ran, rounds, the most people playing at once, gift coins seen and your top gifters. Only real viewers count; demo and test-panel viewers never do."
             />
           </div>
         ) : (
@@ -81,7 +153,8 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
                   <th scope="col" className="hidden px-3 py-3 text-right font-normal sm:table-cell">Length</th>
                   <th scope="col" className="px-3 py-3 text-right font-normal">Rounds</th>
                   <th scope="col" className="hidden px-3 py-3 text-right font-normal sm:table-cell">Most playing</th>
-                  <th scope="col" className="px-5 py-3 text-right font-normal md:px-3">Gift coins</th>
+                  <th scope="col" className="px-5 py-3 text-right font-normal md:px-3">Gift coins seen</th>
+                  <th scope="col" className="hidden px-3 py-3 font-normal lg:table-cell">Whose LIVE</th>
                   <th scope="col" className="hidden px-5 py-3 font-normal md:table-cell">Top gifter</th>
                 </tr>
               </thead>
@@ -93,7 +166,16 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
                     <td className="hidden px-3 py-3 text-right tabular-nums sm:table-cell">{length(s)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{n(s.rounds)}</td>
                     <td className="hidden px-3 py-3 text-right tabular-nums sm:table-cell">{n(s.peakPlayers)}</td>
-                    <td className="px-5 py-3 text-right tabular-nums md:px-3">{n(s.coins)}</td>
+                    <td className="px-5 py-3 text-right tabular-nums md:px-3">
+                      {n(s.coins)}
+                      {!s.verified && <span className="block font-mono text-[10px] uppercase tracking-[0.12em] text-signal">Not counted</span>}
+                    </td>
+                    <td className="hidden max-w-[16rem] px-3 py-3 lg:table-cell" title={whyNotCounted(s, accounts, checking) ?? undefined}>
+                      <span className="flex flex-wrap items-center gap-2">
+                        {s.heard.length ? <span className="truncate">{at(s.heard)}{s.unknown && <span className="text-muted"> + couldn&rsquo;t tell</span>}</span> : <span className="text-muted">Couldn&rsquo;t tell</span>}
+                        {s.verified ? <Pill tone="good">Yours</Pill> : <Pill tone="warn">Not verified</Pill>}
+                      </span>
+                    </td>
                     <td className="hidden max-w-[12rem] truncate px-5 py-3 md:table-cell">{s.topGifters[0] ? `${s.topGifters[0].name} · ${n(s.topGifters[0].coins)}` : <span className="text-muted">None</span>}</td>
                   </tr>
                 ))}

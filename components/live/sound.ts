@@ -113,6 +113,8 @@ export class LiveSound {
         this.thump(0.4, 0.4);
       }
       else if (e.type === "meteor") this.tone(1400, now, 1.2, 0.1, "sine", 120);
+      // a team that was hanging on, saved: the shield's chord, higher
+      else if (e.type === "saved") [0, 4, 7, 12].forEach((n, i) => this.pluck(midi(84 + n), 0.24, i * 0.04));
     }
   }
 

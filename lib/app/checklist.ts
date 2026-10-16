@@ -25,8 +25,14 @@ const ORDER: Record<Goal, (keyof Facts)[]> = {
   both: ["youtube", "liveSetUp", "swiped", "wentLive", "posted", "goal"],
 };
 
-export function checklist(goal: Goal | null, facts: Facts): Step[] {
-  return ORDER[goal ?? "both"].map((id) => ({ id, ...STEPS[id], done: facts[id] }));
+/** Where Hookline doesn't post for them (Free, or before YouTube's audit), they post their own Shorts. */
+const SELF: Partial<Record<keyof Facts, Pick<Step, "body">>> = {
+  youtube: { body: "So Hookline can check the Shorts you post and read their views." },
+  posted: { body: "Post one on YouTube yourself, then tap I posted it." },
+};
+
+export function checklist(goal: Goal | null, facts: Facts, posts = false): Step[] {
+  return ORDER[goal ?? "both"].map((id) => ({ id, ...STEPS[id], ...(posts ? {} : SELF[id]), done: facts[id] }));
 }
 
 /** The first step not done yet: Home's one big button. */

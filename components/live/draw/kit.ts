@@ -381,8 +381,13 @@ export function icon(ctx: Ctx, kind: Icon, x: number, y: number, s: number, c: s
   }
 }
 
-/** A falling meteor onto (x, y), `k` of the way down, with the target ring over what it's aimed at. */
-export function meteorFall(ctx: Ctx, x: number, y: number, ring: number, k: number, turn: number) {
+/** how much bigger to draw a meteor that hits for `hit`: the old 30-damage one is 1, a Universe's about 2 */
+export function meteorSize(hit: number): number {
+  return Math.min(2.2, 1 + 0.4 * Math.log10(Math.max(1, hit / 30)));
+}
+
+/** A falling meteor onto (x, y), `k` of the way down, with the target ring over what it's aimed at; `size` draws a bigger one. */
+export function meteorFall(ctx: Ctx, x: number, y: number, ring: number, k: number, turn: number, size = 1) {
   ctx.save();
   const rr = ring + 40 - 24 * k;
   ctx.translate(x, y);
@@ -406,25 +411,26 @@ export function meteorFall(ctx: Ctx, x: number, y: number, ring: number, k: numb
   g.addColorStop(0, "rgba(255,159,10,0.95)");
   g.addColorStop(1, "rgba(255,159,10,0)");
   ctx.strokeStyle = g;
-  ctx.lineWidth = 46;
+  ctx.lineWidth = 46 * size;
   ctx.lineCap = "round";
   ctx.beginPath();
   ctx.moveTo(sx, sy);
   ctx.lineTo(sx + 170, sy - 300);
   ctx.stroke();
-  circle(ctx, sx, sy, 38, "#FF9F0A", INK, 6);
-  circle(ctx, sx - 9, sy - 9, 13, GOLD);
+  circle(ctx, sx, sy, 38 * size, "#FF9F0A", INK, 6);
+  circle(ctx, sx - 9 * size, sy - 9 * size, 13 * size, GOLD);
   ctx.restore();
 }
 
-/** how hard to shake the arena, from the newest knockouts and blasts */
-export function shakeFrom(events: { f: number; type: string }[], clock: number, fps: number): number {
+/** how hard to shake the arena, from the newest knockouts and blasts: a meteor that hits harder shakes harder */
+export function shakeFrom(events: { f: number; type: string; dmg?: number; hit?: number }[], clock: number, fps: number): number {
   let shake = 0;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i];
     const age = clock - e.f / fps;
     if (age > 0.4) break;
-    if ((e.type === "ko" || e.type === "boom") && age >= 0) shake = Math.max(shake, (e.type === "boom" ? 16 : 10) * (1 - age / 0.4));
+    const hard = e.type === "boom" ? 16 * meteorSize(e.hit ?? 0) : 10;
+    if ((e.type === "ko" || e.type === "boom") && age >= 0) shake = Math.max(shake, hard * (1 - age / 0.4));
   }
   return shake;
 }

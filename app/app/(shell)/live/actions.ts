@@ -1,10 +1,12 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import type { LiveCheck } from "@/lib/live/eligibility";
 import { validGifts } from "@/lib/live/menu";
-import { ownRivalryProblem, validSideGifts } from "@/lib/live/rivals";
+import { ownRivalryProblem, sidesProblem, validSideGifts } from "@/lib/live/rivals";
 import { liveSettingsSchema } from "@/lib/live/settings";
 import { requireUser } from "@/lib/server/auth";
+import { asUser } from "@/lib/server/db";
 import { rotateOverlayKey, saveLiveSettings } from "@/lib/server/live";
 
 export type SaveState = { ok: boolean; message: string; at: number } | null;
@@ -32,6 +34,8 @@ export async function saveLive(_: SaveState, form: FormData): Promise<SaveState>
   if (p.data.gifts && !validGifts(p.data.gifts)) {
     return { ok: false, message: "Your first gift has to cost 1 coin, and each one after it more than the last.", at: Date.now() };
   }
+  const teams = sidesProblem(p.data.teams[0].name, p.data.teams[1].name);
+  if (teams) return { ok: false, message: `Team names: ${teams}`, at: Date.now() };
   for (const r of p.data.rivals.own) {
     const why = ownRivalryProblem(r.red, r.blue);
     if (why) return { ok: false, message: `${r.red} vs ${r.blue}: ${why}`, at: Date.now() };
@@ -51,4 +55,21 @@ export async function newKey() {
   await rotateOverlayKey(me.id);
   revalidatePath("/app/live");
   redirect("/app/live?rotated=1#address");
+}
+
+/** Their answers to "can you earn gifts on a TikTok LIVE?": a box left unticked is a no. */
+export async function checkLive(form: FormData) {
+  const me = await requireUser();
+  const c: LiveCheck = { adult: form.get("adult") === "on", canGoLive: form.get("canGoLive") === "on", computer: form.get("computer") === "on" };
+  await asUser(me.id, (tx) => tx`update public.profiles set live_check = ${tx.json(c)} where id = ${me.id}`);
+  revalidatePath("/app", "layout");
+  redirect("/app/live#go-live");
+}
+
+/** Answer again. */
+export async function recheckLive() {
+  const me = await requireUser();
+  await asUser(me.id, (tx) => tx`update public.profiles set live_check = null where id = ${me.id}`);
+  revalidatePath("/app", "layout");
+  redirect("/app/live#go-live");
 }

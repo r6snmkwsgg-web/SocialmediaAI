@@ -1,14 +1,17 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rng } from "@/lib/battle/sim";
+import type { BridgeStatus } from "@/lib/live/bridge";
+import { connectionView, sinceAfter, type SocketState } from "@/lib/live/connection";
 import { demoTick, demoViewer } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
 import type { MenuGift, Tier } from "@/lib/live/menu";
 import type { LiveSettings } from "@/lib/live/settings";
+import { HeardLog, type Heard } from "@/lib/live/proof";
 import { LETTERS, LIKES_PER_HP, Show } from "@/lib/live/show";
 import { draw, H, W } from "./draw/frame";
 import { LiveSound } from "./sound";
-import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
+import { LiveSource, SOURCES, type SourceId } from "./source";
 
 type Props = {
   /** where the live's events come from; none means only the test panel and demo */
@@ -24,9 +27,14 @@ type Props = {
   tag?: boolean;
   /** something the streamer needs to fix, shown at the top of the game */
   notice?: string;
-  /** reports the session's numbers now and then, for the streamer's stats */
-  onStats?: (show: Show, final: boolean) => void;
+  /** a calm line at the top, like RECONNECTING, when nothing more pressing needs saying */
+  status?: string;
+  /** reports the session's numbers now and then, for the streamer's stats, with the TikTok LIVEs it heard */
+  onStats?: (show: Show, final: boolean, heard: Heard) => void;
 };
+
+/** Where the game is listening, kept outside React so the drawing loop reads it fresh every frame. */
+type Ear = { src: SourceId | "none"; socket: SocketState; since: number; bridge: BridgeStatus | null; heardAt: number; bridgeOff: boolean };
 
 const TESTERS: [Viewer, Viewer] = [
   { id: "test-1", name: "tester one", pretend: true },
@@ -56,7 +64,7 @@ function useImages() {
  * runs the game in real time, listens to TikFinity or the bridge, and has
  * a test panel (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, onStats }: Props) {
+export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, onStats }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -64,11 +72,13 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const image = useImages();
   const [panel, setPanel] = useState(false);
   const [demoOn, setDemoOn] = useState(demoAtStart);
-  const [state, setState] = useState<SourceState>("closed");
+  // the source can change: a bridge that Hookline has switched off sends the game to TikFinity
+  const [live, setLive] = useState<SourceId | "none">(src);
   const [soundOn, setSoundOn] = useState(false);
   const [muted, setMuted] = useState(false);
   const [, redraw] = useState(0);
-  const stateRef = useRef<SourceState>("closed");
+  const ear = useRef<Ear>({ src, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now(), bridgeOff: false });
+  const heard = useRef(new HeardLog());
   const stats = useRef(onStats);
   stats.current = onStats;
 
@@ -86,21 +96,48 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
 
   const handle = useCallback((e: LiveEvent) => show.current?.handle(e), []);
 
-  // listen to the live
+  const [srcWas, setSrcWas] = useState(src);
+  if (src !== srcWas) {
+    setSrcWas(src);
+    setLive(src);
+  }
+
+  // listen to the live, and keep track of whether it can really hear it, and whose it is
   useEffect(() => {
-    if (src === "none") return;
-    const s = new LiveSource(url || SOURCES[src].url, handle, (st) => {
-      stateRef.current = st;
-      setState(st);
+    const h = ear.current;
+    Object.assign(h, { src: live, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now() });
+    if (live === "none") return;
+    const s = new LiveSource(live === src && url ? url : SOURCES[live].url, {
+      onEvent: (e) => {
+        h.heardAt = Date.now();
+        handle(e);
+        // whose LIVE this came from, by what the bridge says it's connected to; TikFinity doesn't say
+        const b = h.bridge;
+        if (!e.viewer.pretend && show.current) heard.current.note(show.current.stats.id, b?.state === "live" ? b.user : null);
+      },
+      onState: (st) => {
+        h.since = sinceAfter(h.socket, st, h.since, Date.now());
+        h.socket = st;
+        if (st === "open") h.heardAt = Date.now();
+        else h.bridge = null;
+      },
+      onStatus: (b) => {
+        if (b.state === "live" && h.bridge?.state !== "live") h.heardAt = Date.now();
+        h.bridge = b;
+        if (b.state === "off" && live !== "tikfinity") {
+          h.bridgeOff = true;
+          setLive("tikfinity");
+        }
+      },
     });
     s.start();
     return () => s.stop();
-  }, [src, url, handle]);
+  }, [live, src, url, handle]);
 
   // the session's numbers, every half minute and when the page closes
   useEffect(() => {
     const send = (final: boolean) => {
-      if (show.current && stats.current) stats.current(show.current, final);
+      if (show.current && stats.current) stats.current(show.current, final, heard.current.of(show.current.stats.id));
     };
     const every = setInterval(() => send(false), 30_000);
     const bye = () => send(true);
@@ -146,16 +183,18 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
       cues = s.cueCount;
     };
 
-    const status = () => {
-      if (src === "none") return undefined;
-      if (stateRef.current === "open") return undefined;
-      return `WAITING FOR ${SOURCES[src].name.toUpperCase()}…`;
+    // what the top of the game says: a connection problem first, since every gift does nothing until it's fixed
+    const top = () => {
+      const h = ear.current;
+      if (h.src === "none") return { status: calm, notice };
+      const c = connectionView({ ...h, name: SOURCES[h.src].name, now: Date.now() });
+      return { status: c.status ?? calm, notice: c.notice ?? notice };
     };
 
     let ticks = 0;
     const frame = (now: number) => {
       step(now);
-      draw(ctx, s, { demo: demo.current, image, status: status(), tag, notice });
+      draw(ctx, s, { demo: demo.current, image, tag, ...top() });
       // the test panel shows the vote's buttons only while there's a vote
       if (++ticks % 15 === 0) redraw((n) => n + 1);
       raf = requestAnimationFrame(frame);
@@ -169,7 +208,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
       cancelAnimationFrame(raf);
       clearInterval(keepGoing);
     };
-  }, [image, src, tag, notice]);
+  }, [image, tag, notice, calm]);
 
   // the font, before anything that matters is drawn
   useEffect(() => {
@@ -236,6 +275,8 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   /** what "same viewer again" sends: a ball with their face on it */
   const again = (side: 0 | 1 | null): Tier => items(side).find((t) => t.effect === "ball") ?? items(side)[2];
   const voting = s0.phase === "win" && s0.vote;
+  const h = ear.current;
+  const hint = h.src === "none" ? null : connectionView({ ...h, name: SOURCES[h.src].name, now: Date.now() }).hint;
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-[#050506]" onClick={startSound}>
@@ -251,11 +292,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
       {!clean && (
         <div className="pointer-events-none fixed left-3 top-3 flex flex-col gap-1.5 font-mono text-[10px] uppercase tracking-wider text-paper/55">
           {!soundOn && <span className="pointer-events-auto bg-signal px-2 py-1 text-ink">Click anywhere for sound</span>}
-          {src !== "none" && (
-            <span>
-              {SOURCES[src].name}: {state === "open" ? "connected" : state === "connecting" ? "connecting…" : "not running, retrying"}
-            </span>
-          )}
+          {hint && <span className="max-w-[min(420px,40vw)] normal-case tracking-normal">{hint}</span>}
           <span>T test panel · D demo {demoOn ? "on" : "off"} · M {muted ? "unmute" : "mute"} · F full screen</span>
         </div>
       )}

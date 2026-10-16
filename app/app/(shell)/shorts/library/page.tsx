@@ -126,7 +126,7 @@ export default async function Library({ searchParams }: { searchParams: Search }
                     {it.views !== null && (
                       <p className="text-[13px] tabular-nums text-muted">
                         <b className="font-semibold text-fg">{n(it.views)}</b> views
-                        {it.vsUsual !== null && <> · <span className={it.vsUsual >= 1 ? "text-fg" : ""}>{times(it.vsUsual)} usual</span></>}
+                        {it.vsUsual !== null && <> · <span className={it.vsUsual >= 1 ? "text-fg" : ""}>{it.vsEstimated ? "about " : ""}{times(it.vsUsual)} usual</span></>}
                       </p>
                     )}
                   </div>

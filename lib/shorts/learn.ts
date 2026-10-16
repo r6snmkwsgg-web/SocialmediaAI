@@ -4,15 +4,59 @@ import { FORMAT_IDS, type FormatId } from "./types";
  * The learning loop. Each posted Short's views at 24 hours are compared
  * with the channel's typical Short at 24 hours; formats (and matchups,
  * quiz kinds, story tones) that beat it get picked more, ones that don't
- * get picked less. Every format keeps a fair chance, so the channel never
- * stops trying things and one lucky video can't take over.
+ * get picked less. New channels' views are mostly noise, so a score is
+ * pulled toward the channel's usual until it has the results to stand
+ * on. Every format keeps a fair chance, so the channel never stops trying
+ * things and one lucky video can't take over.
  */
 
 export type Weight = { kind: "format" | "key"; name: string; score: number; samples: number };
 
+/** How many results a score needs before it counts for half; until then it's mostly the channel's usual. */
+export const PRIOR = 8;
+
+/**
+ * A score as the picks use it: shrunk toward 1 (the channel's usual) by
+ * how few results it has. With 1 result it counts for a ninth, with 8
+ * for half, and never more than 20 / 28, since the score itself only
+ * remembers about the last 20.
+ */
+export function steady(w: Pick<Weight, "score" | "samples"> | undefined): number {
+  if (!w || w.samples <= 0) return 1;
+  const n = Math.min(w.samples, 20);
+  return Math.exp((Math.log(w.score) * n) / (n + PRIOR));
+}
+
+/**
+ * Views as they most likely were at 24 hours, from a reading taken
+ * `hours` after posting. Readings are taken at 24 hours, but can come up
+ * to two days late when the worker was down. A late one is scaled back
+ * by the square root of how late it is: halfway between "every view came
+ * on the first day" and "they came in evenly".
+ */
+export function at24h(views: number, hours: number): number {
+  if (!(hours > 24)) return views;
+  return views * Math.sqrt(24 / hours);
+}
+
+/** Whether a reading was taken on time: within two hours of its checkpoint (the worker reads every 15 minutes). */
+export function onTime(checkpoint: number, hours: number): boolean {
+  return hours <= checkpoint + 2;
+}
+
 /** How a video did against the channel's typical one: 2 is twice the usual views. */
 export function lift(views: number, typical: number): number {
   return (views + 10) / (typical + 10);
+}
+
+/**
+ * A first day against the channel's usual one, read `hours` after
+ * posting. One read late is scaled back to 24 hours, and says it's an
+ * estimate.
+ */
+export function againstUsual(views: number, hours: number, typical: number): { vs: number; estimated: boolean } {
+  const late = !onTime(24, hours);
+  return { vs: lift(late ? at24h(views, hours) : views, typical), estimated: late };
 }
 
 /** The middle of the channel's recent results: what "typical" means. */
@@ -32,21 +76,25 @@ export function updated(w: Pick<Weight, "score" | "samples">, l: number): { scor
 
 /**
  * How likely each format is to be picked today. A format starts at 1;
- * better results raise it, worse lower it, and none drops below a fifth
- * of the best, so the channel keeps learning.
+ * better results raise it, worse lower it, by its steady score, and none
+ * drops below a fifth of the best, so the channel keeps learning.
  */
 export function odds(weights: Weight[], allowed: readonly FormatId[] = FORMAT_IDS): Record<FormatId, number> {
-  const raw = Object.fromEntries(allowed.map((f) => {
-    const w = weights.find((x) => x.kind === "format" && x.name === f);
-    // a format with few results is closer to even, whatever it scored
-    const trust = w ? Math.min(1, w.samples / 5) : 0;
-    return [f, Math.exp(Math.log(w?.score ?? 1) * trust * 1.5)];
-  })) as Record<FormatId, number>;
+  const raw = Object.fromEntries(allowed.map((f) => [f, steady(weights.find((x) => x.kind === "format" && x.name === f))])) as Record<FormatId, number>;
   const best = Math.max(...Object.values(raw));
   for (const f of allowed) raw[f] = Math.max(raw[f], best / 5);
   const sum = Object.values(raw).reduce((a, b) => a + b, 0);
   for (const f of allowed) raw[f] /= sum;
   return raw;
+}
+
+/**
+ * The formats a channel's Shorts are drawn from. Text stories are off
+ * until the creator turns them on: templated scrolling text is what
+ * YouTube is least keen to pay for.
+ */
+export function formatsFor(opts: { textStories: boolean }): FormatId[] {
+  return FORMAT_IDS.filter((f) => f !== "texts" || opts.textStories);
 }
 
 /** Today's formats: drawn by the odds, never more than two of one kind. */
@@ -82,23 +130,47 @@ export function keyGroups(key: string): string[] {
   return [];
 }
 
-/** How a candidate's kind has done, trusted only once it has a few results: 1 is the channel's usual. */
+/** How a candidate's kind has done, by its steady score: 1 is the channel's usual. */
 export function kindScore(key: string, weights: Weight[]): number {
   const gs = keyGroups(key);
   if (!gs.length) return 1;
-  let log = 0;
-  for (const g of gs) {
-    const w = weights.find((x) => x.kind === "key" && x.name === g);
-    log += w ? Math.log(w.score) * Math.min(1, w.samples / 5) : 0;
-  }
+  const log = gs.reduce((a, g) => a + Math.log(steady(weights.find((x) => x.kind === "key" && x.name === g))), 0);
   return Math.exp(log / gs.length);
 }
 
-/** In plain words, why a format is being picked, for the queue. */
+/** The kind within a candidate that clearly stands out for the better, with its measured result, if one does. */
+export function standout(key: string, weights: Weight[]): Weight | null {
+  const ws = keyGroups(key)
+    .map((g) => weights.find((x) => x.kind === "key" && x.name === g))
+    .filter((w): w is Weight => !!w && w.samples >= 3 && steady(w) >= 1.15);
+  return ws.sort((a, b) => steady(b) - steady(a))[0] ?? null;
+}
+
+const listed = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
+/**
+ * In plain words, why fewer Shorts were made than the plan allows, for
+ * the queue and a notification: which formats have nothing new left.
+ */
+export function dryNote(dry: string[], made: number, wanted: number): string {
+  const what = dry.length ? `new ${listed(dry)}` : "new Shorts";
+  const why = "Hookline never makes the same thing twice, for your channel or anyone else's.";
+  return made > 0 ? `Only ${made} of ${wanted} could be made: there are no ${what} left for you right now. ${why}` : `There are no ${what} left to make for you right now. ${why}`;
+}
+
+
+/**
+ * In plain words, why a format is being picked, for the queue. The
+ * figure is what its Shorts really averaged; whether that counts as
+ * doing well or badly goes by the steady score, so a couple of results
+ * aren't called a pattern.
+ */
 export function formatReason(name: string, w: Weight | undefined): string {
   if (!w || w.samples < 3) return `Still learning what works on your channel: ${w?.samples ? `${w.samples} ${name} so far` : `trying ${name}`}`;
-  const x = w.score;
-  if (x >= 1.15) return `${name[0].toUpperCase()}${name.slice(1)} get ${x.toFixed(1)}× your usual views at 24 hours (${w.samples} posted)`;
-  if (x <= 0.87) return `${name[0].toUpperCase()}${name.slice(1)} get ${x.toFixed(1)}× your usual views, so fewer of them, but still some to keep checking`;
+  const x = steady(w);
+  const avg = `${w.score.toFixed(1)}× your usual views at 24 hours`;
+  if (x >= 1.15) return `Your ${name} have averaged ${avg} (${w.samples} posted)`;
+  if (x <= 0.87) return `Your ${name} have averaged ${avg}, so fewer of them, but still some to keep checking`;
+  if (w.score >= 1.15 || w.score <= 0.87) return `Your ${name} have averaged ${avg}, from ${w.samples}: too few to go on yet`;
   return `${name[0].toUpperCase()}${name.slice(1)} do about as well as your usual Short (${w.samples} posted)`;
 }

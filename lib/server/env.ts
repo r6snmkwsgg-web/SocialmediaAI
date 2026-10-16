@@ -1,5 +1,6 @@
 import "server-only";
 import { z } from "zod";
+import { testChannels, type ApiAccess } from "../shorts/youtube";
 
 /**
  * Every setting the server reads, checked once. Each outside service is
@@ -41,11 +42,20 @@ const schema = z.object({
   GOOGLE_CLIENT_SECRET: optional,
   /** a YouTube Data API key for the trends job, which reads public videos */
   YOUTUBE_API_KEY: optional,
+  /** "1" once YouTube's API audit has passed: until then everything uploaded stays private, so Hookline only uploads to the test channels */
+  YOUTUBE_AUDITED: optional,
+  /** YouTube channel ids (UC…), comma-separated: your own channels, which get uploads before the audit */
+  YOUTUBE_TEST_CHANNELS: optional,
 
   TIKTOK_CLIENT_KEY: optional,
   TIKTOK_CLIENT_SECRET: optional,
   /** "1" posts straight to creators' TikTok; until TikTok's audit passes, only to private accounts, as private posts */
   TIKTOK_DIRECT_POST: optional,
+  /** "1" asks TikTok for each account's username (user.info.profile), which is how a LIVE counts as the creator's own; only once the TikTok app has that scope */
+  TIKTOK_PROFILE: optional,
+
+  /** "1" switches every Hookline Bridge off: each one stops and tells its game to use TikFinity */
+  BRIDGE_OFF: optional,
 });
 
 export type Env = z.infer<typeof schema>;
@@ -68,10 +78,19 @@ export function configured() {
     claude: !!(e.ANTHROPIC_API_KEY && e.ANTHROPIC_MODEL),
     youtube: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET),
     youtubeTrends: !!e.YOUTUBE_API_KEY,
+    youtubeAudited: e.YOUTUBE_AUDITED === "1",
     tiktok: !!(e.TIKTOK_CLIENT_KEY && e.TIKTOK_CLIENT_SECRET),
     tiktokDirect: e.TIKTOK_DIRECT_POST === "1",
+    tiktokProfile: e.TIKTOK_PROFILE === "1",
     tokens: !!e.TOKEN_KEY,
+    bridgeOff: e.BRIDGE_OFF === "1",
   };
+}
+
+/** Which YouTube channels Hookline uploads to itself: all of them after the audit, only the test ones before. */
+export function youtubeApi(): ApiAccess {
+  const e = env();
+  return { audited: e.YOUTUBE_AUDITED === "1", test: testChannels(e.YOUTUBE_TEST_CHANNELS) };
 }
 
 /** Signing in without email: only on a developer's own machine, never in a deploy. */

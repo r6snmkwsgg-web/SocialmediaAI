@@ -1,4 +1,6 @@
+import { useMemo } from "react";
 import { AbsoluteFill, Audio, staticFile } from "remotion";
+import { frames } from "../../lib/shorts/timing";
 import type { Spec } from "../../lib/shorts/types";
 import { BattleVideo } from "../Battle";
 import { QuizVideo } from "./Quiz";
@@ -18,16 +20,18 @@ export type ShortProps = {
 
 /** Any Short, whatever its format: the one composition the app previews and the worker renders. */
 export function ShortVideo({ spec, tag, soundUrl, soundFile }: ShortProps) {
+  // how long it runs, for an ending that runs back into the start
+  const total = useMemo(() => (spec.format === "battle" ? 0 : frames(spec)), [spec]);
   if (spec.format === "battle") return <BattleVideo {...spec.params} tag={tag} soundUrl={soundUrl} soundFile={soundFile} />;
   const sound = soundUrl ?? (soundFile ? staticFile(soundFile) : null);
   return (
     <AbsoluteFill>
       {sound && <Audio src={sound} />}
-      {spec.format === "quiz" && <QuizVideo params={spec.params} tag={tag} />}
-      {spec.format === "wyr" && <WyrVideo params={spec.params} tag={tag} />}
-      {spec.format === "texts" && <TextsVideo params={spec.params} tag={tag} />}
-      {spec.format === "ranking" && <RankingVideo params={spec.params} tag={tag} />}
-      {spec.format === "race" && <RaceVideo params={spec.params} tag={tag} />}
+      {spec.format === "quiz" && <QuizVideo params={spec.params} tag={tag} total={total} />}
+      {spec.format === "wyr" && <WyrVideo params={spec.params} tag={tag} total={total} />}
+      {spec.format === "texts" && <TextsVideo params={spec.params} tag={tag} total={total} />}
+      {spec.format === "ranking" && <RankingVideo params={spec.params} tag={tag} total={total} />}
+      {spec.format === "race" && <RaceVideo params={spec.params} tag={tag} total={total} />}
     </AbsoluteFill>
   );
 }

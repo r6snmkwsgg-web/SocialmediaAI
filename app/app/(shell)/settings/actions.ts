@@ -4,11 +4,14 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser, signOut } from "@/lib/server/auth";
 import { stripe } from "@/lib/server/billing";
+import { setAudience } from "@/lib/server/channels";
 import { admin, asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
+import { safeNext } from "@/lib/server/http";
 import { removeVideos } from "@/lib/server/storage";
 import { supabaseAdmin } from "@/lib/server/supabase-admin";
 import { validTimezone } from "@/lib/shorts/times";
+import { YT_PRIVACY } from "@/lib/shorts/youtube";
 
 const profile = z.object({
   name: z.string().trim().max(40).transform((s) => s || null),
@@ -25,6 +28,15 @@ export async function saveProfile(form: FormData) {
   redirect("/app/settings?saved=1");
 }
 
+/** Which kinds of Short to make: text stories are off until switched on here. */
+export async function saveShorts(form: FormData) {
+  const me = await requireUser();
+  const on = form.get("textStories") === "on";
+  await asUser(me.id, (tx) => tx`update public.profiles set text_stories = ${on} where id = ${me.id}`);
+  revalidatePath("/app/settings");
+  redirect("/app/settings?saved=1");
+}
+
 export async function disconnect(form: FormData) {
   const me = await requireUser();
   const id = z.uuid().safeParse(form.get("id"));
@@ -33,6 +45,24 @@ export async function disconnect(form: FormData) {
   await asUser(me.id, (tx) => tx`delete from public.channels where id = ${id.data}`);
   revalidatePath("/app/settings");
   redirect("/app/settings?disconnected=1");
+}
+
+const audience = z.object({
+  id: z.uuid(),
+  kids: z.enum(["yes", "no"]),
+  privacy: z.enum(YT_PRIVACY),
+});
+
+/** The creator's answers for a YouTube channel: made for kids or not (nothing picked for them), and who sees new Shorts. */
+export async function saveAudience(form: FormData) {
+  const me = await requireUser();
+  const next = safeNext(String(form.get("next") ?? ""), "/app/settings");
+  const a = audience.safeParse({ id: form.get("id"), kids: form.get("kids"), privacy: form.get("privacy") ?? "public" });
+  const back = (q: string) => `${next}${next.includes("?") ? "&" : "?"}${q}`;
+  if (!a.success) redirect(back("error=audience"));
+  await setAudience(me.id, a.data.id, a.data.kids === "yes", a.data.privacy);
+  revalidatePath("/app", "layout");
+  redirect(back("saved=audience"));
 }
 
 /**

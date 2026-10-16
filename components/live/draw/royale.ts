@@ -123,6 +123,7 @@ export const royaleDraw: GameDraw = {
     const name = b.viewer.name.toUpperCase();
     if (b.tier.effect === "shield") return `${name} CAN'T BE HURT`;
     if (b.tier.effect === "sword") return `${name} GETS A SPINNING SWORD`;
+    if (b.many) return `ON ${name}'S ${b.many} BIGGEST RIVALS`;
     return `ON ${name}'S BIGGEST RIVAL`;
   },
 };

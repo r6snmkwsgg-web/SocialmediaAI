@@ -1,4 +1,6 @@
 import type { AbilityId } from "../battle/abilities";
+import type { Melody } from "../battle/sound";
+import type { Look } from "./look";
 
 /**
  * A Short, as data. Every format is drawn by code from a handful of
@@ -9,17 +11,33 @@ import type { AbilityId } from "../battle/abilities";
 export const FORMAT_IDS = ["battle", "quiz", "wyr", "texts", "ranking", "race"] as const;
 export type FormatId = (typeof FORMAT_IDS)[number];
 
-export type BattleParams = { a: AbilityId; b: AbilityId; seed: number };
+/** How a Short ends: asking for a comment, running straight back into its start, or neither. */
+export const ENDINGS = ["comment", "loop", "quiet"] as const;
+export type Ending = (typeof ENDINGS)[number];
+
+/**
+ * What every format shares: the channel's own look and how the video
+ * ends. Shorts made before these existed have none of them, and get
+ * Hookline's own look and the comment ending.
+ */
+export type Finish = {
+  look?: Look;
+  ending?: Ending;
+  /** false where comments are off (Shorts made for kids): the video never asks for one */
+  allowComments?: boolean;
+};
+
+export type BattleParams = { a: AbilityId; b: AbilityId; seed: number; melody?: Melody } & Finish;
 
 export type Question = { id: string; q: string; options: string[]; answer: number; topic: string; level: 1 | 2 | 3 };
-export type QuizParams = { questions: Question[] };
+export type QuizParams = { questions: Question[] } & Finish;
 
 export type Choice = { id: string; a: string; b: string };
-export type WyrParams = { pairs: Choice[] };
+export type WyrParams = { pairs: Choice[] } & Finish;
 
 export type Message = { me: boolean; text: string };
 export type Story = { id: string; contact: string; messages: Message[] };
-export type TextsParams = { story: Story };
+export type TextsParams = { story: Story } & Finish;
 
 export type Metric = "population" | "gdp";
 export type Region = "World" | "Africa" | "Asia" | "Europe" | "North America" | "South America" | "Oceania";
@@ -31,7 +49,7 @@ export type RankingParams = {
   /** biggest first */
   items: { iso: string; name: string; value: number }[];
   source: string;
-};
+} & Finish;
 
 export type RaceParams = {
   metric: Metric;
@@ -41,7 +59,9 @@ export type RaceParams = {
   series: { iso: string; name: string; values: (number | null)[] }[];
   top: number;
   source: string;
-};
+  /** frames each year takes, so a short stretch of years still makes a Short; RACE.year when missing */
+  step?: number;
+} & Finish;
 
 export type Spec =
   | { format: "battle"; params: BattleParams }
@@ -67,9 +87,22 @@ export type Candidate = Spec & {
   title: string;
 };
 
+/** A quiz question before it's asked: the right answer, two wrong ones, and how hard it is. */
+export type Fact = { id: string; q: string; a: string; decoys: [string, string]; level: 1 | 2 | 3; topic: string };
+
+/** A would-you-rather choice, with what it's about and how torn people are by it (1 to 3). */
+export type Pair = Choice & { theme: string; pull: 1 | 2 | 3 };
+
+/** A text story, with what it's called and its tone. */
+export type Tale = Story & { title: string; tone: "funny" | "sweet" | "twist" };
+
 /** What a format needs to know about a channel to make something new for it. */
 export type Context = {
   rand: () => number;
-  /** content already on the channel (question, story, matchup ids…), so nothing repeats */
+  /** what the channel has had (question, story, matchup ids…) and what other channels have: never used again */
   used: Set<string>;
+  /** how many times the channel has had each thing, for battles, whose matchups come round again as new fights */
+  times?: Map<string, number>;
+  /** new material written for this channel, used before the built-in banks */
+  fresh?: { questions?: Fact[]; pairs?: Pair[]; stories?: Tale[] };
 };

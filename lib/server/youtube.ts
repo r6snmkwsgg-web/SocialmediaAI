@@ -1,11 +1,14 @@
 import "server-only";
+import { atLocal, localParts } from "../shorts/times";
 import { markExpired, tokensOf, updateTokens, type Tokens } from "./channels-store";
+import { uploadStatus, YT_PRIVACY, type VideoState, type YouTubePrivacy } from "../shorts/youtube";
 import { env } from "./env";
 
 /**
  * YouTube: connecting a channel with Google, uploading the Shorts someone
- * approved (as private, set to go public at its time, which YouTube then
- * does by itself), and reading view counts for the learning loop.
+ * approved (public ones as private, set to go public at their time, which
+ * YouTube then does by itself), checking what YouTube made of them, and
+ * reading view counts for the learning loop.
  */
 
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -29,6 +32,21 @@ export class YouTubeError extends Error {
   get retry(): boolean {
     return this.status >= 500 || this.status === 429 || this.reason === "quotaExceeded" || this.reason === "rateLimitExceeded" || this.status === 0;
   }
+  /** the app's daily quota is used up: nothing more goes up until it resets */
+  get quota(): boolean {
+    return this.reason === "quotaExceeded";
+  }
+}
+
+/**
+ * When the daily quota comes back: Google resets it at midnight Pacific
+ * time. A few minutes after, so the first try isn't early.
+ */
+export function quotaResetsAt(now: Date): Date {
+  const tz = "America/Los_Angeles";
+  const p = localParts(now, tz);
+  const next = new Date(Date.UTC(p.y, p.m - 1, p.d + 1));
+  return new Date(atLocal(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, tz).getTime() + 5 * 60_000);
 }
 
 async function fail(res: Response, what: string): Promise<never> {
@@ -89,13 +107,20 @@ export async function youtubeExchange(code: string, redirectUri: string): Promis
   return toTokens(await res.json());
 }
 
-export async function youtubeChannel(access: string): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null }> {
-  const res = await fetch(`${API}/channels?part=snippet&mine=true`, { headers: { authorization: `Bearer ${access}` } });
+export async function youtubeChannel(access: string): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null; madeForKids: boolean | null }> {
+  const res = await fetch(`${API}/channels?part=snippet,status&mine=true`, { headers: { authorization: `Bearer ${access}` } });
   if (!res.ok) await fail(res, "Reading the channel");
-  const j = (await res.json()) as { items?: { id: string; snippet: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } } }[] };
+  const j = (await res.json()) as { items?: { id: string; snippet: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; status?: { madeForKids?: boolean } }[] };
   const c = j.items?.[0];
   if (!c) throw new YouTubeError("That Google account doesn't have a YouTube channel yet.", 404, "noChannel");
-  return { externalId: c.id, title: c.snippet.title ?? null, handle: c.snippet.customUrl ?? null, avatarUrl: c.snippet.thumbnails?.default?.url ?? null };
+  return {
+    externalId: c.id,
+    title: c.snippet.title ?? null,
+    handle: c.snippet.customUrl ?? null,
+    avatarUrl: c.snippet.thumbnails?.default?.url ?? null,
+    // YouTube's own verdict on the whole channel, which wins over anything said per video
+    madeForKids: typeof c.status?.madeForKids === "boolean" ? c.status.madeForKids : null,
+  };
 }
 
 /** A working access token for a channel, refreshed when it's run out. */
@@ -123,10 +148,15 @@ export async function youtubeAccess(channelId: string): Promise<string> {
 }
 
 /**
- * Uploads a Short. With a time, it goes up private and YouTube makes it
- * public at that time; without one, it's public straight away.
+ * Uploads a Short, as the creator chose: public ones with a time go up
+ * private and YouTube makes them public then; the rest go up as they are.
+ * Who it's for is always sent, never assumed.
  */
-export async function youtubeUpload(channelId: string, bytes: Buffer, meta: { title: string; description: string; publishAt: Date | null; categoryId?: string }): Promise<string> {
+export async function youtubeUpload(
+  channelId: string,
+  bytes: Buffer,
+  meta: { title: string; description: string; publishAt: Date | null; categoryId?: string; privacy: YouTubePrivacy; madeForKids: boolean },
+): Promise<string> {
   const access = await youtubeAccess(channelId);
   const init = await fetch(`${UPLOAD}?uploadType=resumable&part=snippet,status`, {
     method: "POST",
@@ -138,9 +168,7 @@ export async function youtubeUpload(channelId: string, bytes: Buffer, meta: { ti
     },
     body: JSON.stringify({
       snippet: { title: meta.title.slice(0, 100), description: meta.description.slice(0, 4900), categoryId: meta.categoryId ?? "24" },
-      status: meta.publishAt
-        ? { privacyStatus: "private", publishAt: meta.publishAt.toISOString(), selfDeclaredMadeForKids: false }
-        : { privacyStatus: "public", selfDeclaredMadeForKids: false },
+      status: uploadStatus(meta),
     }),
   });
   if (!init.ok) await fail(init, "Starting the upload");
@@ -151,6 +179,43 @@ export async function youtubeUpload(channelId: string, bytes: Buffer, meta: { ti
   const j = (await put.json()) as { id?: string };
   if (!j.id) throw new YouTubeError("YouTube didn't return the video", 500, null);
   return j.id;
+}
+
+type VideoItem = {
+  id: string;
+  snippet?: { channelId?: string };
+  status?: { uploadStatus?: string; privacyStatus?: string; failureReason?: string; rejectionReason?: string; madeForKids?: boolean };
+};
+
+/**
+ * Where videos are and what YouTube thinks of them, 50 at a time (1 quota
+ * unit each call). With a channel's own access it sees that channel's
+ * private videos too; with the API key, only public and unlisted ones.
+ * A video YouTube doesn't know is left out.
+ */
+export async function youtubeVideoStates(ids: string[], access?: string): Promise<Map<string, VideoState>> {
+  const out = new Map<string, VideoState>();
+  const key = env().YOUTUBE_API_KEY;
+  if (!access && !key) throw new YouTubeError("Nothing to read YouTube with", 0, "noKey");
+  for (let i = 0; i < ids.length; i += 50) {
+    const q = new URLSearchParams({ part: "snippet,status", id: ids.slice(i, i + 50).join(",") });
+    if (!access && key) q.set("key", key);
+    const res = await fetch(`${API}/videos?${q}`, access ? { headers: { authorization: `Bearer ${access}` } } : undefined);
+    if (!res.ok) await fail(res, "Checking the video");
+    const j = (await res.json()) as { items?: VideoItem[] };
+    for (const it of j.items ?? []) {
+      const p = it.status?.privacyStatus;
+      out.set(it.id, {
+        channelId: it.snippet?.channelId ?? null,
+        uploadStatus: it.status?.uploadStatus ?? null,
+        privacy: (YT_PRIVACY as readonly string[]).includes(p ?? "") ? (p as YouTubePrivacy) : null,
+        failureReason: it.status?.failureReason ?? null,
+        rejectionReason: it.status?.rejectionReason ?? null,
+        madeForKids: typeof it.status?.madeForKids === "boolean" ? it.status.madeForKids : null,
+      });
+    }
+  }
+  return out;
 }
 
 /** Public view counts, 50 at a time: with the API key if there is one, or a channel's own access. */

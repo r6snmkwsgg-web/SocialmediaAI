@@ -5,7 +5,7 @@ import { DailyBars, say } from "@/components/app/daily-bars";
 import { button, Card, CardHead, Empty, PageHead } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
-import { earningsOf, hasStripe } from "@/lib/server/earnings";
+import { earningsOf, hasStripe, LIVE_COINS } from "@/lib/server/earnings";
 import { configured } from "@/lib/server/env";
 import { addGoal, removeGoal, stripeConnect, stripeDisconnect } from "./actions";
 
@@ -17,6 +17,8 @@ const NOTES: Record<string, { text: string; bad?: boolean }> = {
   "stripe-rejected": { text: "Stripe didn't accept that key. Make sure it can read balance transactions.", bad: true },
 };
 
+const shortDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
+
 const field = "border-2 border-edge-strong bg-surface px-3 py-2 text-[15px] text-fg focus:border-fg focus:outline-none";
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
@@ -25,7 +27,8 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
   const me = await account();
   const q = await searchParams;
   const days = q.days === "90" ? 90 : 30;
-  const [{ series, goals, latest }, channels, stripe] = await Promise.all([earningsOf(me.id, days), channelsOf(me.id), hasStripe(me.id)]);
+  const [{ series, goals, unverified }, channels, stripe] = await Promise.all([earningsOf(me.id, days), channelsOf(me.id), hasStripe(me.id)]);
+  const hasLive = series.some((s) => s.source === "live");
   const c = configured();
   const has = (p: "youtube" | "tiktok") => channels.some((x) => x.platform === p && x.status === "connected");
   const note = typeof q.error === "string" ? NOTES[q.error] : q.stripe === "1" ? { text: "Stripe is connected. Your sales show up below once they've synced." } : undefined;
@@ -35,7 +38,7 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
       <PageHead
         eyebrow="Earnings"
         title="What you made"
-        line={<>Real numbers from your own accounts. Nothing is estimated or made up here.{latest && <> Figures up to {latest.toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" })}.</>}</>}
+        line="Real numbers from your own accounts, as each one reports them. Nothing is made up, and any figure that's an estimate says so."
         action={
           <div role="group" aria-label="Period" className="flex border-2 border-fg">
             {[30, 90].map((d) => (
@@ -112,8 +115,14 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                 <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{s.label}</p>
                 <p className="mt-1 font-display text-4xl leading-none tabular-nums">{say(s.total, s.unit, s.currency)}</p>
                 <p className="mt-1 text-[12px] text-muted">Last {days} days{s.note ? ` · ${s.note}` : ""}</p>
+                {s.through && s.through < s.points[s.points.length - 1].day && (
+                  <p className="mt-0.5 text-[12px] text-muted">Reported up to {shortDay(s.through)}. YouTube adds the days after that later.</p>
+                )}
+                {s.from && s.from > s.points[0].day && (
+                  <p className="mt-0.5 text-[12px] text-muted">Figures start {shortDay(s.from)}, as far back as Stripe was read when you connected it.</p>
+                )}
               </div>
-              <DailyBars points={s.points} unit={s.unit} currency={s.currency} label={s.label} />
+              <DailyBars points={s.points} unit={s.unit} currency={s.currency} label={s.label} through={s.through} />
             </li>
           ))}
         </ul>
@@ -124,7 +133,7 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
           <Card>
             <CardHead title="Add your channels" />
             <div className="px-5 py-5">
-              <ConnectList platforms={(["youtube", "tiktok"] as const).filter((p) => !has(p))} channels={channels} ready={{ youtube: c.youtube, tiktok: c.tiktok }} next="/app/earnings" />
+              <ConnectList platforms={(["youtube", "tiktok"] as const).filter((p) => !has(p))} channels={channels} ready={{ youtube: c.youtube, tiktok: c.tiktok }} next="/app/earnings" youtubeApi={c.youtubeAudited} posts={me.plan.scheduling} tiktokProfile={c.tiktokProfile} />
               <p className="mt-3 text-[12px] leading-relaxed text-muted">YouTube gives views, subscribers and, for channels in the Partner Program, YouTube&rsquo;s estimate of revenue. TikTok gives views; it doesn&rsquo;t share earnings with apps.</p>
             </div>
           </Card>
@@ -152,12 +161,21 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
             )}
           </div>
         </Card>
-        {!series.some((s) => s.source === "live") && (
+        {(!hasLive || unverified.lives > 0) && (
           <Card>
-            <CardHead title="Gift coins from your LIVEs" />
-            <p className="px-5 py-5 text-[14px] leading-relaxed text-muted">
-              Play the game on a LIVE through your own game address and the coins it sees show up here. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Set it up</Link>
-            </p>
+            <CardHead title={LIVE_COINS} />
+            <div className="flex flex-col gap-3 px-5 py-5 text-[14px] leading-relaxed text-muted">
+              {unverified.lives > 0 && (
+                <p className="border-l-2 border-signal pl-3 text-fg/80">
+                  Not counted: {unverified.coins.toLocaleString("en-US")} gift coins seen on {unverified.lives} LIVE{unverified.lives === 1 ? "" : "s"} in the last {days} days that {unverified.lives === 1 ? "wasn't" : "weren't"} verified as yours. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">See why</Link>
+                </p>
+              )}
+              {!hasLive && (
+                <p>
+                  Play the game on your own TikTok LIVE, through your game address and Hookline Bridge, and the gift coins it sees show up here. They&rsquo;re what viewers sent, not what TikTok pays you. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Set it up</Link>
+                </p>
+              )}
+            </div>
           </Card>
         )}
       </div>

@@ -5,15 +5,15 @@ export const metadata: Metadata = { title: "Privacy", description: "What Hooklin
 
 export default function Privacy() {
   return (
-    <LegalPage title="Privacy" updated="October 15, 2026">
+    <LegalPage title="Privacy" updated="October 16, 2026">
       <p>This page says what Hookline keeps about you, why, who else sees it, and how to delete it. If anything here is unclear, write to <Contact />.</p>
 
       <h2>What we keep</h2>
       <ul>
         <li><b>Your account</b>: your email address, the name you give, what you use Hookline for, and your timezone.</li>
-        <li><b>Connected accounts</b>: for YouTube and TikTok, the channel or account&rsquo;s id, name and picture, and the access tokens they give us, stored encrypted.</li>
+        <li><b>Connected accounts</b>: for YouTube and TikTok, the channel or account&rsquo;s id, name and picture, your TikTok username, and the access tokens they give us, stored encrypted.</li>
         <li><b>Your Shorts</b>: the videos we make for you, your yes or no on each, titles you edit, the rendered files, and each posted Short&rsquo;s view counts.</li>
-        <li><b>Your LIVE game</b>: your game settings, and each session&rsquo;s numbers (rounds, gift coins, the most viewers playing, and your top gifters&rsquo; display names and coins).</li>
+        <li><b>Your LIVE game</b>: your game settings, your answers about whether you can get gifts on a TikTok LIVE, and each session&rsquo;s numbers (rounds, gift coins seen, the most viewers playing, your top gifters&rsquo; display names and coins, and the username of the TikTok LIVE the game heard).</li>
         <li><b>Earnings</b>: daily figures from the accounts you connect, and your goals. If you add a Stripe key, it&rsquo;s a read-only restricted key, stored encrypted.</li>
         <li><b>Billing</b>: your plan and Stripe&rsquo;s customer and subscription ids. Stripe handles your card; we never see it.</li>
       </ul>
@@ -31,7 +31,10 @@ export default function Privacy() {
       </p>
 
       <h2>TikTok</h2>
-      <p>When you connect TikTok, Hookline asks for your basic profile, your videos&rsquo; view counts, and permission to upload videos you approve. Your LIVE game reads your LIVE&rsquo;s public events (chats, likes, gifts) through a tool on your own computer; it never has your TikTok password.</p>
+      <p>When you connect TikTok, Hookline asks for your basic profile and username, your videos&rsquo; view counts, and permission to upload videos you approve. Your username is how Hookline checks that a LIVE the game heard was yours, so its gift coins can count in Earnings. Your LIVE game reads your LIVE&rsquo;s public events (chats, likes, gifts) through a tool on your own computer; it never has your TikTok password.</p>
+
+      <h2>Children and teens</h2>
+      <p>Hookline is for people 13 and older, and we don&rsquo;t knowingly keep anything about a child under 13. If you think a child under 13 has an account, write to <Contact /> and we&rsquo;ll delete it. If you&rsquo;re under 18, use Hookline with a parent or guardian&rsquo;s permission; any paid plan has to be theirs.</p>
 
       <h2>Who else sees it</h2>
       <p>The services Hookline runs on: Supabase (accounts, database and video storage), Vercel (the website), Stripe (payments), Anthropic (the facts of each video are sent to Claude to suggest a title; no personal data is included), and YouTube and TikTok when you connect them.</p>

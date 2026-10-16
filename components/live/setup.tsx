@@ -1,12 +1,14 @@
 "use client";
+import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { bridgeStatusOf, newer, versionOf, type BridgeStatus } from "@/lib/live/bridge";
 import type { LiveEvent } from "@/lib/live/events";
 import { GAMES } from "@/lib/live/games";
+import { NO_USERNAMES } from "@/lib/live/proof";
 import type { GameId } from "@/lib/live/settings";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
 
 type Heard = { at: number; e: LiveEvent };
-type BridgeStatus = { state: "idle" | "connecting" | "live" | "waiting" | "error"; user: string | null; error: string | null; version?: string };
 
 /** where the bridge's downloads live: the latest GitHub release */
 const BRIDGE_REPO = process.env.NEXT_PUBLIC_BRIDGE_REPO || "r6snmkwsgg-web/hookline-bridge";
@@ -17,6 +19,10 @@ const DOWNLOADS = [
   { label: "Mac (Intel)", file: "hookline-bridge-mac-x64.zip" },
   { label: "Linux", file: "hookline-bridge-linux-x64.tar.gz" },
 ];
+/** the newest bridge's version, from its GitHub release's tag */
+const LATEST = `https://api.github.com/repos/${BRIDGE_REPO}/releases/latest`;
+/** remembered once someone has asked the page to look, so it looks straight away next time */
+const LOOKED = "hookline:setup-looked";
 
 function describe(e: LiveEvent): string {
   switch (e.kind) {
@@ -43,18 +49,38 @@ const bridgeWord: Record<BridgeStatus["state"], string> = {
   live: "Connected to your LIVE",
   waiting: "You're not live yet: it'll connect when you are",
   error: "Problem",
+  off: "Switched off by Hookline for now",
+};
+
+type Props = {
+  overlayKey?: string;
+  game?: GameId;
+  locked?: GameId[];
+  /** the streamer's connected TikTok usernames, to say whether a LIVE counts; left out where nobody's signed in */
+  accounts?: string[];
+  /** Hookline asks TikTok for usernames, so connecting TikTok can make a LIVE count */
+  checking?: boolean;
+  /** Hookline has switched the bridge off: TikFinity only */
+  bridgeOff?: boolean;
 };
 
 /**
  * The setup page's working parts: pick a game, hear the LIVE (TikFinity
  * or Hookline Bridge, which it can point at the streamer's account), get
  * the address for OBS or LIVE Studio, and see what's coming in.
+ *
+ * It only looks for TikFinity and the bridge on this computer once asked
+ * to (or once it has been before): looking makes the browser ask whether
+ * the page may use apps on the device, which nobody just reading about the
+ * games should be asked.
  */
-export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { overlayKey?: string; game?: GameId; locked?: GameId[] } = {}) {
+export function Setup({ overlayKey, game: initial = "battle", locked = [], accounts, checking = true, bridgeOff = false }: Props = {}) {
   const [game, setGame] = useState<GameId>(initial);
   const [pick, setPick] = useState<SourceId>("tikfinity");
+  const [looking, setLooking] = useState(false);
   const [states, setStates] = useState<Record<SourceId, SourceState>>({ tikfinity: "closed", bridge: "closed" });
   const [bridge, setBridge] = useState<BridgeStatus | null>(null);
+  const [latest, setLatest] = useState<string | null>(null);
   const [username, setUsername] = useState("");
   const [heard, setHeard] = useState<Heard[]>([]);
   const [raw, setRaw] = useState<string[]>([]);
@@ -65,42 +91,69 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
   const [origin, setOrigin] = useState("");
   const sources = useRef<Partial<Record<SourceId, LiveSource>>>({});
 
-  useEffect(() => setOrigin(window.location.origin), []);
+  useEffect(() => {
+    setOrigin(window.location.origin);
+    try {
+      if (localStorage.getItem(LOOKED)) setLooking(true);
+    } catch {
+      // no storage: it waits to be asked
+    }
+  }, []);
+
+  const look = () => {
+    setLooking(true);
+    try {
+      localStorage.setItem(LOOKED, "1");
+    } catch {
+      // it'll ask again next time
+    }
+  };
 
   useEffect(() => {
-    const made = (Object.keys(SOURCES) as SourceId[]).map((id) => {
-      const s = new LiveSource(
-        SOURCES[id].url,
-        (e) => setHeard((h) => [{ at: Date.now(), e }, ...h].slice(0, 12)),
-        (st) => {
+    if (!looking) return;
+    const ids = (Object.keys(SOURCES) as SourceId[]).filter((id) => !(bridgeOff && id === "bridge"));
+    const made = ids.map((id) => {
+      const s = new LiveSource(SOURCES[id].url, {
+        onEvent: (e) => setHeard((h) => [{ at: Date.now(), e }, ...h].slice(0, 12)),
+        onState: (st) => {
           setStates((x) => ({ ...x, [id]: st }));
           if (id === "bridge" && st !== "open") setBridge(null);
         },
-        (text) => {
+        // the bridge saying how it's doing, and whose LIVE it's on
+        onStatus: (b) => {
+          setBridge(b);
+          if (b.user) setUsername((u) => u || b.user!);
+        },
+        onRaw: (text) => {
           allRaw.current.push({ at: new Date().toISOString(), text });
           if (allRaw.current.length > 500) allRaw.current.shift();
-          // the bridge's own status messages say how it's doing
-          if (id === "bridge" && text.includes('"bridge"')) {
-            try {
-              const m = JSON.parse(text) as { event?: string; data?: BridgeStatus };
-              if (m.event === "bridge" && m.data) {
-                setBridge(m.data);
-                if (m.data.user) setUsername((u) => u || m.data!.user!);
-                return;
-              }
-            } catch {
-              // not the bridge's; carry on
-            }
-          }
+          if (bridgeStatusOf(text)) return;
           setRaw((r) => [text.length > 400 ? `${text.slice(0, 400)}…` : text, ...r].slice(0, 12));
         },
-      );
+      });
       sources.current[id] = s;
       s.start();
       return s;
     });
     return () => made.forEach((s) => s.stop());
-  }, []);
+  }, [looking, bridgeOff]);
+
+  // is there a newer bridge than the one running? GitHub's latest release says
+  const running = bridge?.version;
+  useEffect(() => {
+    if (!running) return;
+    let gone = false;
+    fetch(LATEST, { headers: { accept: "application/vnd.github+json" } })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((j: { tag_name?: string } | null) => {
+        if (!gone && j?.tag_name && versionOf(j.tag_name)) setLatest(versionOf(j.tag_name)!.join("."));
+      })
+      .catch(() => {});
+    return () => {
+      gone = true;
+    };
+  }, [running]);
+  const update = latest && running && newer(latest, running) ? latest : null;
 
   const url = useMemo(() => {
     // with a key, the game and everything else come from the streamer's saved settings
@@ -144,33 +197,52 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
           Something on your computer connects to your LIVE and passes its events on. Pick one, start it, and it turns green here.
         </p>
         <div className="flex flex-col gap-2" role="radiogroup" aria-label="Where the events come from">
-          {(Object.keys(SOURCES) as SourceId[]).map((id) => (
-            <button
-              key={id}
-              type="button"
-              role="radio"
-              aria-checked={pick === id}
-              onClick={() => setPick(id)}
-              className={`flex items-center justify-between gap-3 border-2 px-4 py-3 text-left transition ${pick === id ? "border-fg bg-fg/5" : "border-edge hover:border-fg/50"}`}
-            >
-              <span>
-                <span className="block font-display text-xl uppercase tracking-wide">{id === "bridge" ? "Hookline Bridge" : SOURCES[id].name}</span>
-                <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-                  {id === "tikfinity" ? "If you already use TikFinity" : "Our free app: download, open, done"}
+          {(Object.keys(SOURCES) as SourceId[]).map((id) => {
+            const off = bridgeOff && id === "bridge";
+            return (
+              <button
+                key={id}
+                type="button"
+                role="radio"
+                aria-checked={pick === id}
+                disabled={off}
+                onClick={() => setPick(id)}
+                className={`flex items-center justify-between gap-3 border-2 px-4 py-3 text-left transition disabled:cursor-not-allowed disabled:opacity-55 ${pick === id ? "border-fg bg-fg/5" : "border-edge hover:border-fg/50"}`}
+              >
+                <span>
+                  <span className="block font-display text-xl uppercase tracking-wide">{SOURCES[id].name}</span>
+                  <span className="block font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+                    {off ? "Switched off for now" : id === "tikfinity" ? "If you already use TikFinity" : "Our free app: download, open, done"}
+                  </span>
                 </span>
-              </span>
-              <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg/70">
-                <span className={`h-2.5 w-2.5 rounded-full ${dot[states[id]]}`} />
-                {word[states[id]]}
-              </span>
-            </button>
-          ))}
+                {!off && (
+                  <span className="flex shrink-0 items-center gap-2 font-mono text-[10px] uppercase tracking-[0.14em] text-fg/70">
+                    <span className={`h-2.5 w-2.5 rounded-full ${looking ? dot[states[id]] : "bg-muted"}`} />
+                    {looking ? word[states[id]] : "Not checked"}
+                  </span>
+                )}
+              </button>
+            );
+          })}
         </div>
+        {!looking && (
+          <div className="flex flex-col gap-2">
+            <button type="button" onClick={look} className="press w-fit bg-signal px-4 py-2 font-display text-lg uppercase tracking-wider text-ink [--press:var(--fg)]">
+              Find it on this computer
+            </button>
+            <p className="text-[12px] leading-relaxed text-muted">Your browser may ask to let this page use apps on this device. Allow it: that&rsquo;s how it hears your LIVE.</p>
+          </div>
+        )}
         {pick === "tikfinity" ? (
-          <p className="text-[14px] leading-relaxed text-fg/65">
-            Open TikFinity on this computer and connect it to your TikTok account. Hookline listens on its local event connection, port 21213. If it doesn&rsquo;t turn green, look in TikFinity&rsquo;s settings for its WebSocket or Event API and switch it on.
-          </p>
-        ) : states.bridge === "open" ? (
+          <div className="flex flex-col gap-2 text-[14px] leading-relaxed text-fg/65">
+            <p>
+              Open TikFinity on this computer and connect it to your TikTok account. Hookline listens on its local event connection, port 21213. If it doesn&rsquo;t turn green, look in TikFinity&rsquo;s settings for its WebSocket or Event API and switch it on.
+            </p>
+            {accounts && checking && !bridgeOff && (
+              <p className="text-[12px] text-muted">The game plays the same with TikFinity, but TikFinity doesn&rsquo;t say whose LIVE it&rsquo;s on, so Earnings can&rsquo;t count its gift coins as yours. Hookline Bridge can tell.</p>
+            )}
+          </div>
+        ) : looking && states.bridge === "open" ? (
           <div className="flex flex-col gap-3">
             <form onSubmit={connect} className="flex gap-2">
               <label className="sr-only" htmlFor="tt-user">Your TikTok username</label>
@@ -186,23 +258,24 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
             </form>
             {bridge && (
               <p className="font-mono text-[11px] uppercase tracking-[0.12em] text-fg/75">
-                <span className={`mr-2 inline-block h-2 w-2 rounded-full align-middle ${bridge.state === "live" ? "bg-[#34C759]" : bridge.state === "error" ? "bg-signal" : "bg-[#FFD60A]"}`} />
+                <span className={`mr-2 inline-block h-2 w-2 rounded-full align-middle ${bridge.state === "live" ? "bg-[#34C759]" : bridge.state === "error" || bridge.state === "off" ? "bg-signal" : "bg-[#FFD60A]"}`} />
                 {bridgeWord[bridge.state]}
                 {bridge.user ? ` · @${bridge.user}` : ""}
                 {bridge.state === "error" && bridge.error ? ` · ${bridge.error}` : ""}
               </p>
             )}
+            {bridge?.user && accounts && <Whose user={bridge.user} accounts={accounts} checking={checking} />}
+            {update && (
+              <div className="flex flex-col gap-2 border-2 border-signal px-3 py-2.5 text-[13px] leading-snug">
+                <p>A newer bridge is out ({update}; yours is {running}). Download it again and open the new one:</p>
+                <Downloads />
+              </div>
+            )}
           </div>
         ) : (
           <div className="flex flex-col gap-3 text-[14px] leading-relaxed text-fg/65">
             <p>Download Hookline Bridge and open it. It runs in the background; this page finds it and asks for your TikTok username.</p>
-            <div className="grid grid-cols-2 gap-1.5">
-              {DOWNLOADS.map((d) => (
-                <a key={d.file} href={download(d.file)} className="border border-edge px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-fg transition hover:border-fg">
-                  {d.label}
-                </a>
-              ))}
-            </div>
+            <Downloads />
             <p className="text-[12px] text-muted">On a Mac, open the zip, then the program inside. The first time, macOS stops it: in System Settings, Privacy &amp; Security, click Open Anyway. Windows may ask if you trust it: More info, then Run anyway.</p>
           </div>
         )}
@@ -260,9 +333,6 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
           </label>
           {overlayKey && <p className="text-[12px] leading-relaxed text-muted">This address has your private key in it, so the game uses your settings and saves your stats. Don&rsquo;t share it.</p>}
         </div>
-        <p className="text-[13px] leading-relaxed text-muted">
-          If your browser asks to let the page use apps on this device, allow it. That&rsquo;s how it hears your LIVE.
-        </p>
       </div>
 
       {/* 3: try it */}
@@ -289,12 +359,41 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [] }: { o
                   </li>
                 ))}
             {(showRaw ? raw.length : heard.length) === 0 && (
-              <li className="text-muted">Nothing yet. Once TikFinity or the bridge is connected and you&rsquo;re live, chats and gifts show up here.</li>
+              <li className="text-muted">{looking ? "Nothing yet. Once TikFinity or the bridge is connected and you're live, chats and gifts show up here." : "Find TikFinity or the bridge first (step 01), then chats and gifts show up here."}</li>
             )}
           </ol>
         </div>
         <p className="text-[12px] leading-relaxed text-muted">If a gift or a chat doesn&rsquo;t do what it should, Save log and send us the file.</p>
       </div>
     </div>
+  );
+}
+
+function Downloads() {
+  return (
+    <div className="grid grid-cols-2 gap-1.5">
+      {DOWNLOADS.map((d) => (
+        <a key={d.file} href={download(d.file)} className="border border-edge px-3 py-2 font-mono text-[11px] uppercase tracking-[0.12em] text-fg transition hover:border-fg">
+          {d.label}
+        </a>
+      ))}
+    </div>
+  );
+}
+
+/** Whether the LIVE the bridge is on is the streamer's own TikTok, so its gift coins count in Earnings. */
+function Whose({ user, accounts, checking }: { user: string; accounts: string[]; checking: boolean }) {
+  if (accounts.includes(user)) return <p className="text-[12px] leading-relaxed text-muted">@{user} is your connected TikTok, so gift coins seen on this LIVE count in Earnings.</p>;
+  if (!accounts.length && !checking) return <p className="text-[12px] leading-relaxed text-muted">{NO_USERNAMES}</p>;
+  if (!accounts.length)
+    return (
+      <p className="text-[12px] leading-relaxed text-muted">
+        <Link href="/app/settings" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Connect your TikTok</Link> so gift coins seen on @{user}&rsquo;s LIVE count in Earnings.
+      </p>
+    );
+  return (
+    <p className="border-l-2 border-signal pl-2 text-[12px] leading-relaxed text-fg/80">
+      @{user} isn&rsquo;t your connected TikTok ({accounts.map((a) => `@${a}`).join(", ")}), so the game plays but its gift coins won&rsquo;t count in Earnings.
+    </p>
   );
 }

@@ -3,33 +3,47 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { billingFor } from "@/lib/server/billing";
 import { requireUser } from "@/lib/server/auth";
-import { channelsOf } from "@/lib/server/channels";
+import { channelsOf, postingChannel } from "@/lib/server/channels";
+import { configured } from "@/lib/server/env";
 import { makeShorts } from "@/lib/server/shorts/generate";
-import { approve, chooseTikTok, fileOf, markPosted, reject, retitle, retry } from "@/lib/server/shorts/queue";
+import { approve, chooseTikTok, fileOf, markPosted, reject, retitle, retry, type PostedResult } from "@/lib/server/shorts/queue";
+import { cleanCopy } from "@/lib/server/shorts/render";
 import { getVideo } from "@/lib/server/storage";
 import { TikTokError, tiktokCreator, tiktokToDrafts } from "@/lib/server/tiktok";
 import { asUser } from "@/lib/server/db";
-import { youtubeIdFrom } from "@/lib/server/youtube";
 import { tiktokChoices, tiktokReason, type Creator } from "@/lib/shorts/tiktok";
+import { keeping, type Keeping } from "@/lib/shorts/youtube";
 
 const id = z.uuid();
 
 /**
  * Right or left on a Short. Left makes a new one in its place, while the
  * day's replacements last. A right can carry the creator's TikTok choices.
+ * A right says when it posts only when something will post it; otherwise
+ * its time is the best time for the creator to post it.
  */
-export async function decide(videoId: string, yes: boolean, tiktok?: unknown): Promise<{ ok: boolean; replaced?: boolean; at?: string | null }> {
+export async function decide(videoId: string, yes: boolean, tiktok?: unknown, kids?: unknown): Promise<{ ok: boolean; replaced?: boolean; at?: string | null; how?: Keeping }> {
   const me = await requireUser();
   if (!id.safeParse(videoId).success) return { ok: false };
   if (yes) {
     const choices = tiktok == null ? null : tiktokChoices.safeParse(tiktok);
     if (choices && !choices.success) return { ok: false };
-    const ok = await approve(me.id, videoId, (await billingFor(me.id)).plan, new Date(), choices?.data ?? null);
-    // when it'll post, for the toast that says so
-    const [v] = ok ? await asUser(me.id, (tx) => tx<{ scheduled_for: Date | null }[]>`select scheduled_for from public.videos where id = ${videoId}`) : [];
+    // made for kids or not, when the creator chose differently from the channel's answer for this one
+    const audience = typeof kids === "boolean" ? kids : null;
+    const { plan } = await billingFor(me.id);
+    const ok = await approve(me.id, videoId, plan, new Date(), choices?.data ?? null, audience);
+    // its time and who posts it, for the toast that says so
+    const [v] = ok ? await asUser(me.id, (tx) => tx<{ scheduled_for: Date | null; tiktok: boolean }[]>`
+      select scheduled_for, tiktok_post is not null as tiktok from public.videos where id = ${videoId}`) : [];
+    const youtube = postingChannel(await channelsOf(me.id));
+    const how = keeping({
+      scheduling: plan.scheduling,
+      youtube: youtube ? { api: youtube.api, answered: youtube.madeForKids !== null } : null,
+      tiktok: !!v?.tiktok && configured().tiktokDirect,
+    });
     revalidatePath("/app/shorts", "layout");
     revalidatePath("/app");
-    return { ok, at: v?.scheduled_for?.toISOString() ?? null };
+    return { ok, at: v?.scheduled_for?.toISOString() ?? null, how };
   }
   const ok = await reject(me.id, videoId);
   const replaced = ok ? (await makeShorts(me.id, { origin: "replacement" })) > 0 : false;
@@ -56,14 +70,16 @@ export async function editCopy(videoId: string, title: string, description: stri
   return { ok: true };
 }
 
-export async function posted(form: FormData) {
+/** "I posted it": with a YouTube link, it's checked to be on their own channel first. */
+export async function posted(videoId: string, link: string): Promise<PostedResult> {
   const me = await requireUser();
-  const v = String(form.get("id") ?? "");
-  if (!id.safeParse(v).success) return;
-  const link = String(form.get("link") ?? "").trim();
-  await markPosted(me.id, v, link ? youtubeIdFrom(link) : null);
-  revalidatePath("/app/shorts", "layout");
-  revalidatePath("/app");
+  if (!id.safeParse(videoId).success) return { ok: false, message: "That Short can't be marked as posted." };
+  const r = await markPosted(me.id, videoId, link.slice(0, 300));
+  if (r.ok) {
+    revalidatePath("/app/shorts", "layout");
+    revalidatePath("/app");
+  }
+  return r;
 }
 
 export async function tryAgain(form: FormData) {
@@ -74,7 +90,11 @@ export async function tryAgain(form: FormData) {
   revalidatePath("/app/shorts", "layout");
 }
 
-/** Into their TikTok drafts, to finish in the TikTok app. */
+/**
+ * Into their TikTok drafts, to finish in the TikTok app: always the copy
+ * without the free plan's tag. One made before TikTok was connected gets
+ * that copy made first, and the button sends it once it's ready.
+ */
 export async function sendToTikTok(form: FormData) {
   const me = await requireUser();
   const v = String(form.get("id") ?? "");
@@ -82,8 +102,13 @@ export async function sendToTikTok(form: FormData) {
   const file = await fileOf(me.id, v);
   const tiktok = (await channelsOf(me.id)).find((c) => c.platform === "tiktok" && c.status === "connected");
   if (!file || !tiktok) return;
+  const clean = await cleanCopy(v, (await billingFor(me.id)).plan.priority);
+  if (!clean) {
+    revalidatePath("/app/shorts", "layout");
+    return;
+  }
   try {
-    const publishId = await tiktokToDrafts(tiktok.id, await getVideo(file.key));
+    const publishId = await tiktokToDrafts(tiktok.id, await getVideo(clean));
     await asUser(me.id, (tx) => tx`update public.videos set tiktok_publish_id = ${publishId}, error = null where id = ${v}`);
   } catch (err) {
     const msg = err instanceof Error ? err.message : "TikTok didn't take it";

@@ -30,7 +30,9 @@ const NEXT: Record<Show["game"]["id"], string> = { battle: "MATCHUP", race: "BOA
 
 function drawTop(ctx: Ctx, show: Show, view: View) {
   const y = 150;
-  text(ctx, `ROUND ${show.round}`, M, y, { size: 32, color: DIM, spacing: 3 });
+  const round = `ROUND ${show.round}`;
+  text(ctx, round, M, y, { size: 32, color: DIM, spacing: 3 });
+  let right: number;
   // a score only means something while the sides stay the same
   if (show.game.teams && !show.game.names) {
     const s0 = String(show.series[0]), s1 = String(show.series[1]);
@@ -38,11 +40,15 @@ function drawTop(ctx: Ctx, show: Show, view: View) {
     text(ctx, s1, W - M, y, { size: 32, color: show.teams[1].color, align: "right", spacing: 2 });
     text(ctx, "  –  ", W - M - w1, y, { size: 32, color: DIM, align: "right", spacing: 2 });
     text(ctx, s0, W - M - w1 - wd, y, { size: 32, color: show.teams[0].color, align: "right", spacing: 2 });
+    right = w1 + wd + measure(ctx, s0, 32, 2);
   } else {
     text(ctx, TITLES[show.game.id], W - M, y, { size: 32, color: DIM, align: "right", spacing: 3 });
+    right = measure(ctx, TITLES[show.game.id], 32, 3);
   }
-  if (view.demo) text(ctx, "DEMO · PRETEND VIEWERS", W / 2, y, { size: 26, color: SIGNAL, align: "center", spacing: 3 });
-  else if (view.status) text(ctx, view.status, W / 2, y, { size: 24, color: DIM, align: "center", spacing: 3 });
+  // the middle line shrinks to fit between the round and the score, so it never runs into them
+  const max = 2 * Math.min(W / 2 - M - measure(ctx, round, 32, 3), W / 2 - M - right) - 48;
+  if (view.demo) text(ctx, "DEMO · PRETEND VIEWERS", W / 2, y, { size: 26, color: SIGNAL, align: "center", spacing: 3, max });
+  else if (view.status) text(ctx, view.status, W / 2, y, { size: 24, color: DIM, align: "center", spacing: 3, max });
   if (view.notice) {
     roundRect(ctx, M, 40, SIDE, 64, 12, SIGNAL);
     text(ctx, view.notice, W / 2, 84, { size: 28, color: INK, align: "center", spacing: 2, max: SIDE - 40 });
@@ -87,6 +93,14 @@ function drawMenu(ctx: Ctx, show: Show, d: GameDraw) {
 
 const BLAST = 2;
 
+/** how big a gift's moment is: 0 for most, 1 for a Galaxy's worth, 2 for ten times that and more */
+export function blastLevel(coins: number): number {
+  return coins >= 10_000 ? 2 : coins >= 999 ? 1 : 0;
+}
+
+/** how long a gift's moment stays up: the bigger the gift, the longer */
+const blastFor = (coins: number) => BLAST + blastLevel(coins);
+
 /** when each big gift's moment on screen starts; a backlog is skipped, not replayed */
 function blastTimes(show: Show): { b: Show["blasts"][number]; start: number }[] {
   let end = -Infinity;
@@ -94,24 +108,26 @@ function blastTimes(show: Show): { b: Show["blasts"][number]; start: number }[] 
   for (const b of show.blasts) {
     const start = Math.max(b.at, end);
     if (start - b.at > 3) continue;
-    end = start + BLAST;
+    end = start + blastFor(b.coins);
     out.push({ b, start });
   }
   return out;
 }
 
-/** A big gift: who sent it and what it does, big, over the arena. */
+/** A big gift: who sent it and what it does, big, over the arena, and bigger and longer for a bigger gift. */
 function drawBlast(ctx: Ctx, show: Show, view: View, d: GameDraw): boolean {
   for (const { b, start } of blastTimes(show)) {
     const age = show.now - start;
-    if (age < 0 || age >= BLAST) continue;
-    const k = Math.min(ease(age / 0.15), ease((BLAST - age) / 0.2));
+    const long = blastFor(b.coins);
+    if (age < 0 || age >= long) continue;
+    const k = Math.min(ease(age / 0.15), ease((long - age) / 0.2));
     const t = b.tier;
+    const level = blastLevel(b.coins);
     const x = AX + 26, y = AY + 22, bw = SIDE - 52, h = 196;
     ctx.save();
     ctx.globalAlpha = k;
     ctx.translate(W / 2, y + h / 2);
-    const s = 0.85 + 0.15 * pop(age * 4);
+    const s = (0.85 + 0.15 * pop(age * 4)) * (1 + 0.06 * level) + (level > 0 ? 0.02 * level * Math.sin(age * 18) : 0);
     ctx.scale(s, s);
     ctx.translate(-W / 2, -(y + h / 2));
     roundRect(ctx, x, y, bw, h, 24, INK);
@@ -119,7 +135,7 @@ function drawBlast(ctx: Ctx, show: Show, view: View, d: GameDraw): boolean {
     const ring = b.side === null ? GOLD : show.teams[b.side].color;
     face(ctx, view, b.viewer.name, b.viewer.avatar, x + 96, y + h / 2, 62, ring, 7);
     text(ctx, `${b.viewer.name} sent ${b.count > 1 ? `${b.count}x ` : ""}${t.gift}`, x + 188, y + 54, { size: 32, max: bw - 340 });
-    text(ctx, `${t.name.toUpperCase()}!`, x + 188, y + 144, { size: 84, color: t.color, spacing: 3, max: bw - 340 });
+    text(ctx, `${t.name.toUpperCase()}${b.many ? ` ×${b.many}` : ""}!`, x + 188, y + 144, { size: 84, color: t.color, spacing: 3, max: bw - 340 });
     text(ctx, d.blastLine(show, b), x + 188, y + 180, { size: 26, color: DIM, spacing: 2, max: bw - 340 });
     icon(ctx, t.icon, x + bw - 86, y + h / 2, 92, t.color);
     ctx.restore();

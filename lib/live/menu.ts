@@ -37,6 +37,23 @@ export function tierIn(menu: Tier[], coins: number): Tier {
 /** how long rage lasts, in seconds, in every game that has it */
 export const RAGE_SECONDS = 8;
 
+/** past 100 coins, a gift's worth grows this much faster than its coins for every tenfold */
+const WORTH_BONUS = 0.02;
+
+/**
+ * What a gift is worth in a fight, in HP: one per coin, so a thousand Roses
+ * and a Galaxy weigh about the same, and a little more per coin past 100,
+ * so the bigger the gift, the more it gets for each coin.
+ */
+export function worth(coins: number): number {
+  return coins <= 100 ? coins : Math.round(coins * (1 + WORTH_BONUS * Math.log10(coins / 100)));
+}
+
+/** How many times over a gift pays for the top of the menu: a Universe is 45 Galaxies, and does more than one. */
+export function timesOver(each: number, top: Tier): number {
+  return Math.max(1, Math.floor(each / Math.max(1, top.min)));
+}
+
 /** where each item of a default menu starts: a little under the gift's price, so gifts that cost 99 or 999 count too */
 export const DEFAULT_PRICES = [1, 5, 20, 99, 299, 999];
 

@@ -3,7 +3,7 @@ import Link from "next/link";
 import { useActionState, useState } from "react";
 import type { saveLive, SaveState } from "@/app/app/(shell)/live/actions";
 import { DEFAULT_GIFTS, type MenuGift } from "@/lib/live/menu";
-import { DEFAULT_SIDE_GIFTS, NAME_MAX, ownRivalryProblem, priceGaps, RIVAL_GROUPS, RIVAL_POWERS, RIVALRIES, rivalryLabel, validSideGifts, type SideGifts } from "@/lib/live/rivals";
+import { DEFAULT_SIDE_GIFTS, NAME_MAX, ownRivalryProblem, priceGaps, RIVAL_GROUPS, RIVAL_POWERS, RIVALRIES, rivalryLabel, sidesProblem, validSideGifts, type SideGifts } from "@/lib/live/rivals";
 import type { GameId, LiveSettings } from "@/lib/live/settings";
 import { button, Pill } from "./ui";
 
@@ -16,6 +16,8 @@ type Props = {
   menus: Record<GameId, Menu>;
   abilities: { id: string; name: string; color: string; line: string }[];
   allowed: { games: GameId[]; customMenus: boolean; planName: string };
+  /** point them at the plans for more games; not for someone who can't earn gifts on a LIVE yet */
+  upsell?: boolean;
   action: typeof saveLive;
 };
 
@@ -33,7 +35,7 @@ const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, 
  * sound. Saved to their account; the game reads them through its private
  * address.
  */
-export function LiveSettingsForm({ initial, games, menus, abilities, allowed, action }: Props) {
+export function LiveSettingsForm({ initial, games, menus, abilities, allowed, upsell = true, action }: Props) {
   const [s, setS] = useState<LiveSettings>(initial);
   const [own, setOwn] = useState(!!initial.gifts);
   const [gifts, setGifts] = useState<MenuGift[]>(initial.gifts ?? DEFAULT_GIFTS.map((g) => ({ ...g })));
@@ -49,6 +51,7 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, ac
   const menu = menus[s.game];
   const locked = games.filter((g) => !allowed.games.includes(g.id)).map((g) => g.name);
   const champions = s.game === "battle" || s.game === "rivals";
+  const teamsProblem = sidesProblem(s.teams[0].name, s.teams[1].name);
 
   return (
     <form action={save} className="flex flex-col divide-y-2 divide-edge">
@@ -73,7 +76,7 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, ac
             );
           })}
         </div>
-        {locked.length > 0 && (
+        {locked.length > 0 && upsell && (
           <p className="mt-3 text-[13px] text-muted">
             {andList(locked)} {locked.length === 1 ? "comes" : "come"} with Pro. <Link href="/app/settings/billing" className="underline decoration-signal decoration-2 underline-offset-4">See plans</Link>
           </p>
@@ -94,7 +97,7 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, ac
           <input type="checkbox" checked={s.vote} onChange={(e) => set("vote", e.target.checked)} className="mt-1 h-5 w-5 accent-[var(--color-signal)]" />
           <span className="flex flex-col gap-1">
             <span className="text-[14px]">Chat votes for the next round</span>
-            <span className="text-[12px] text-muted">Three choices on the win screen. Viewers type A, B or C, and gifts add votes.</span>
+            <span className="text-[12px] text-muted">Three choices on the win screen. Viewers type A, B or C, and every coin they gift is a vote.</span>
           </span>
         </label>
       </fieldset>
@@ -125,6 +128,7 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, ac
               </div>
             ))}
           </div>
+          {teamsProblem && <p role="alert" className="mt-2 max-w-2xl text-[13px] text-signal">{teamsProblem}</p>}
         </fieldset>
       )}
 
@@ -275,6 +279,7 @@ function RivalriesField({ value, onChange }: { value: LiveSettings["rivals"]; on
               <span className="min-w-0">
                 <span className="block font-display text-lg uppercase leading-tight tracking-wide">{g.name}</span>
                 <span className="mt-1 block text-[12px] leading-snug text-muted">{RIVALRIES.filter((r) => r.group === g.id).map(rivalryLabel).join(" · ")}</span>
+                {g.note && <span className="mt-1 block text-[12px] leading-snug text-fg/80">{g.note}</span>}
               </span>
             </label>
           );
@@ -320,7 +325,7 @@ function RivalriesField({ value, onChange }: { value: LiveSettings["rivals"]; on
         {problem ? (
           <p role="alert" className="mt-2 max-w-2xl text-[13px] text-signal">{problem}</p>
         ) : (
-          <p className="mt-2 text-[12px] text-muted">Up to {NAME_MAX} letters a side. Things people pick, like teams, games or food.</p>
+          <p className="mt-2 text-[12px] text-muted">Up to {NAME_MAX} letters a side. Things people pick, like teams, games or food, never countries, religion, race, gender or who people love.</p>
         )}
       </div>
     </fieldset>
@@ -348,7 +353,7 @@ function SideGiftsField({ own, setOwn, gifts, setGifts, allowed }: {
         {!allowed.customMenus && <Pill tone="signal">Creator</Pill>}
       </legend>
       <p className="clear-both mb-4 max-w-2xl text-[13px] leading-relaxed text-muted">
-        Both sides get the same three powers, and each sets them off with its own gifts, so the gift someone sends is the side they&rsquo;re on. Any other gift helps the side they&rsquo;re on: a Rose heals, and one that costs as much as a power sets it off.
+        Both sides get the same three powers, and each sets them off with its own gifts, so the gift someone sends is the side they&rsquo;re on. Any other gift helps the side they&rsquo;re on: a Rose heals, one that costs as much as a power sets it off, and one that costs more than the meteor brings down more of them.
       </p>
       <label className={`mb-4 flex items-center gap-3 ${allowed.customMenus ? "" : "opacity-60"}`}>
         <input type="checkbox" checked={edit} disabled={!allowed.customMenus} onChange={(e) => setOwn(e.target.checked)} className="h-5 w-5 accent-[var(--color-signal)]" />

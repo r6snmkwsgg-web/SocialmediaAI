@@ -59,8 +59,10 @@ export const HANDLED = new Set([
  * What to tell someone when their subscription changes, or nothing. The
  * key names the state, so a renewal (same plan, same state) says nothing
  * and a new subscription after cancelling says it all again.
+ * `posts` is whether Hookline posts Shorts for paid plans yet (YouTube's
+ * audit has passed); until then the note doesn't promise it.
  */
-export function planNote(row: SubRow): { kind: "plan" | "account"; title: string; body: string; key: string } | null {
+export function planNote(row: SubRow, posts = false): { kind: "plan" | "account"; title: string; body: string; key: string } | null {
   const key = `plan:${row.stripe_subscription_id}:${row.plan}:${row.status}:${row.cancel_at_period_end}`;
   const name = PLANS[row.plan].name;
   if (row.status === "past_due") return { kind: "account", title: "Your payment didn't go through", body: "Stripe will try your card again. Update it in Plan & billing to keep your plan.", key };
@@ -70,7 +72,8 @@ export function planNote(row: SubRow): { kind: "plan" | "account"; title: string
   }
   if (row.cancel_at_period_end) return { kind: "plan", title: `${name} won't renew`, body: "It stays on until the end of the time you've paid for.", key };
   if (row.status === "active" || row.status === "trialing") {
-    return { kind: "plan", title: `You're on ${name}`, body: row.plan === "creator" ? "Up to five channels, your own LIVE gift menu, and first in line for rendering." : "Your Shorts now post themselves at your best times.", key };
+    const pro = posts ? "Your Shorts now post themselves at your best times." : "Three Shorts a day, without the tag, and every LIVE game.";
+    return { kind: "plan", title: `You're on ${name}`, body: row.plan === "creator" ? "Up to five channels, your own LIVE gift menu, and first in line for rendering." : pro, key };
   }
   return null;
 }

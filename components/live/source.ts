@@ -1,3 +1,5 @@
+import { bridgeStatusOf, type BridgeStatus } from "@/lib/live/bridge";
+import type { SocketState } from "@/lib/live/connection";
 import { parseMessage, type LiveEvent, type Streaks } from "@/lib/live/events";
 
 /**
@@ -9,15 +11,25 @@ import { parseMessage, type LiveEvent, type Streaks } from "@/lib/live/events";
  *   alerts. Its Event API is on port 21213.
  * - Hookline Bridge, the small app streamers download (or `pnpm
  *   live:bridge`), on port 21214. The setup page can tell it which
- *   account to connect to.
+ *   account to connect to, and it says how it's doing: whether it's
+ *   really connected to TikTok, and to whose LIVE.
  */
 export const SOURCES = {
   tikfinity: { name: "TikFinity", url: "ws://localhost:21213/" },
-  bridge: { name: "Hookline bridge", url: "ws://localhost:21214/" },
+  bridge: { name: "Hookline Bridge", url: "ws://localhost:21214/" },
 } as const;
 export type SourceId = keyof typeof SOURCES;
 
-export type SourceState = "connecting" | "open" | "closed";
+export type SourceState = SocketState;
+
+type Handlers = {
+  onEvent: (e: LiveEvent) => void;
+  onState?: (s: SourceState) => void;
+  /** every message as it came, even ones it couldn't read */
+  onRaw?: (text: string) => void;
+  /** the bridge saying how it's doing */
+  onStatus?: (s: BridgeStatus) => void;
+};
 
 /** A WebSocket to one of them that keeps trying when it drops. */
 export class LiveSource {
@@ -33,10 +45,7 @@ export class LiveSource {
 
   constructor(
     readonly url: string,
-    private readonly onEvent: (e: LiveEvent) => void,
-    private readonly onState: (s: SourceState) => void = () => {},
-    /** every message as it came, even ones it couldn't read */
-    private readonly onRaw: (text: string) => void = () => {},
+    private readonly on: Handlers,
   ) {}
 
   start() {
@@ -61,7 +70,7 @@ export class LiveSource {
 
   private set(s: SourceState) {
     this.state = s;
-    this.onState(s);
+    this.on.onState?.(s);
   }
 
   private open() {
@@ -85,9 +94,14 @@ export class LiveSource {
       this.received++;
       this.raw.push(text.length > 600 ? `${text.slice(0, 600)}…` : text);
       if (this.raw.length > 40) this.raw.shift();
-      this.onRaw(text);
+      this.on.onRaw?.(text);
+      const status = bridgeStatusOf(text);
+      if (status) {
+        this.on.onStatus?.(status);
+        return;
+      }
       const e = parseMessage(text, this.streaks);
-      if (e) this.onEvent(e);
+      if (e) this.on.onEvent(e);
     };
     ws.onclose = () => {
       if (this.ws !== ws) return;

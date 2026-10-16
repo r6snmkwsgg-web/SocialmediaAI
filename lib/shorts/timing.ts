@@ -1,27 +1,65 @@
 import { FPS, simulate } from "../battle/sim";
-import { timeline } from "../battle/timeline";
-import type { Message, Spec } from "./types";
+import { OUTRO, timeline } from "../battle/timeline";
+import type { Ending, FormatId, Message, Spec } from "./types";
 
 /**
  * How long each format's video runs, and when each part of it happens.
  * The compositions draw from these and the soundtracks are timed by them,
  * so picture and sound always line up.
+ *
+ * Every format starts on the action from the first frame, with its title
+ * over the top for the first second and a half: there's no title card
+ * to swipe away from.
  */
 
 export { FPS };
 
 const s = (seconds: number) => Math.round(seconds * FPS);
 
-export const QUIZ = { intro: s(1.6), show: s(0.5), think: s(3), reveal: s(1.3), outro: s(2.6) };
+/** how long the title stays over the opening */
+export const TITLE = s(1.5);
+
+export const QUIZ = { intro: 0, show: s(0.5), think: s(3), reveal: s(1.3), outro: s(2.6) };
 export const quizStep = QUIZ.show + QUIZ.think + QUIZ.reveal;
 
-export const WYR = { intro: s(1.4), each: s(4.6), outro: s(2.6) };
+export const WYR = { intro: 0, each: s(4.6), outro: s(2.6) };
 
-export const RANKING = { intro: s(2.2), each: s(2.2), outro: s(3.2) };
+export const RANKING = { intro: 0, each: s(2.2), outro: s(3.2) };
 
-export const RACE = { intro: s(2.2), year: s(0.5), outro: s(3.4) };
+export const RACE = { intro: 0, year: s(0.5), outro: s(3.4) };
 
 export const TEXTS = { intro: s(0.3), pause: s(0.35), hold: s(1.6), outro: s(2.6) };
+
+/**
+ * How each format ends, in frames. "comment" is the closing screen that
+ * asks for a comment; "loop" holds the end a moment, then runs back into
+ * the opening, so a replay carries straight on; "quiet" closes without
+ * asking for anything, for Shorts where comments are off.
+ */
+export const ENDS: Record<FormatId, Record<Ending, number>> = {
+  battle: { comment: OUTRO, loop: s(2.2), quiet: OUTRO },
+  quiz: { comment: QUIZ.outro, loop: s(1.6), quiet: s(2.2) },
+  wyr: { comment: WYR.outro, loop: s(1.4), quiet: s(2.2) },
+  texts: { comment: TEXTS.outro, loop: s(1.6), quiet: s(2.2) },
+  ranking: { comment: RANKING.outro, loop: s(2.0), quiet: s(2.8) },
+  race: { comment: RACE.outro, loop: s(2.2), quiet: s(3.0) },
+};
+
+/** The last frames of a loop ending, that run back into the opening. */
+export const BACK = s(0.6);
+
+/** The ending a Short actually has: never one that asks for comments where comments are off. */
+export function endingOf(params: { ending?: Ending; allowComments?: boolean }): Ending {
+  const e = params.ending ?? "comment";
+  return params.allowComments === false && e === "comment" ? "quiet" : e;
+}
+
+export const endFrames = (format: FormatId, ending: Ending) => ENDS[format][ending];
+
+/** Frames a year takes in a race: half a second, slower for a short stretch so it still runs about 20 seconds. */
+export function raceStep(years: number): number {
+  return Math.max(RACE.year, Math.min(s(1), Math.round((FPS * 20) / Math.max(1, years - 1))));
+}
 
 /** When each message of a story arrives, and when "typing…" shows before it. */
 export function storyTimes(messages: Message[]): { typingFrom: number | null; at: number }[] {
@@ -43,24 +81,27 @@ export function storyTimes(messages: Message[]): { typingFrom: number | null; at
   });
 }
 
-/** Frames in a Short, for the player, the renderer and the soundtrack. */
-export function frames(spec: Spec): number {
+/** The frame each format's ending starts on. */
+export function endFrom(spec: Spec): number {
   switch (spec.format) {
     case "battle":
-      return timeline(simulate(spec.params.a, spec.params.b, spec.params.seed)).duration;
+      return timeline(simulate(spec.params.a, spec.params.b, spec.params.seed)).outroFrom;
     case "quiz":
-      return QUIZ.intro + spec.params.questions.length * quizStep + QUIZ.outro;
+      return QUIZ.intro + spec.params.questions.length * quizStep;
     case "wyr":
-      return WYR.intro + spec.params.pairs.length * WYR.each + WYR.outro;
-    case "texts": {
-      const t = storyTimes(spec.params.story.messages);
-      return t[t.length - 1].at + TEXTS.hold + TEXTS.outro;
-    }
+      return WYR.intro + spec.params.pairs.length * WYR.each;
+    case "texts":
+      return storyTimes(spec.params.story.messages).at(-1)!.at + TEXTS.hold;
     case "ranking":
-      return RANKING.intro + spec.params.items.length * RANKING.each + RANKING.outro;
+      return RANKING.intro + spec.params.items.length * RANKING.each;
     case "race":
-      return RACE.intro + (spec.params.years.length - 1) * RACE.year + RACE.outro;
+      return RACE.intro + (spec.params.years.length - 1) * (spec.params.step ?? RACE.year);
   }
+}
+
+/** Frames in a Short, for the player, the renderer and the soundtrack. */
+export function frames(spec: Spec): number {
+  return endFrom(spec) + endFrames(spec.format, endingOf(spec.params));
 }
 
 export const seconds = (spec: Spec) => frames(spec) / FPS;

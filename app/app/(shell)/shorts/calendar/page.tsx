@@ -8,6 +8,8 @@ import { FORMAT_COLOR } from "@/lib/shorts/look";
 import { validTimezone } from "@/lib/shorts/times";
 import type { FormatId } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
+import { channelsOf, postingChannel } from "@/lib/server/channels";
+import { configured } from "@/lib/server/env";
 import { calendarOf, type CalendarItem } from "@/lib/server/shorts/library";
 
 export const metadata: Metadata = { title: "Calendar" };
@@ -16,9 +18,10 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-function Item({ it, tz }: { it: CalendarItem; tz: string }) {
+/** `auto` is whether Hookline uploads to their YouTube itself; when it doesn't, a kept Short's time is the best time to post it. */
+function Item({ it, tz, auto }: { it: CalendarItem; tz: string; auto: boolean }) {
   const time = it.at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
-  const state = it.status === "posted" ? "Posted" : it.status === "failed" ? "Failed" : "Posts";
+  const state = it.status === "posted" ? "Posted" : it.status === "failed" ? "Failed" : !auto && !it.youtubeId ? "Best time" : "Posts";
   return (
     <Link
       href={`/app/shorts/${it.id}`}
@@ -49,13 +52,14 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
   const thisMonth = [...days.entries()].filter(([k]) => k.startsWith(here));
   const count = thisMonth.reduce((s, [, list]) => s + list.length, 0);
   const posts = me.plan.scheduling;
+  const auto = posts && !!postingChannel(await channelsOf(me.id))?.api;
 
   return (
     <>
       <PageHead
         eyebrow="Calendar"
         title={name}
-        line={count ? `${count} Short${count === 1 ? "" : "s"} ${posts ? "posting or posted" : "kept"} this month, at your times (${tz.replace(/_/g, " ")}).` : `Nothing in ${name.split(" ")[0]} yet.`}
+        line={count ? `${count} Short${count === 1 ? "" : "s"} ${auto ? "posting or posted" : "kept"} this month, at your times (${tz.replace(/_/g, " ")}).` : `Nothing in ${name.split(" ")[0]} yet.`}
         action={
           <nav aria-label="Months" className="flex items-center gap-2">
             <Link href={`?m=${monthParam(shiftMonth(month, -1))}`} className={button.secondary} aria-label="Previous month">
@@ -72,7 +76,13 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
       {!items.length ? (
         <Empty
           title="Nothing scheduled"
-          body={posts ? "Swipe right on Shorts in your queue and each one lands here on the day and hour it posts." : "Swipe right on Shorts in your queue and they land here on the day you kept them. Pro posts them for you at your best times."}
+          body={
+            auto
+              ? "Swipe right on Shorts in your queue and each one lands here on the day and hour it posts."
+              : posts
+                ? "Swipe right on Shorts in your queue and each one lands here on its best day and hour to post."
+                : `Swipe right on Shorts in your queue and they land here once you post them.${configured().youtubeAudited ? " Pro posts them for you at your best times." : ""}`
+          }
           action={{ href: "/app/shorts", label: "Go to your queue" }}
         />
       ) : (
@@ -95,7 +105,7 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
                         {d.d}
                       </p>
                       <div className="flex flex-col">
-                        {list.slice(0, 3).map((it) => <Item key={it.id} it={it} tz={tz} />)}
+                        {list.slice(0, 3).map((it) => <Item key={it.id} it={it} tz={tz} auto={auto} />)}
                         {list.length > 3 && <p className="px-1.5 font-mono text-[10px] text-muted">+{list.length - 3} more</p>}
                       </div>
                     </div>
@@ -116,7 +126,7 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
                   <h2 className={`mb-2 font-mono text-[11px] uppercase tracking-[0.18em] ${k === today ? "text-signal" : "text-muted"}`}>{k === today ? `Today · ${label}` : label}</h2>
                   <Card>
                     <div className="flex flex-col divide-y divide-edge py-1">
-                      {list.map((it) => <Item key={it.id} it={it} tz={tz} />)}
+                      {list.map((it) => <Item key={it.id} it={it} tz={tz} auto={auto} />)}
                     </div>
                   </Card>
                 </section>

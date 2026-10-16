@@ -1,13 +1,14 @@
 import "server-only";
 import { open, seal } from "./crypto";
-import { admin, asUser } from "./db";
+import { admin } from "./db";
 import { notify } from "./notify";
 import type { Platform } from "./channels";
 
 /**
  * Saving a connected account and its tokens. The account row is the
- * user's own (row-level security); the tokens go in a table nothing
- * signed in can read, encrypted.
+ * user's to read, answer questions on and delete, but only the server
+ * writes which account it is, since that's what checks lean on; the
+ * tokens go in a table nothing signed in can read, encrypted.
  */
 
 export type Tokens = { access: string; refresh: string | null; expiresAt: Date | null; scopes: string | null };
@@ -15,14 +16,16 @@ export type Tokens = { access: string; refresh: string | null; expiresAt: Date |
 export async function saveChannel(
   userId: string,
   platform: Platform,
-  info: { externalId: string; title: string | null; handle: string | null; avatarUrl: string | null },
+  info: { externalId: string; title: string | null; handle: string | null; avatarUrl: string | null; madeForKids?: boolean | null },
   t: Tokens,
 ): Promise<string> {
-  const [row] = await asUser(userId, (tx) => tx<{ id: string }[]>`
-    insert into public.channels (user_id, platform, external_id, title, handle, avatar_url, status, connected_at)
-    values (${userId}, ${platform}, ${info.externalId}, ${info.title}, ${info.handle}, ${info.avatarUrl}, 'connected', now())
+  // YouTube's own verdict on the channel is kept for what it says; the creator's answer is asked separately
+  const [row] = await admin((tx) => tx<{ id: string }[]>`
+    insert into public.channels (user_id, platform, external_id, title, handle, avatar_url, status, connected_at, youtube_kids)
+    values (${userId}, ${platform}, ${info.externalId}, ${info.title}, ${info.handle}, ${info.avatarUrl}, 'connected', now(), ${info.madeForKids ?? null})
     on conflict (user_id, platform, external_id) do update set
-      title = excluded.title, handle = excluded.handle, avatar_url = excluded.avatar_url, status = 'connected', connected_at = now()
+      title = excluded.title, handle = excluded.handle, avatar_url = excluded.avatar_url, status = 'connected', connected_at = now(),
+      youtube_kids = excluded.youtube_kids
     returning id`);
   await admin(async (tx) => {
     const [old] = await tx<{ refresh_token: string | null }[]>`select refresh_token from public.channel_tokens where channel_id = ${row.id}`;

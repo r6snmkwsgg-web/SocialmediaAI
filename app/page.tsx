@@ -29,9 +29,9 @@ const TOOLS = [
 
 const STEPS = [
   { n: "01", title: "Swipe", body: "Each morning your Shorts are waiting. Right to post, left for a different one. Nothing goes out without your yes.", you: true },
-  { n: "02", title: "It posts", body: "At the hour your Shorts do best, then it reads how each one did and makes more of what worked." },
+  { n: "02", title: "It posts", body: "At the hours your own Shorts do best, once it has learned them. Then it reads how each one did and makes more of what worked." },
   { n: "03", title: "Go live", body: "Add the game to TikTok LIVE Studio once. Your chat joins with a word, and every gift does something on screen." },
-  { n: "04", title: "Watch it add up", body: "Views, subscribers, gift coins and sales, from your real accounts, day by day." },
+  { n: "04", title: "Watch it add up", body: "Views, subscribers, gift coins seen on your LIVEs and sales, from your real accounts, day by day." },
 ];
 
 export default function Home() {
@@ -143,7 +143,7 @@ export default function Home() {
           <div className="mb-10 mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:items-end">
             <h2 className="font-display text-[clamp(3rem,7vw,6rem)] uppercase leading-[0.9]">Every number, from where it really is.</h2>
             <p className="max-w-lg text-lg leading-relaxed text-paper/75">
-              YouTube, TikTok, your LIVE game&rsquo;s gift coins and your Stripe sales, day by day, with goals to aim for. Real figures only. Coins stay coins, never dressed up as cash.
+              YouTube, TikTok, the gift coins seen on your own LIVEs and your Stripe sales, day by day, with goals to aim for. Real figures only. Coins stay coins, never dressed up as cash.
             </p>
           </div>
           <ExampleEarnings />

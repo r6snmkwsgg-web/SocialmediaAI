@@ -1,6 +1,5 @@
 import { COUNTRIES, DATA, inRegion, latestYear, REGIONS } from "../data";
-import { RACE } from "../timing";
-import { FPS } from "../timing";
+import { endFrames, FPS, RACE, raceStep } from "../timing";
 import type { Candidate, Context, Metric, RaceParams, Region } from "../types";
 import { METRICS, where } from "./ranking";
 
@@ -8,6 +7,8 @@ import { METRICS, where } from "./ranking";
  * Bar-chart races: the biggest countries by a real figure, year by year,
  * bars overtaking each other as it happens. The stretch of years is the
  * one with the most overtakes, so there's always something to watch.
+ * Each race goes to one channel only; a short stretch plays slower, so
+ * it's still a Short's length.
  */
 
 const ranked = (values: [string, number | null][]) =>
@@ -37,10 +38,34 @@ export function raceParams(metric: Metric, region: Region, from: number, to: num
     series: ever.map((iso) => ({ iso, name: COUNTRIES[iso].name, values: d.values[iso].slice(i0, i1 + 1) })),
     top,
     source: `Source: ${d.source}`,
+    step: raceStep(years.length),
     overtakes,
     leaders,
   };
 }
+
+/** The top countries in a race's year k, biggest first, from what's in the race itself. */
+function standing(p: Pick<RaceParams, "series" | "top">, k: number): string {
+  return p.series
+    .filter((s) => s.values[k] != null)
+    .sort((x, y) => y.values[k]! - x.values[k]! || (x.iso < y.iso ? -1 : 1))
+    .slice(0, p.top)
+    .map((s) => s.iso)
+    .join(",");
+}
+
+/**
+ * Each race goes to one channel only: the figure, the region, and the top
+ * countries in order at the start and at the finish. Moving the start or
+ * end by a few years mostly gives the same race, so how it starts and how
+ * it ends is what's claimed, not the years.
+ */
+export const raceOutcomeId = (p: Pick<RaceParams, "metric" | "region" | "series" | "top" | "years">) =>
+  `race:${p.metric}:${p.region}:${standing(p, 0)}>${standing(p, p.years.length - 1)}`;
+
+/** A channel has one race per figure and region around each decade, so two of its races are never mostly the same years. */
+export const raceDecadeId = (p: Pick<RaceParams, "metric" | "region" | "years">) =>
+  `race:${p.metric}:${p.region}:${Math.floor((p.years[0] + p.years[p.years.length - 1]) / 20) * 10}s`;
 
 export function raceTitle(metric: Metric, region: Region, top: number, from: number, to: number): string {
   return metric === "population"
@@ -49,8 +74,8 @@ export function raceTitle(metric: Metric, region: Region, top: number, from: num
 }
 
 /** Overtakes are what people watch for; a new #1 most of all. A race should run 20 to 40 seconds. */
-export function raceScore(r: { overtakes: number; leaders: number; years: number[] }): number {
-  const secs = (RACE.intro + (r.years.length - 1) * RACE.year + RACE.outro) / FPS;
+export function raceScore(r: { overtakes: number; leaders: number; years: number[]; step?: number }): number {
+  const secs = (RACE.intro + (r.years.length - 1) * (r.step ?? RACE.year) + endFrames("race", "comment")) / FPS;
   const fit = secs >= 20 && secs <= 40 ? 1 : 0;
   return r.overtakes + 6 * Math.min(r.leaders, 3) + 8 * fit;
 }
@@ -63,17 +88,17 @@ export function proposeRace(ctx: Context): Candidate | null {
     // GDP before 1990 is missing for too many countries to race fairly
     const first = metric === "gdp" ? 1990 : DATA[metric].years[0];
     for (const region of REGIONS) {
-      const key = `race:${metric}:${region}`;
-      if (ctx.used.has(key)) continue;
       const count = Object.keys(COUNTRIES).filter((iso) => inRegion(iso, region)).length;
       const top = Math.min(10, Math.floor(count * 0.6));
       if (top < 5) continue;
-      for (let len = 30; len <= 60; len += 5) {
-        for (let to = last; to - len >= first; to -= 5) {
+      for (let len = 20; len <= 60; len += 5) {
+        for (let to = last; to - len >= first; to -= 3) {
+          if (ctx.used.has(raceDecadeId({ metric, region, years: [to - len, to] }))) continue;
           const r = raceParams(metric, region, to - len, to, top);
+          if (ctx.used.has(raceOutcomeId(r))) continue;
           tried++;
           const score = raceScore(r) + ctx.rand() * 2;
-          if (!best || score > best.score) best = { r, score, key };
+          if (!best || score > best.score) best = { r, score, key: `race:${metric}:${region}` };
         }
       }
     }
@@ -90,7 +115,7 @@ export function proposeRace(ctx: Context): Candidate | null {
     why: [
       `${overtakes} overtakes${leaders ? ` and ${leaders === 1 ? "a new #1" : `${leaders} changes at #1`}` : ""}: the liveliest stretch of years, picked from ${tried}`,
       `Real figures: ${DATA[r.metric].source}`,
-      "Not on your channel before",
+      "No other channel has had a race that starts and ends this way, and yours hasn't had one like it",
     ],
     facts: [
       `A bar-chart race Short: ${raceTitle(r.metric, r.region, r.top, from, to).toLowerCase()}, year by year, with World Bank figures and the source on screen.`,

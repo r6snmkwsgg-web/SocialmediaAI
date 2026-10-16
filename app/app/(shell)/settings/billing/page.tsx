@@ -4,6 +4,7 @@ import { SettingsTabs } from "@/components/app/settings-tabs";
 import { Icons } from "@/components/app/icons";
 import { button, NotSetUp, PageHead, Pill } from "@/components/app/ui";
 import { PLANS, yearSaving, type Interval, type Plan } from "@/lib/billing/plans";
+import { giftsLine } from "@/lib/live/eligibility";
 import { account } from "@/lib/server/account";
 import { configured } from "@/lib/server/env";
 import { checkout, manage } from "./actions";
@@ -106,6 +107,7 @@ export default async function Billing({ searchParams }: { searchParams: Search }
       </ul>
       <p className="mt-5 max-w-2xl text-[13px] leading-relaxed text-muted">
         Prices in US dollars. Cancel any time from Manage billing and keep your plan to the end of what you paid for. Hookline makes the videos and the games; what they earn depends on you, your niche and the platforms.
+        {` ${giftsLine(me.profile.liveCheck)}`}
       </p>
     </>
   );

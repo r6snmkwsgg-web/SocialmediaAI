@@ -1,13 +1,14 @@
 import { storyTimes, FPS } from "../timing";
-import type { Candidate, Context, Story } from "../types";
+import type { Candidate, Context, Story, Tale } from "../types";
 
 /**
  * Text stories: a made-up conversation, one message at a time, with a
  * turn at the end. Every one is labelled as a story on screen, so nobody
- * takes it for someone's real messages.
+ * takes it for someone's real messages. Scrolling text is what YouTube is
+ * least keen to pay for, so they're off until a creator turns them on.
+ * Stories Claude writes for a channel come first; these are what's used
+ * without it.
  */
-
-type Tale = Story & { title: string; tone: "funny" | "sweet" | "twist" };
 
 const me = (text: string) => ({ me: true, text });
 const them = (text: string) => ({ me: false, text });
@@ -295,7 +296,8 @@ export function storyFit(s: Story): number {
 }
 
 export function proposeTexts(ctx: Context): Candidate | null {
-  const fresh = STORIES.filter((s) => !ctx.used.has(s.id));
+  const written = (ctx.fresh?.stories ?? []).filter((s) => !ctx.used.has(s.id));
+  const fresh = written.length ? written : STORIES.filter((s) => !ctx.used.has(s.id));
   if (!fresh.length) return null;
   // the best fit, with a little chance so channels don't all get them in the same order
   const ranked = fresh.map((s) => ({ s, score: storyFit(s) + ctx.rand() * 0.6 })).sort((a, b) => b.score - a.score);
@@ -306,7 +308,7 @@ export function proposeTexts(ctx: Context): Candidate | null {
     params: { story },
     key: `texts:${s.tone}`,
     score,
-    why: [`A ${s.tone === "twist" ? "story with a twist" : s.tone === "sweet" ? "sweet story" : "funny story"}, about ${Math.round(length(s))} seconds of messages`, "Not posted on your channel before"],
+    why: [`A ${s.tone === "twist" ? "story with a twist" : s.tone === "sweet" ? "sweet story" : "funny story"}, about ${Math.round(length(s))} seconds of messages`, "Never on your channel or anyone else's before"],
     facts: [
       "A made-up text conversation, shown one message at a time, labelled STORY on screen. Never call it real or someone's actual texts.",
       `The other person is "${s.contact}". What it's about: ${s.title}.`,

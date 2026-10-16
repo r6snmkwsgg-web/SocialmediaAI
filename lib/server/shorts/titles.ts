@@ -10,7 +10,8 @@ import { env } from "../env";
  * and nothing else. The rules keep them honest: say what's in the video,
  * don't promise what isn't, don't make up numbers, don't give endings
  * away. If Claude isn't set up or anything goes wrong, the format's own
- * plain title is used.
+ * plain title is used, and the log says why. The effort setting is only
+ * sent to models that take it.
  */
 
 const Written = z.object({
@@ -30,19 +31,38 @@ Rules:
 - Never give away an answer, a winner or an ending.
 - If the facts say the video is a made-up story, never present it as real.
 - At most 70 characters. Plain, punchy, curious. At most one emoji, and only if it fits. No hashtags in the title. No ALL CAPS sentences.
-- The description is one or two short sentences that invite a comment, then 3 to 5 relevant hashtags, one of them #shorts.`;
+- The description is one or two short sentences that invite a comment (unless the facts say the video doesn't ask for comments: then don't), then 3 to 5 relevant hashtags, one of them #shorts.`;
 
 let client: Anthropic | null = null;
 
-/** A video's title and description from Claude, or null to use the plain one. */
+/** models that turned `effort` down while this process has been running */
+const noEffort = new Set<string>();
+
+/**
+ * Whether to send `output_config.effort`. Every model is asked with it
+ * first; one that turns the request down, and takes it once it's left
+ * off, is asked without it from then on. Nothing here goes by the
+ * model's name, so a new model works the day it comes out.
+ */
+export function takesEffort(model: string): boolean {
+  return !noEffort.has(model);
+}
+
+/** A video's title and description from Claude, or null to use the plain one, saying why in the log. */
 export async function writeCopy(c: Candidate, formatName: string): Promise<Copy | null> {
   const e = env();
   if (!e.ANTHROPIC_API_KEY || !e.ANTHROPIC_MODEL) return null;
+  const model = e.ANTHROPIC_MODEL;
   client ??= new Anthropic({ apiKey: e.ANTHROPIC_API_KEY, timeout: 30_000, maxRetries: 1 });
-  try {
-    const res = await client.messages.parse({
-      model: e.ANTHROPIC_MODEL,
-      max_tokens: 1024,
+  const plain = (why: string) => {
+    console.warn(`titles: plain title for "${c.title}" (${model}): ${why}`);
+    return null;
+  };
+  const ask = (effort: boolean) =>
+    client!.messages.parse({
+      model,
+      // room for the model's own thinking, on the models where that's always on
+      max_tokens: 4096,
       system: SYSTEM,
       messages: [
         {
@@ -50,14 +70,24 @@ export async function writeCopy(c: Candidate, formatName: string): Promise<Copy 
           content: `Format: ${formatName}\n\nFacts:\n${c.facts.map((f) => `- ${f}`).join("\n")}\n\nA plain title it could have, for reference: ${c.title}`,
         },
       ],
-      output_config: { format: zodOutputFormat(Written), effort: "low" },
+      output_config: effort ? { format: zodOutputFormat(Written), effort: "low" } : { format: zodOutputFormat(Written) },
     });
-    if (res.stop_reason !== "end_turn" || !res.parsed_output) return null;
-    return tidy(res.parsed_output);
+  try {
+    const effort = takesEffort(model);
+    const res = await ask(effort).catch(async (err: unknown) => {
+      // A request turned down while effort was sent: once more without it, and only if that works
+      // is effort left off from then on. If it's turned down again, that's the reason in the log.
+      if (!(effort && err instanceof Anthropic.BadRequestError)) throw err;
+      const again = await ask(false);
+      noEffort.add(model);
+      console.warn(`titles: ${model} turned down the effort setting (${err.message}); asking without it from now on`);
+      return again;
+    });
+    if (res.stop_reason !== "end_turn") return plain(`Claude stopped early (${res.stop_reason})`);
+    if (!res.parsed_output) return plain("the answer wasn't in the expected shape");
+    return tidy(res.parsed_output) ?? plain("the title came back empty");
   } catch (err) {
-    if (err instanceof Anthropic.APIError) console.error(`titles: ${err.status} ${err.message}`);
-    else console.error("titles:", err instanceof Error ? err.message : err);
-    return null;
+    return plain(err instanceof Anthropic.APIError ? `${err.status} ${err.message}` : err instanceof Error ? err.message : String(err));
   }
 }
 
@@ -71,16 +101,26 @@ export function tidy(c: Copy): Copy | null {
   };
 }
 
-/** The description to use when nothing wrote one. */
+/** The description to use when nothing wrote one. It only asks for comments where comments are on. */
 export function plainDescription(c: Candidate): string {
-  const ask: Record<Candidate["format"], string> = {
-    battle: "Who did you pick? Comment before the end.",
-    quiz: "How many did you get? Comment your score.",
-    wyr: "Comment your picks: A or B for each.",
-    texts: "What would you reply? A made-up story.",
-    ranking: "Did any surprise you? Figures from the World Bank.",
-    race: "Who surprised you most? Figures from the World Bank.",
-  };
+  const comments = c.params.allowComments !== false;
+  const ask: Record<Candidate["format"], string> = comments
+    ? {
+        battle: "Who did you pick? Comment before the end.",
+        quiz: "How many did you get? Comment your score.",
+        wyr: "Comment your picks: A or B for each.",
+        texts: "What would you reply? A made-up story.",
+        ranking: "Did any surprise you? Figures from the World Bank.",
+        race: "Who surprised you most? Figures from the World Bank.",
+      }
+    : {
+        battle: "Pick a side before the end.",
+        quiz: "How many did you get?",
+        wyr: "Which would you pick?",
+        texts: "A made-up story.",
+        ranking: "Figures from the World Bank.",
+        race: "Figures from the World Bank.",
+      };
   const tags: Record<Candidate["format"], string> = {
     battle: "#shorts #ballbattle #satisfying",
     quiz: "#shorts #quiz #trivia",

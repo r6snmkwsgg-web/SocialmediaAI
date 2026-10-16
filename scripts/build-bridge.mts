@@ -5,7 +5,12 @@
  * The GitHub workflow runs this on Windows, macOS and Linux to make each
  * download.
  *
- *   pnpm bridge:build
+ * HOOKLINE_SITE is the site the bridge belongs to (https://<site>, or a
+ * few, comma-separated): only its pages and pages on the streamer's own
+ * computer can use the bridge, and it's where the bridge asks whether
+ * it's switched off. A release built without it would refuse the game.
+ *
+ *   HOOKLINE_SITE=https://<site> pnpm bridge:build
  */
 import { execFileSync } from "node:child_process";
 import { chmodSync, copyFileSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -13,6 +18,10 @@ import { build } from "esbuild";
 // postject has no types; its inject is all we use
 // @ts-expect-error untyped package
 import { inject } from "postject";
+
+const site = (process.env.HOOKLINE_SITE ?? "").trim();
+if (!site && process.env.CI) throw new Error("Set HOOKLINE_SITE (the repository variable) to the site's address (https://<site>): without it the bridge only talks to pages on the streamer's own computer.");
+if (!site) console.warn("No HOOKLINE_SITE: this bridge will only talk to pages on this computer.");
 
 const out = "dist-bridge";
 const plat = process.platform === "win32" ? "win" : process.platform === "darwin" ? "mac" : "linux";
@@ -30,6 +39,7 @@ await build({
   outfile: `${out}/bridge.cjs`,
   // ws can use these native speedups if they're there; it works without
   external: ["bufferutil", "utf-8-validate"],
+  define: { __HOOKLINE_SITE__: JSON.stringify(site) },
   logLevel: "warning",
 });
 

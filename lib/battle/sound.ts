@@ -12,10 +12,11 @@ export const RATE = 22050;
 
 const midi = (n: number) => 440 * 2 ** ((n - 69) / 12);
 
-/** Beethoven's Ode to Joy and Für Elise, as MIDI note numbers. */
+/** Beethoven's Ode to Joy and Für Elise, and Grieg's In the Hall of the Mountain King, as MIDI note numbers. */
 export const MELODIES = {
   ode: [64, 64, 65, 67, 67, 65, 64, 62, 60, 60, 62, 64, 64, 62, 62, 64, 64, 65, 67, 67, 65, 64, 62, 60, 60, 62, 64, 62, 60, 60, 62, 62, 64, 60, 62, 64, 65, 64, 60, 62, 64, 65, 64, 62, 60, 62, 55],
   elise: [76, 75, 76, 75, 76, 71, 74, 72, 69, 60, 64, 69, 71, 64, 68, 71, 72, 64, 76, 75, 76, 75, 76, 71, 74, 72, 69, 60, 64, 69, 71, 64, 72, 71, 69],
+  king: [71, 73, 74, 76, 78, 74, 78, 77, 73, 77, 76, 72, 76, 71, 73, 74, 76, 78, 74, 78, 83, 81, 78, 74, 78, 81],
 } as const;
 export type Melody = keyof typeof MELODIES;
 

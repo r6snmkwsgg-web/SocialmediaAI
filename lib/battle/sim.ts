@@ -76,7 +76,8 @@ export type BattleEvent =
   /** contact damage: the number floats up from the ball that took it, the spark is where they touched */
   | { f: number; type: "hit"; x: number; y: number; cx: number; cy: number; dmg: number; to: Team }
   | { f: number; type: "cut"; x: number; y: number; dmg: number; to: Team }
-  | { f: number; type: "boom"; x: number; y: number; dmg: number; to: Team }
+  /** a mine's blast, or (only live) a meteor landing: `hit` is how hard the meteor hit, and `dmg` what the ball it landed on took */
+  | { f: number; type: "boom"; x: number; y: number; dmg: number; to: Team; hit?: number }
   | { f: number; type: "spawn"; x: number; y: number; team: Team; n: number }
   | { f: number; type: "heal"; x: number; y: number; team: Team; n?: number }
   | { f: number; type: "ko"; x: number; y: number; team: Team; last: boolean; color?: string }
@@ -84,11 +85,13 @@ export type BattleEvent =
   | { f: number; type: "summon"; x: number; y: number; team: Team; name?: string; small: boolean; color?: string }
   /** only live: a team raging (hits twice as hard) or shielded (can't be hurt) */
   | { f: number; type: "power"; team: Team; power: "rage" | "shield" }
-  | { f: number; type: "meteor"; x: number; y: number; team: Team; target: number };
+  | { f: number; type: "meteor"; x: number; y: number; team: Team; target: number }
+  /** only live: a team that was hanging on got what it owed, and is back in the fight */
+  | { f: number; type: "saved"; x: number; y: number; team: Team };
 
-/** a meteor's hit on the ball it was aimed at, and on anything of theirs close by */
+/** a meteor's hit on the ball it was aimed at (a live gift's meteors can hit harder), and the share of it anything of theirs close by takes */
 export const METEOR_HIT = 30;
-const METEOR_SPLASH = 10;
+const METEOR_SPLASH = 1 / 3;
 const METEOR_FALL = 1.2;
 
 export type Battle = {
@@ -131,6 +134,20 @@ export type WorldOptions = {
   suddenDeath?: number;
   /** the most balls a team can have at once */
   maxTeam?: number;
+  /**
+   * live: once the walls close in, a wall takes this share of a ball's
+   * health a touch (at least 1), so a ball gifted hundreds of HP still goes
+   * down before time runs out. Without it, a touch takes 1.
+   */
+  wallShare?: number;
+  /**
+   * live: a meteor that would knock out a team's last ball leaves it
+   * hanging on at 1 HP for this many seconds instead, owing the rest of the
+   * hit. Health the team gets pays that off first; if it isn't paid off in
+   * time, it lands. So no gift ends a round on the spot. Without it, a
+   * meteor knocks out whatever it hits hard enough.
+   */
+  hangOn?: number;
 };
 
 /**
@@ -147,10 +164,15 @@ export class World {
   /** live gifts: until when each team is raging (double damage), or shielded (takes none) */
   readonly rage: [number, number] = [0, 0];
   readonly shield: [number, number] = [0, 0];
-  /** meteors on their way down: who sent them, what they're aimed at, when they land */
-  readonly meteors: { id: number; team: Team; target: number; x: number; y: number; from: number; at: number }[] = [];
+  /** meteors on their way down: who sent them, what they're aimed at, when they land, and how hard they hit */
+  readonly meteors: { id: number; team: Team; target: number; x: number; y: number; from: number; at: number; hit: number }[] = [];
   readonly suddenDeath: number;
   readonly maxTeam: number;
+  readonly wallShare: number;
+  readonly hangOn: number;
+  /** live: until when each team is hanging on (0 when it isn't), and the meteor damage it owes */
+  readonly hanging: [number, number] = [0, 0];
+  readonly owed: [number, number] = [0, 0];
   /** physics steps run so far */
   sub = 0;
   clock = 0;
@@ -163,6 +185,8 @@ export class World {
     this.rand = rng(seed);
     this.suddenDeath = o.suddenDeath ?? SUDDEN_DEATH;
     this.maxTeam = o.maxTeam ?? MAX_TEAM;
+    this.wallShare = o.wallShare ?? 0;
+    this.hangOn = o.hangOn ?? 0;
   }
 
   /** the video frame the world is on */
@@ -207,9 +231,27 @@ export class World {
     return this.rage[t] > this.clock ? 2 : 1;
   }
 
-  /** Damage that lands on a ball, with what it sets off: a Fibonacci split, or a knockout. */
-  private hurt(target: Ball, dmg: number, f: number) {
-    if (!target.alive || this.shield[target.team] > this.clock) return;
+  /**
+   * Damage that lands on a ball, with what it sets off: a Fibonacci split,
+   * or a knockout. A meteor (`pierce`) smashes through a shield, and live,
+   * leaves a team's last ball hanging on rather than knocking it out.
+   * `due` is what a team that hung on owed, landing once time's up.
+   */
+  private hurt(target: Ball, dmg: number, f: number, pierce = false, due = false) {
+    if (!target.alive) return;
+    const t = target.team;
+    if (!due && this.hanging[t] > this.clock) {
+      // hanging on: nothing hurts it now, and a meteor's hit is owed
+      if (pierce) this.owed[t] += dmg;
+      return;
+    }
+    if (!pierce && this.shield[t] > this.clock) return;
+    if (pierce && !due && this.hangOn > 0 && target.hp <= dmg && this.count(t) === 1) {
+      this.owed[t] += dmg - (target.hp - 1);
+      target.hp = 1;
+      this.hanging[t] = this.clock + this.hangOn;
+      return;
+    }
     target.hp = Math.max(0, target.hp - dmg);
     if (target.hp <= 0) {
       target.alive = false;
@@ -281,7 +323,7 @@ export class World {
         this.events.push({ f, type: "spawn", x: c.x, y: c.y, team: p.team, n: 1 });
       }
       // once the walls close in, touching them hurts, so a fight can't stall
-      if (sudden) this.hurt(p, 1, f);
+      if (sudden) this.hurt(p, this.wallShare ? Math.max(1, Math.floor(p.hp * this.wallShare)) : 1, f);
     }
 
     // bombs leave mines behind them
@@ -302,19 +344,31 @@ export class World {
       }
     }
 
-    // meteors land on whatever they were aimed at, wherever it is now
+    // meteors land on whatever they were aimed at, wherever it is now, or
+    // on the strongest ball left if that one's already gone
     for (const m of this.meteors) {
       if (m.at > now) continue;
-      const target = balls.find((b) => b.id === m.target && b.alive);
-      if (target) { m.x = target.x; m.y = target.y; }
-      for (const o of balls) {
-        if (!o.alive || o.team === m.team) continue;
-        if (o === target) this.hurt(o, METEOR_HIT, f);
-        else if (hypot(o.x - m.x, o.y - m.y) <= 170 + o.r) this.hurt(o, METEOR_SPLASH, f);
+      const them = (1 - m.team) as Team;
+      const target = this.landsOn(m);
+      // what the ball it lands on takes, owed included, for the number over it
+      let took = 0;
+      if (target) {
+        m.x = target.x;
+        m.y = target.y;
+        const hp = target.hp, owed = this.owed[them];
+        this.hurt(target, m.hit, f, true);
+        took = hp - target.hp + this.owed[them] - owed;
       }
-      this.events.push({ f, type: "boom", x: m.x, y: m.y, dmg: METEOR_HIT, to: (1 - m.team) as Team });
+      const splash = Math.round(m.hit * METEOR_SPLASH);
+      for (const o of balls) {
+        if (o.alive && o.team === them && o !== target && hypot(o.x - m.x, o.y - m.y) <= 170 + o.r) this.hurt(o, splash, f, true);
+      }
+      this.events.push({ f, type: "boom", x: m.x, y: m.y, dmg: took, to: them, hit: m.hit });
     }
     for (let i = this.meteors.length - 1; i >= 0; i--) if (this.meteors[i].at <= now) this.meteors.splice(i, 1);
+
+    // a team that hung on and wasn't paid off in time goes down under what it owes
+    for (const t of [0, 1] as Team[]) if (this.hanging[t] > 0 && this.hanging[t] <= now) this.payUp(t, f);
 
     // balls hitting each other: bounce apart, and enemies trade damage
     for (let i = 0; i < balls.length; i++) {
@@ -405,7 +459,7 @@ export class World {
    * full fighter with the side's ability. Nothing happens if the side is
    * already full.
    */
-  summon(team: Team, kind: AbilityId, o: { small: boolean; tag?: Tag }): Ball | null {
+  summon(team: Team, kind: AbilityId, o: { small: boolean; tag?: Tag; hp?: number }): Ball | null {
     if (this.count(team) >= this.maxTeam) return null;
     const { lo, size } = this.arena();
     const r = o.small ? 34 : ABILITIES[kind].radius;
@@ -415,6 +469,8 @@ export class World {
       fresh: this.clock + 0.8,
       tag: o.tag,
       ...(o.small ? { r, hp: 5, maxHp: 5, touch: 1, plain: true, child: true } : {}),
+      // a gift's ball can carry what the gift was worth
+      ...(o.hp ? { hp: o.hp, maxHp: o.hp } : {}),
     });
     this.events.push({ f: this.f, type: "summon", x: ball.x, y: ball.y, team, name: o.tag?.name, small: o.small });
     return ball;
@@ -433,21 +489,59 @@ export class World {
   }
 
   /** A meteor from `team` onto the other side's strongest ball (or the nth strongest), landing a moment later. */
-  meteor(team: Team, nth = 0, delay = 0): boolean {
+  meteor(team: Team, nth = 0, delay = 0, hit = METEOR_HIT): boolean {
     const foes = this.balls.filter((b) => b.alive && b.team !== team).sort((x, y) => y.hp - x.hp);
     if (foes.length === 0) return false;
     const target = foes[nth % foes.length];
     const from = this.clock + delay;
-    this.meteors.push({ id: this.nextId++, team, target: target.id, x: target.x, y: target.y, from, at: from + METEOR_FALL });
+    this.meteors.push({ id: this.nextId++, team, target: target.id, x: target.x, y: target.y, from, at: from + METEOR_FALL, hit });
     this.events.push({ f: this.f, type: "meteor", x: target.x, y: target.y, team, target: target.id });
     return true;
   }
 
-  /** Health for a team, onto its strongest ball; past full, it raises the ball's maximum. */
+  /** the ball a falling meteor will land on: the one it was aimed at, or the other side's strongest once that one's gone */
+  landsOn(m: { target: number; team: Team }): Ball | null {
+    return this.balls.find((b) => b.id === m.target && b.alive) ?? this.strongest((1 - m.team) as Team);
+  }
+
+  /** Time's up for a team hanging on: what it still owes lands, on its strongest balls first. */
+  private payUp(t: Team, f: number) {
+    let owed = this.owed[t];
+    this.hanging[t] = 0;
+    this.owed[t] = 0;
+    for (let b = this.strongest(t); b && owed > 0; b = this.strongest(t)) {
+      const d = Math.min(owed, b.hp);
+      owed -= d;
+      this.hurt(b, d, f, true, true);
+    }
+  }
+
+  /** a team's ball with the most health, or null when it has none left */
+  private strongest(team: Team): Ball | null {
+    let best: Ball | null = null;
+    for (const b of this.balls) if (b.alive && b.team === team && (!best || b.hp > best.hp)) best = b;
+    return best;
+  }
+
+  /**
+   * Health for a team, onto its strongest ball; past full, it raises the
+   * ball's maximum. A team hanging on pays off what it owes first, and once
+   * that's paid it's saved.
+   */
   heal(team: Team, n: number): Ball | null {
     let best: Ball | null = null;
     for (const b of this.balls) if (b.alive && b.team === team && (!best || b.maxHp > best.maxHp)) best = b;
     if (!best) return null;
+    if (this.owed[team] > 0) {
+      const pay = Math.min(n, this.owed[team]);
+      this.owed[team] -= pay;
+      n -= pay;
+      if (this.owed[team] <= 0) {
+        this.hanging[team] = 0;
+        this.events.push({ f: this.f, type: "saved", x: best.x, y: best.y, team });
+      }
+      if (n <= 0) return best;
+    }
     best.hp += n;
     best.maxHp = Math.max(best.maxHp, best.hp);
     this.events.push({ f: this.f, type: "heal", x: best.x, y: best.y, team, n });
