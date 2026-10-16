@@ -1399,4 +1399,18 @@ describe.skipIf(!safe)("the database", () => {
       expect(log).toEqual([{ source: "channel", n: 1 }, { source: "short", n: 3 }]);
     });
   });
+
+  // wave 2: channels
+
+  // wave 2: leaderboard
+
+  // wave 2: quota
+
+  // wave 2: clipper
+
+  // wave 2: niches
+
+  // wave 2: proof
+
+  // wave 2: ytlive
 });
