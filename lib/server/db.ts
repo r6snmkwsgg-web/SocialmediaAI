@@ -5,10 +5,12 @@ import { env } from "./env";
 /**
  * The database. Most of the app talks to it as the signed-in user, inside
  * a transaction that takes on Supabase's `authenticated` role with their
- * id, so row-level security decides what they can see and change, exactly
- * as it would through Supabase's own API. The server's own jobs (the
- * Stripe webhook, crons, the render worker) use `admin`, which isn't
- * limited by it.
+ * id, so row-level security decides what they can see and change. The
+ * transaction is marked as Hookline's own: Supabase's REST and GraphQL
+ * APIs take the same sign-in and role but not the mark, and every table
+ * refuses them (supabase/migrations/20261017050000_server_only.sql). The
+ * server's own jobs (the Stripe webhook, crons, the render worker) use
+ * `admin`, which isn't limited by it.
  */
 
 let client: postgres.Sql | null = null;
@@ -28,7 +30,7 @@ export type Tx = postgres.TransactionSql;
 /** Run queries as a signed-in user: row-level security applies. */
 export async function asUser<T>(userId: string, fn: (tx: Tx) => Promise<T>): Promise<T> {
   return sql().begin(async (tx) => {
-    await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: userId, role: "authenticated" })}, true)`;
+    await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: userId, role: "authenticated" })}, true), set_config('hookline.via', 'server', true)`;
     await tx.unsafe("set local role authenticated");
     return fn(tx);
   }) as Promise<T>;

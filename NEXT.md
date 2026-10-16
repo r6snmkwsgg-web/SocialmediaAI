@@ -24,7 +24,7 @@ Streamers download the bridge from a public repo's releases, so the code itself 
 1. supabase.com, New project. Pick the region nearest most users and keep the database password.
 2. Project settings, API keys: the project URL goes in `NEXT_PUBLIC_SUPABASE_URL`, the anon (or publishable) key in `NEXT_PUBLIC_SUPABASE_ANON_KEY`, the service role (or secret) key in `SUPABASE_SERVICE_ROLE_KEY`.
 3. Connect (top bar), Transaction pooler: copy the connection string, with the password in it, into `DATABASE_URL`.
-4. Make the tables: put that `DATABASE_URL` in `.env.local` and run `pnpm db:migrate`.
+4. Make the tables: put that `DATABASE_URL` in `.env.local` and run `pnpm db:migrate`. Hookline doesn't use Supabase's Data API (its REST and GraphQL access to the tables), and the tables already refuse it, so you can also switch it off in Project settings, Data API.
 5. Authentication, URL Configuration: Site URL `https://<domain>`. Redirect URLs: add `https://<domain>/auth/callback`.
 6. Authentication, Emails, Templates: in both "Confirm signup" and "Magic Link", change the link to
    `{{ .SiteURL }}/auth/callback?token_hash={{ .TokenHash }}&type=email`

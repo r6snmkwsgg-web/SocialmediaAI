@@ -939,6 +939,35 @@ describe.skipIf(!safe)("the database", () => {
     const kept = await db.admin((tx) => tx<{ user_id: string | null }[]>`select user_id from public.content_ledger where item = 'b-had-this'`);
     expect(kept).toEqual([{ user_id: null }]);
   });
+
+  it("lets only Hookline's server reach the tables, not Supabase's own API with the same sign-in", async () => {
+    // what someone's own token gets through Supabase's REST or GraphQL API: their id and the same role, without Hookline's mark
+    const direct = <T,>(fn: (tx: Parameters<Parameters<Db["asUser"]>[1]>[0]) => Promise<T>) =>
+      db.sql().begin(async (tx) => {
+        await tx`select set_config('request.jwt.claims', ${JSON.stringify({ sub: A, role: "authenticated" })}, true)`;
+        await tx.unsafe("set local role authenticated");
+        return fn(tx);
+      }) as Promise<T>;
+    // through the app, A sees their own Short and profile
+    expect((await db.asUser(A, (tx) => tx`select id from public.videos`)).length).toBeGreaterThan(0);
+    expect(await db.asUser(A, (tx) => tx`select id from public.profiles`)).toHaveLength(1);
+    // directly, nothing: not to read, and not to queue an upload of someone else's file
+    expect(await direct((tx) => tx`select id from public.videos`)).toHaveLength(0);
+    expect(await direct((tx) => tx`update public.videos set status = 'ready', file_path = 'someone-else/video.mp4' where user_id = ${A} returning id`)).toHaveLength(0);
+    await expect(
+      direct((tx) => tx`insert into public.videos (user_id, format, params, key, title, status, file_path) values (${A}, 'wyr', '{}', 'wyr', 'Mine', 'ready', 'someone-else/video.mp4')`),
+    ).rejects.toThrow(/row-level security/);
+    expect(await direct((tx) => tx`update public.profiles set goal = 'live' where id = ${A} returning id`)).toHaveLength(0);
+    // every table has the rule, including ones added later
+    const open = await db.admin((tx) => tx<{ t: string }[]>`
+      select c.relname as t from pg_class c join pg_namespace n on n.oid = c.relnamespace
+      where n.nspname = 'public' and c.relkind = 'r'
+        and not (c.relrowsecurity and exists (
+          select 1 from pg_policies p where p.schemaname = 'public' and p.tablename = c.relname
+            and p.policyname = 'only through hookline' and p.permissive = 'RESTRICTIVE'))`);
+    expect(open.map((r) => r.t)).toEqual([]);
+  });
+
   describe("posting only what's true", () => {
     let E = "";
     let channel = "";
