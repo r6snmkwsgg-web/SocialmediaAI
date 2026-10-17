@@ -7,24 +7,56 @@ import { FORMAT_IDS, type FormatId } from "./types";
  * get picked less. New channels' views are mostly noise, so a score is
  * pulled toward the channel's usual until it has the results to stand
  * on. Every format keeps a fair chance, so the channel never stops trying
- * things and one lucky video can't take over.
+ * things and one lucky video can't take over. A channel that's new to an
+ * account with others starts from what worked on those instead of usual.
  */
 
-export type Weight = { kind: "format" | "key"; name: string; score: number; samples: number };
+/** `prior` is where a score is pulled toward until it has results of its own: 1 (usual), or what the account's other channels found. */
+export type Weight = { kind: "format" | "key"; name: string; score: number; samples: number; prior?: number };
 
 /** How many results a score needs before it counts for half; until then it's mostly the channel's usual. */
 export const PRIOR = 8;
 
 /**
- * A score as the picks use it: shrunk toward 1 (the channel's usual) by
- * how few results it has. With 1 result it counts for a ninth, with 8
- * for half, and never more than 20 / 28, since the score itself only
- * remembers about the last 20.
+ * A score as the picks use it: shrunk toward its prior (1, the channel's
+ * usual, unless the account's other channels say otherwise) by how few
+ * results it has. With 1 result it counts for a ninth, with 8 for half,
+ * and never more than 20 / 28, since the score itself only remembers
+ * about the last 20. With none it's the prior.
  */
-export function steady(w: Pick<Weight, "score" | "samples"> | undefined): number {
-  if (!w || w.samples <= 0) return 1;
+export function steady(w: Pick<Weight, "score" | "samples" | "prior"> | undefined): number {
+  if (!w) return 1;
+  const prior = w.prior ?? 1;
+  if (w.samples <= 0) return prior;
   const n = Math.min(w.samples, 20);
-  return Math.exp((Math.log(w.score) * n) / (n + PRIOR));
+  return Math.exp((Math.log(w.score) * n + Math.log(prior) * PRIOR) / (n + PRIOR));
+}
+
+/** How a weight's own results stand, without its prior: what any words quoting those results go by. */
+export const alone = (w: Weight) => steady({ score: w.score, samples: w.samples });
+
+/**
+ * A channel's weights, each with what the account's other channels found
+ * as its prior: their results pooled (each counting for up to 20, as a
+ * score does) and made steady the same way. So a new channel starts from
+ * what worked there, and its own results take over as they come in. With
+ * no other channels every prior is 1, and it learns exactly as one alone.
+ */
+export function withPrior(own: Weight[], others: Weight[]): Weight[] {
+  const key = (w: Weight) => `${w.kind}|${w.name}`;
+  const pooled = new Map<string, { log: number; n: number; samples: number }>();
+  for (const w of others) {
+    const n = Math.min(w.samples, 20);
+    const p = pooled.get(key(w)) ?? { log: 0, n: 0, samples: 0 };
+    pooled.set(key(w), { log: p.log + Math.log(w.score) * n, n: p.n + n, samples: p.samples + w.samples });
+  }
+  const names = new Map([...own, ...others].map((w) => [key(w), { kind: w.kind, name: w.name }]));
+  return [...names.entries()].map(([k, { kind, name }]) => {
+    const mine = own.find((w) => key(w) === k);
+    const p = pooled.get(k);
+    const prior = p && p.n > 0 ? steady({ score: Math.exp(p.log / p.n), samples: p.samples }) : 1;
+    return { kind, name, score: mine?.score ?? 1, samples: mine?.samples ?? 0, prior };
+  });
 }
 
 /**
@@ -142,8 +174,8 @@ export function kindScore(key: string, weights: Weight[]): number {
 export function standout(key: string, weights: Weight[]): Weight | null {
   const ws = keyGroups(key)
     .map((g) => weights.find((x) => x.kind === "key" && x.name === g))
-    .filter((w): w is Weight => !!w && w.samples >= 3 && steady(w) >= 1.15);
-  return ws.sort((a, b) => steady(b) - steady(a))[0] ?? null;
+    .filter((w): w is Weight => !!w && w.samples >= 3 && alone(w) >= 1.15);
+  return ws.sort((a, b) => alone(b) - alone(a))[0] ?? null;
 }
 
 const listed = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
@@ -163,11 +195,17 @@ export function dryNote(dry: string[], made: number, wanted: number): string {
  * In plain words, why a format is being picked, for the queue. The
  * figure is what its Shorts really averaged; whether that counts as
  * doing well or badly goes by the steady score, so a couple of results
- * aren't called a pattern.
+ * aren't called a pattern. A channel still new to an account with others
+ * says what those found, with no figure, since none would be its own.
  */
 export function formatReason(name: string, w: Weight | undefined): string {
-  if (!w || w.samples < 3) return `Still learning what works on your channel: ${w?.samples ? `${w.samples} ${name} so far` : `trying ${name}`}`;
-  const x = steady(w);
+  if (!w || w.samples < 3) {
+    const prior = w?.prior ?? 1;
+    if (prior >= 1.15) return `Your ${name} have done well on your other channels, so this one starts with more of them`;
+    if (prior <= 0.87) return `Your ${name} have done less well on your other channels, so this one starts with fewer, but still some`;
+    return `Still learning what works on your channel: ${w?.samples ? `${w.samples} ${name} so far` : `trying ${name}`}`;
+  }
+  const x = alone(w);
   const avg = `${w.score.toFixed(1)}× your usual views at 24 hours`;
   if (x >= 1.15) return `Your ${name} have averaged ${avg} (${w.samples} posted)`;
   if (x <= 0.87) return `Your ${name} have averaged ${avg}, so fewer of them, but still some to keep checking`;

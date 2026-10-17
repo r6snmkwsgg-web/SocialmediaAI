@@ -2,11 +2,12 @@ import type { Metadata } from "next";
 import { ConnectList } from "@/components/app/connect";
 import { SettingsTabs } from "@/components/app/settings-tabs";
 import { button, Card, CardHead, PageHead } from "@/components/app/ui";
+import { gettingShorts } from "@/lib/shorts/channels";
 import { account } from "@/lib/server/account";
-import { channelsOf } from "@/lib/server/channels";
+import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
-import { deleteAccount, disconnect, saveAudience, saveProfile, saveShorts } from "./actions";
+import { deleteAccount, disconnect, saveAudience, saveChannelSettings, saveProfile, saveShorts } from "./actions";
 
 export const metadata: Metadata = { title: "Settings" };
 
@@ -16,14 +17,25 @@ const NOTES: Record<string, { text: string; bad?: boolean }> = {
   youtubeSelf: { text: "YouTube is connected. Say who the channel is for below. Until YouTube finishes reviewing Hookline, you post Shorts yourself and Hookline checks them." },
   youtubeFree: { text: "YouTube is connected. Say who the channel is for below. Hookline checks the Shorts you post there and reads their views." },
   audience: { text: "Saved." },
+  channel: { text: "Saved." },
   audienceError: { text: "Pick whether the channel is made for kids, then save.", bad: true },
+  already: { text: "That channel was already connected. To add a different one, connect again and pick its account when Google asks." },
+  settings: { text: "That didn't save. Try again.", bad: true },
   tiktok: { text: "TikTok is connected." },
-  channels: { text: "Your plan has room for one channel on each platform. Creator has room for five.", bad: true },
+  channels: { text: "Your plan has room for one YouTube channel. Disconnect it to connect a different one, or move to Creator for up to five.", bad: true },
+  channelsFull: { text: "Creator has room for five channels, and all five are connected. Disconnect one to add another.", bad: true },
+  tiktokOne: { text: "Hookline sends Shorts to one TikTok account. Disconnect this one to connect a different one.", bad: true },
   connect: { text: "That didn't connect. Try again, and allow everything Hookline asks for.", bad: true },
   denied: { text: "Nothing was connected: the permission was turned down.", bad: true },
   nochannel: { text: "That Google account has no YouTube channel yet. Make one on YouTube, then connect again.", bad: true },
   setup: { text: "Connecting accounts isn't set up on this Hookline yet.", bad: true },
-  disconnected: { text: "Disconnected. Hookline can't post there or read it any more." },
+  disconnectedYoutube: {
+    text: "Disconnected. Hookline can't post there or read it any more, and its figures are gone from Earnings. Shorts kept for it stay: post them yourself, or connect it again to carry on.",
+  },
+  disconnectedTiktok: { text: "Disconnected. Hookline can't read it any more, and its figures are gone from Earnings." },
+  disconnectedTiktokCleared: {
+    text: "Disconnected. TikTok choices for Shorts that hadn't gone yet were cleared, since they were made for that account. Choose again for any you still want on TikTok.",
+  },
   profile: { text: "That didn't save. Check the name is under 40 characters.", bad: true },
   confirm: { text: "Type DELETE to confirm, then press the button again.", bad: true },
   cancel: { text: "Your subscription couldn't be cancelled, so nothing was deleted. Try again, or cancel it in Plan & billing first.", bad: true },
@@ -39,20 +51,30 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 export default async function Settings({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
-  const channels = await channelsOf(me.id);
+  // YouTube's channels, with disconnected ones while they have Shorts, and TikTok's one account (and any from before)
+  const [youtube, tiktok] = await Promise.all([shortsChannelsOf(me.id), channelsOf(me.id).then((cs) => cs.filter((x) => x.platform === "tiktok"))]);
   const [{ text_stories: stories }] = await asUser(me.id, (tx) => tx<{ text_stories: boolean }[]>`select text_stories from public.profiles where id = ${me.id}`);
   const c = configured();
-  const posting = channels.find((x) => x.platform === "youtube" && x.status === "connected");
+  // the channel just connected
+  const fresh = youtube.find((x) => x.id === q.channel);
+  const moved = q.connected === "youtube" ? Number(q.moved) || 0 : 0;
   const key =
-    ["saved", "disconnected"].find((k) => q[k] === "1") ??
-    (q.saved === "audience" ? "audience" : undefined) ??
+    (q.saved === "1" ? "saved" : undefined) ??
+    (q.disconnected === "youtube" ? "disconnectedYoutube" : q.disconnected === "tiktok" ? (q.cleared === "1" ? "disconnectedTiktokCleared" : "disconnectedTiktok") : undefined) ??
+    (q.saved === "audience" || q.saved === "channel" ? q.saved : undefined) ??
     (q.error === "audience" ? "audienceError" : undefined) ??
     // Free posts its own Shorts; paid plans do too until YouTube's review passes, except on test channels
     (q.connected === "youtube" && !me.plan.scheduling ? "youtubeFree" : undefined) ??
-    (q.connected === "youtube" && posting && !posting.api ? "youtubeSelf" : undefined) ??
+    (q.connected === "youtube" && fresh && !fresh.api ? "youtubeSelf" : undefined) ??
     (typeof q.connected === "string" ? q.connected : undefined) ??
+    (q.error === "channels" && me.plan.channels > 1 ? "channelsFull" : undefined) ??
     (typeof q.error === "string" ? q.error : undefined);
-  const note = key ? NOTES[key] : undefined;
+  // Shorts whose time passed before the channel was back (or was connected) got new times, two hours apart
+  const note = moved
+    ? { text: `YouTube is connected. ${moved} Short${moved === 1 ? " whose time had passed has a new time" : "s whose time had passed have new times"}.` }
+    : key
+      ? NOTES[key]
+      : undefined;
 
   return (
     <>
@@ -119,10 +141,15 @@ export default async function Settings({ searchParams }: { searchParams: Search 
           <div className="px-5 py-5">
             <ConnectList
               platforms={["youtube", "tiktok"]}
-              channels={channels}
+              channels={[...youtube, ...tiktok]}
               ready={{ youtube: c.youtube, tiktok: c.tiktok }}
               next="/app/settings"
+              room={me.plan.channels}
+              plan={me.plan.name}
               disconnect={disconnect}
+              settings={saveChannelSettings}
+              getting={gettingShorts(youtube, me.plan.channels).map((x) => x.id)}
+              saved={q.saved === "channel" && typeof q.channel === "string" ? q.channel : undefined}
               audience={saveAudience}
               youtubeApi={c.youtubeAudited}
               tiktokProfile={c.tiktokProfile}

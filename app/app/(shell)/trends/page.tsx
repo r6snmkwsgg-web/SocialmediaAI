@@ -60,6 +60,11 @@ export default async function Trends({ searchParams }: { searchParams: Search })
           Text stories are off for your channel. <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Turn them on in Settings</Link> first.
         </p>
       )}
+      {q.error === "stopped" && (
+        <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">
+          Shorts are off for every channel. <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Switch one on in Settings.</Link>
+        </p>
+      )}
 
       <form action={follow} className="mb-8 flex flex-wrap items-center gap-2" aria-label="Niches to show">
         {NICHES.map((n) => (

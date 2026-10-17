@@ -22,7 +22,10 @@ export type Plan = {
   tag: boolean;
   /** posting for you at the best time, rather than downloading */
   scheduling: boolean;
+  /** YouTube channels that get Shorts of their own, each with the whole of `shorts` */
   channels: number;
+  /** TikTok accounts it posts to: one on every plan, since TikTok's own limits and its form on every post are per account */
+  tiktokAccounts: number;
   /** changing the live game's gift prices */
   customMenus: boolean;
   /** where renders go in the queue */
@@ -41,6 +44,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: true,
     scheduling: false,
     channels: 1,
+    tiktokAccounts: 1,
     customMenus: false,
     priority: 0,
     features: ["3 Shorts a week", "The live Ball Battle", "Trends and Earnings", "A small “made with Hookline” tag"],
@@ -55,6 +59,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: false,
     scheduling: true,
     channels: 1,
+    tiktokAccounts: 1,
     customMenus: false,
     priority: 1,
     features: ["3 Shorts a day", "Posts them for you at your best times", "Every live game", "No tag"],
@@ -69,13 +74,22 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: false,
     scheduling: true,
     channels: 5,
+    tiktokAccounts: 1,
     customMenus: true,
     priority: 2,
-    features: ["5 Shorts a day per channel", "Up to 5 channels", "Your own live gift prices", "Renders first in line"],
+    features: ["5 Shorts a day for each channel", "Up to 5 YouTube channels, each with its own look and best times", "Your own live gift prices", "Renders first in line"],
   },
 };
 
 export const PAID: PlanId[] = ["pro", "creator"];
+
+/**
+ * How many posting times a day a channel's Shorts are planned at: a day's
+ * Shorts on a paid plan, and 3 on Free, whose 3 a week are planned like a day's.
+ */
+export function postsPerDay(p: Plan): number {
+  return p.shorts.per === "day" ? p.shorts.count : 3;
+}
 
 /** A year's price as months saved: two months free. */
 export function yearSaving(p: Plan): number {

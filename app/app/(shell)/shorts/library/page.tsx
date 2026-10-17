@@ -4,10 +4,12 @@ import { LocalTime } from "@/components/app/local-time";
 import { button, Card, CardHead, Empty, PageHead, Pill } from "@/components/app/ui";
 import { Cover } from "@/components/shorts/cover";
 import { Working } from "@/components/shorts/working";
+import { isActive } from "@/lib/shorts/channels";
 import { FORMATS } from "@/lib/shorts/formats";
 import { times } from "@/lib/shorts/insights";
 import { FORMAT_IDS, type FormatId } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
+import { shortsChannelsOf } from "@/lib/server/channels";
 import { FILTERS, insightsFor, libraryOf, type Filter, type LibraryItem } from "@/lib/server/shorts/library";
 
 export const metadata: Metadata = { title: "Library" };
@@ -40,15 +42,29 @@ export default async function Library({ searchParams }: { searchParams: Search }
   const format = FORMAT_IDS.includes(one(q.format) as FormatId) ? (one(q.format) as FormatId) : null;
   const text = (one(q.q) ?? "").slice(0, 80);
   const page = Math.max(1, Number(one(q.page)) || 1);
-  const [lib, learned] = await Promise.all([libraryOf(me.id, { filter: show, format, q: text, page }), insightsFor(me.id)]);
-  const narrowed = show !== "all" || !!format || !!text;
+  // the YouTube channels Shorts are for, and the one picked to see (anything else means all of them)
+  const shown = await shortsChannelsOf(me.id);
+  const picked = shown.find((c) => c.id === one(q.channel)) ?? null;
+  const several = shown.length > 1;
+  const [lib, learned] = await Promise.all([libraryOf(me.id, { filter: show, format, q: text, page, channel: picked?.id }), insightsFor(me.id, picked?.id)]);
+  const narrowed = show !== "all" || !!format || !!text || !!picked;
   const link = (over: Record<string, string | number | null>) => {
     const p = new URLSearchParams();
-    const merged = { show: show === "all" ? null : show, format, q: text || null, page: null, ...over };
+    const merged = { show: show === "all" ? null : show, channel: picked?.id ?? null, format, q: text || null, page: null, ...over };
     for (const [k, v] of Object.entries(merged)) if (v !== null && v !== undefined && v !== "") p.set(k, String(v));
     const s = p.toString();
     return s ? `?${s}` : "/app/shorts/library";
   };
+  // with several channels' Shorts shown, each card says which channel it's for
+  const names = new Map(shown.map((c) => [c.id, c.name]));
+  const tagOf = (it: LibraryItem) => (several && !picked && it.channelId ? names.get(it.channelId) : undefined);
+  // what's working on the channel picked, against its own usual; or across them all, each Short against its own channel's
+  const day = learned.typical === null ? null : n(Math.round(learned.typical));
+  const working = picked
+    ? { title: `What's working on ${picked.name}`, note: day === null ? `First day vs ${picked.name}'s usual` : `${picked.name}'s usual: ${day} views on day one` }
+    : several
+      ? { title: "What's working across your channels", note: "Each Short against its own channel's usual" }
+      : { title: "What's working", note: day === null ? "First day vs your usual" : `Your usual: ${day} views on day one` };
 
   return (
     <>
@@ -59,14 +75,15 @@ export default async function Library({ searchParams }: { searchParams: Search }
       />
 
       <Card className="mb-8">
-        <CardHead
-          title="What's working"
-          action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{learned.typical === null ? "First day vs your usual" : `Your usual: ${n(Math.round(learned.typical))} views on day one`}</span>}
-        />
+        <CardHead title={working.title} action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{working.note}</span>} />
         <div className="px-5 py-5">
           {learned.measured < 3 ? (
             <p className="max-w-2xl text-[15px] leading-relaxed text-muted">
-              Hookline compares each Short&rsquo;s first day with your usual Short, and makes more of what wins. Once three Shorts have been up a day on YouTube, this shows which formats beat your usual and by how much.{" "}
+              {picked
+                ? `Hookline compares the first day of each Short on ${picked.name} with its usual Short, and makes more of what wins there. Once three of them have been up a day on YouTube, this shows which formats beat its usual and by how much.`
+                : several
+                  ? "Hookline compares each Short's first day with its own channel's usual Short, and makes more of what wins. Once three Shorts have been up a day on YouTube, this shows which formats beat their channel's usual and by how much."
+                  : "Hookline compares each Short's first day with your usual Short, and makes more of what wins. Once three Shorts have been up a day on YouTube, this shows which formats beat your usual and by how much."}{" "}
               {learned.measured > 0 ? `${learned.measured} of 3 so far.` : "None yet."}
             </p>
           ) : (
@@ -90,6 +107,17 @@ export default async function Library({ searchParams }: { searchParams: Search }
         </nav>
         <form className="flex flex-wrap items-center gap-2" role="search">
           {show !== "all" && <input type="hidden" name="show" value={show} />}
+          {several && (
+            <>
+              <label className="sr-only" htmlFor="lib-channel">Channel</label>
+              <select id="lib-channel" name="channel" defaultValue={picked?.id ?? ""} className="h-10 max-w-full border-2 border-edge-strong bg-surface px-2 text-[14px] text-fg focus:border-fg focus:outline-none">
+                <option value="">Every channel</option>
+                {shown.map((c) => (
+                  <option key={c.id} value={c.id}>{`${c.name}${isActive(c) ? "" : " (disconnected)"}`}</option>
+                ))}
+              </select>
+            </>
+          )}
           <label className="sr-only" htmlFor="lib-format">Format</label>
           <select id="lib-format" name="format" defaultValue={format ?? ""} className="h-10 border-2 border-edge-strong bg-surface px-2 text-[14px] text-fg focus:border-fg focus:outline-none">
             <option value="">Every format</option>
@@ -105,7 +133,7 @@ export default async function Library({ searchParams }: { searchParams: Search }
 
       {lib.items.length === 0 ? (
         narrowed ? (
-          <Empty title="Nothing matches" body="Try another format or fewer words." action={{ href: "/app/shorts/library", label: "Show everything" }} />
+          <Empty title="Nothing matches" body={several ? "Try another channel or format, or fewer words." : "Try another format or fewer words."} action={{ href: "/app/shorts/library", label: "Show everything" }} />
         ) : (
           <Empty title="Nothing here yet" body="Every Short you swipe right on lands here: being made, scheduled, posted, with its views once it's up." action={{ href: "/app/shorts", label: "Go to your queue" }} />
         )
@@ -118,6 +146,7 @@ export default async function Library({ searchParams }: { searchParams: Search }
                 <Link href={`/app/shorts/${it.id}`} className="group flex h-full flex-col border-2 border-edge bg-card transition hover:border-fg">
                   <Cover format={it.format} label={FORMATS[it.format].name} className="aspect-[4/3] w-full" />
                   <div className="flex flex-1 flex-col gap-2 p-3">
+                    {tagOf(it) && <p className="-mb-1 truncate font-mono text-[10px] uppercase tracking-[0.12em] text-muted">{tagOf(it)}</p>}
                     <p className="line-clamp-2 text-[14px] font-semibold leading-snug group-hover:underline">{it.title}</p>
                     <div className="mt-auto flex flex-wrap items-center gap-2">
                       <Pill tone={s.tone}>{s.label}</Pill>

@@ -8,7 +8,11 @@ import { startOAuth } from "@/lib/server/oauth";
 import { tiktokAuthUrl } from "@/lib/server/tiktok";
 import { youtubeAuthUrl } from "@/lib/server/youtube";
 
-/** Off to Google or TikTok to connect an account; they send the visitor back to /callback. */
+/**
+ * Off to Google or TikTok to connect an account; they send the visitor
+ * back to /callback. `channel=<id>` says it's to connect one of theirs
+ * again (Settings' Reconnect, say).
+ */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ platform: string }> }) {
   const { platform } = await params;
   const base = await origin();
@@ -20,12 +24,17 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
   const c = configured();
   if (platform === "youtube" ? !c.youtube : !c.tiktok) return back("setup");
 
-  // more channels than the plan has room for: reconnecting one they have is fine, and so is a
-  // TikTok connected before Hookline read usernames, which needs connecting again for its LIVEs to count
+  // a full plan (counting the ones not disconnected, and one TikTok on every plan): reconnecting one they have is fine,
+  // the one asked for or one that needs it, and so is a TikTok connected before Hookline read usernames, which needs
+  // connecting again for its LIVEs to count. The account chooser says which comes back, so the callback checks again
   const plan = (await billingFor(me.id)).plan;
   const mine = (await channelsOf(me.id)).filter((x) => x.platform === platform);
+  const room = platform === "youtube" ? plan.channels : plan.tiktokAccounts;
+  const again = req.nextUrl.searchParams.get("channel");
   const noUsername = (x: (typeof mine)[number]) => c.tiktokProfile && x.platform === "tiktok" && !x.handle;
-  if (mine.length >= plan.channels && !mine.some((x) => x.status !== "connected" || noUsername(x))) return back("channels");
+  if (mine.length >= room && !mine.some((x) => x.id === again || x.status === "expired" || noUsername(x))) {
+    return back(platform === "youtube" ? "channels" : "tiktokOne");
+  }
 
   const state = await startOAuth(platform, next);
   const redirect = `${base}/api/connect/${platform}/callback`;

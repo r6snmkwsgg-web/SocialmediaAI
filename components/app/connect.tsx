@@ -1,15 +1,19 @@
+import { PLANS } from "@/lib/billing/plans";
 import type { Channel, Platform } from "@/lib/server/channels";
+import { isActive, uploadsTo } from "@/lib/shorts/channels";
 import { KIDS_GUIDE, YT_PRIVACY, YT_PRIVACY_LABEL, type YouTubePrivacy } from "@/lib/shorts/youtube";
 import { Icons } from "./icons";
 import { button, Pill } from "./ui";
 
 /**
- * Connecting YouTube and TikTok: what each one is for, whether it's
- * connected, and the button that connects it. Used in onboarding and in
- * Settings. A connected YouTube channel also says who it's for (made for
- * kids or not, asked with nothing picked, since YouTube needs the creator
- * to say) and who sees new Shorts; nothing posts to it until that's
- * answered.
+ * Connecting YouTube and TikTok: what each one is for, the accounts
+ * connected, and the button that connects one. Used in onboarding,
+ * Settings and Earnings. Each YouTube channel is listed with where it
+ * stands, and says who it's for (made for kids or not, asked with nothing
+ * picked, since YouTube needs the creator to say) and who sees new Shorts;
+ * nothing posts to it until that's answered. Where the plan has room for
+ * more than one channel, each also says whether it gets Shorts. TikTok is
+ * one account.
  */
 
 const ABOUT: Record<Platform, { name: string; why: string; whyBeforeAudit?: string; whySelf?: string; whyNoProfile?: string }> = {
@@ -33,6 +37,13 @@ const PRIVACY_ABOUT: Record<YouTubePrivacy, string> = {
   private: "Only you, until you make it public in YouTube Studio.",
 };
 
+/** Where each account stands, as its pill says it. */
+const STATE: Record<Channel["status"], { label: string; tone: "good" | "warn" | "plain" }> = {
+  connected: { label: "Connected", tone: "good" },
+  expired: { label: "Needs reconnecting", tone: "warn" },
+  revoked: { label: "Disconnected", tone: "plain" },
+};
+
 export function PlatformMark({ platform, className = "h-9 w-9" }: { platform: Platform; className?: string }) {
   return platform === "youtube" ? (
     <svg viewBox="0 0 36 36" className={className} aria-hidden="true">
@@ -51,6 +62,13 @@ export function PlatformMark({ platform, className = "h-9 w-9" }: { platform: Pl
 
 const small = "font-mono text-[11px] uppercase tracking-[0.16em] text-muted";
 const radio = "mt-1 h-4 w-4 shrink-0 accent-[var(--color-signal)]";
+const connectButton = "inline-flex items-center gap-2 border-2 border-fg px-4 py-2 font-display text-base uppercase tracking-wider transition hover:bg-fg hover:text-surface";
+const quietAction = "font-mono text-[11px] uppercase tracking-[0.14em] text-muted underline-offset-4 hover:text-signal hover:underline";
+
+/** A channel as listed: `name` tells apart two that share a title, where the page has it. */
+type Listed = Channel & { name?: string };
+
+const nameOf = (c: Listed) => c.name ?? c.title ?? c.handle ?? (c.platform === "youtube" ? "Your channel" : "Your TikTok");
 
 /** Made for kids or not, and who sees new Shorts: the question for a YouTube channel. */
 function AudienceForm({ channel, action, next }: { channel: Channel; action: (form: FormData) => Promise<void>; next: string }) {
@@ -89,7 +107,8 @@ function AudienceForm({ channel, action, next }: { channel: Channel; action: (fo
 
 function Audience({ channel, action, next, posts }: { channel: Channel; action?: (form: FormData) => Promise<void>; next: string; posts: boolean }) {
   return (
-    <div id="audience" className="flex flex-col gap-3 border-t-2 border-edge px-4 py-4">
+    // a link here lands with the channel's name still in view above it
+    <div id={`audience-${channel.id}`} className="flex scroll-mt-40 flex-col gap-3 border-t-2 border-edge px-4 py-4">
       {channel.youtubeKids && (
         <p className="border-l-4 border-signal pl-3 text-[13px] leading-relaxed">YouTube has this channel set as made for kids: comments are off on all its videos.</p>
       )}
@@ -126,22 +145,124 @@ function Audience({ channel, action, next, posts }: { channel: Channel; action?:
   );
 }
 
+/**
+ * Whether a YouTube channel gets new Shorts, shown where the plan has room
+ * for more than one channel, more are connected than it has room for, or
+ * it's switched off (so it can be switched on again). One switched on past
+ * the plan's room says why it gets none. The form carries `shortsShown`
+ * beside the checkbox, so a save from a form without the checkbox never
+ * switches Shorts off.
+ */
+function ChannelShorts({ channel, action, room, active, getting, plan, posts, saved }: {
+  channel: Channel;
+  action: (form: FormData) => Promise<void>;
+  /** how many YouTube channels the plan makes Shorts for, and how many the account has that aren't disconnected */
+  room: number;
+  active: number;
+  /** the channels that get Shorts now */
+  getting: string[];
+  plan: string;
+  posts: boolean;
+  /** this channel's settings were just saved */
+  saved: boolean;
+}) {
+  if (!(room > 1 || active > room || !channel.shortsOn)) return null;
+  const beyond = channel.shortsOn && !getting.includes(channel.id);
+  return (
+    <div id={`channel-${channel.id}`} className="scroll-mt-40 border-t-2 border-edge px-4 py-4">
+      <form action={action} className="flex flex-col gap-4">
+        <input type="hidden" name="id" value={channel.id} />
+        <input type="hidden" name="shortsShown" value="1" />
+        <label className="flex items-start gap-3">
+          <input type="checkbox" name="shortsOn" defaultChecked={channel.shortsOn} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
+          <span className="flex flex-col gap-1">
+            <span className="text-[15px] font-semibold">Make Shorts for this channel</span>
+            <span className="max-w-2xl text-[13px] leading-relaxed text-muted">
+              Each day, in its own look, at its own best times. Off: no new ones. {uploadsTo(channel, posts) ? "Shorts you've kept still post." : "Shorts you've kept stay for you to post."}
+            </span>
+          </span>
+        </label>
+        {beyond && (
+          <p className="border-l-4 border-signal pl-3 text-[13px] leading-relaxed">
+            No new Shorts on {plan}.{" "}
+            {room === 1
+              ? "It makes Shorts for one channel, the first connected that's switched on. Switch that one off to give this one its place"
+              : `It makes Shorts for ${room} channels, the first connected that are switched on. Switch one of those off to give this one its place`}
+            {room < PLANS.creator.channels ? ", or move to Creator" : ""}.
+          </p>
+        )}
+        <div className="flex items-center gap-4">
+          <button type="submit" className={button.secondary}>Save</button>
+          {saved && <span role="status" className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Saved</span>}
+        </div>
+      </form>
+    </div>
+  );
+}
+
+/** One connected account: what it is, where it stands, and what can be done about it. */
+function AccountRow({ c, href, ready, disconnect }: { c: Listed; href: string; ready: boolean; disconnect?: (form: FormData) => Promise<void> }) {
+  const s = STATE[c.status];
+  const name = nameOf(c);
+  return (
+    <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t-2 border-edge bg-card-2 px-4 py-3">
+      <div className="min-w-0 flex-1 basis-48">
+        <p className="truncate text-[15px] font-semibold">{name}</p>
+        {c.handle && !name.includes(c.handle) && <p className="truncate font-mono text-[11px] text-muted">{c.handle}</p>}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-2">
+        <Pill tone={s.tone}>{c.status === "connected" && <Icons.check className="h-3 w-3" />} {s.label}</Pill>
+        {c.status !== "connected" && ready && (
+          <a href={href} className={connectButton}>{c.status === "revoked" ? "Connect again" : "Reconnect"}</a>
+        )}
+        {c.status !== "revoked" && disconnect && (
+          <form action={disconnect}>
+            <input type="hidden" name="id" value={c.id} />
+            <button type="submit" className={quietAction} aria-label={`Disconnect ${name}`}>Disconnect</button>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Every plan has one TikTok account: with others connected from before, which one Shorts go to (the first connected). */
+function oneTikTok(listed: Listed[]): string {
+  if (listed.length < 2) return "Hookline sends Shorts to one TikTok account.";
+  const posting = listed.find((c) => c.status === "connected") ?? listed[0];
+  return `Hookline sends Shorts to one TikTok account, ${nameOf(posting)}. The others stay connected, but Shorts don't go to them.`;
+}
+
 export function ConnectList({
   platforms,
   channels,
   ready,
   next,
+  room,
+  plan,
   disconnect,
+  settings,
+  getting = [],
+  saved,
   audience,
   youtubeApi = false,
   posts = false,
   tiktokProfile = false,
 }: {
   platforms: Platform[];
-  channels: Channel[];
+  /** the accounts to list, first connected first; a disconnected YouTube channel is listed as given, so pass one only while it has Shorts */
+  channels: Listed[];
   ready: Record<Platform, boolean>;
   next: string;
+  /** how many YouTube channels the plan has room for, and the plan's name */
+  room: number;
+  plan: string;
   disconnect?: (form: FormData) => Promise<void>;
+  /** saves a YouTube channel's own Shorts settings; without it, they aren't shown */
+  settings?: (form: FormData) => Promise<void>;
+  /** the YouTube channels that get Shorts now, and the one whose Shorts settings were just saved */
+  getting?: string[];
+  saved?: string;
   /** saves a YouTube channel's answers; without it, the question points to Settings */
   audience?: (form: FormData) => Promise<void>;
   /** Hookline posts to YouTube for everyone (its API audit has passed) */
@@ -151,12 +272,14 @@ export function ConnectList({
   /** TikTok tells Hookline the account's username, so a LIVE can be shown to be theirs */
   tiktokProfile?: boolean;
 }) {
+  const connectTo = (p: Platform, again?: string) => `/api/connect/${p}?next=${encodeURIComponent(next)}${again ? `&channel=${again}` : ""}`;
   return (
     <ul className="flex flex-col gap-3">
       {platforms.map((p) => {
         const mine = channels.filter((c) => c.platform === p);
-        const live = mine.find((c) => c.status === "connected");
-        const broken = mine.find((c) => c.status !== "connected");
+        // disconnected YouTube channels last, while they have Shorts; a TikTok that's gone is gone
+        const listed = [...mine.filter(isActive), ...(p === "youtube" ? mine.filter((c) => !isActive(c)) : [])];
+        const active = mine.filter(isActive).length;
         const why =
           p === "tiktok" ? (tiktokProfile ? ABOUT[p].why : ABOUT[p].whyNoProfile!) : !posts ? ABOUT[p].whySelf! : youtubeApi ? ABOUT[p].why : ABOUT[p].whyBeforeAudit!;
         return (
@@ -165,29 +288,52 @@ export function ConnectList({
               <PlatformMark platform={p} />
               <div className="min-w-0 flex-1">
                 <p className="font-display text-xl uppercase tracking-wide">{ABOUT[p].name}</p>
-                <p className="text-[14px] leading-snug text-muted">{live ? (live.title ?? live.handle ?? "Connected") : why}</p>
+                <p className="text-[14px] leading-snug text-muted">{why}</p>
               </div>
-              {live ? (
-                <div className="flex items-center gap-4">
-                  <Pill tone="good"><Icons.check className="h-3 w-3" /> Connected</Pill>
-                  {disconnect && (
-                    <form action={disconnect}>
-                      <input type="hidden" name="id" value={live.id} />
-                      <button type="submit" className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted underline-offset-4 hover:text-signal hover:underline">
-                        Disconnect
-                      </button>
-                    </form>
-                  )}
-                </div>
-              ) : ready[p] ? (
-                <a href={`/api/connect/${p}?next=${encodeURIComponent(next)}`} className="inline-flex items-center gap-2 border-2 border-fg px-4 py-2 font-display text-base uppercase tracking-wider transition hover:bg-fg hover:text-surface">
-                  {broken ? "Reconnect" : "Connect"}
-                </a>
-              ) : (
-                <Pill>Not set up yet</Pill>
-              )}
+              {listed.length === 0 && (ready[p] ? <a href={connectTo(p)} className={connectButton}>Connect</a> : <Pill>Not set up yet</Pill>)}
             </div>
-            {p === "youtube" && live && <Audience channel={live} action={audience} next={next} posts={posts} />}
+            {listed.map((c) => (
+              <div key={c.id}>
+                <AccountRow c={c} href={connectTo(p, c.id)} ready={ready[p]} disconnect={disconnect} />
+                {p === "youtube" && isActive(c) && (
+                  <>
+                    <Audience channel={c} action={audience} next={next} posts={posts} />
+                    {settings && <ChannelShorts channel={c} action={settings} room={room} active={active} getting={getting} plan={plan} posts={posts} saved={saved === c.id} />}
+                  </>
+                )}
+                {p === "youtube" && !isActive(c) && (
+                  <p className="border-t-2 border-edge px-4 py-3 text-[13px] leading-relaxed text-muted">
+                    Disconnected. Hookline can&rsquo;t post there or read it, and its figures are gone from Earnings. Its Shorts stay in your queue and library: post them yourself
+                    {posts && c.api ? ", or connect it again and they post to it" : ""}.
+                  </p>
+                )}
+              </div>
+            ))}
+            {p === "youtube" && listed.length > 0 && (
+              active < room && ready.youtube ? (
+                <div className="flex flex-wrap items-center gap-x-4 gap-y-3 border-t-2 border-edge px-4 py-4">
+                  <a href={connectTo("youtube")} className={connectButton}>{active ? "Add a channel" : "Connect"}</a>
+                  <p className="min-w-0 flex-1 basis-60 text-[13px] leading-relaxed text-muted">
+                    Each channel connects on its own. When Google asks, pick the account or Brand Account that owns it.{room > 1 ? ` ${active} of ${room} connected.` : ""}
+                  </p>
+                </div>
+              ) : room > 1 ? (
+                <p className="border-t-2 border-edge px-4 py-3 text-[13px] text-muted">{active} of {room} connected.</p>
+              ) : (
+                // where channels are looked after: a full one-channel plan says where more room is
+                settings && (
+                  <p className="border-t-2 border-edge px-4 py-3 text-[13px] leading-relaxed text-muted">
+                    Your plan has room for one channel. Creator makes Shorts for up to five.{" "}
+                    <a href="/app/settings/billing" className="text-fg underline decoration-signal decoration-2 underline-offset-4">See Creator</a>
+                  </p>
+                )
+              )
+            )}
+            {p === "tiktok" && listed.length > 0 && (
+              <p className="border-t-2 border-edge px-4 py-3 text-[13px] leading-relaxed text-muted">
+                {oneTikTok(listed)}
+              </p>
+            )}
           </li>
         );
       })}

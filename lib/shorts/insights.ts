@@ -1,7 +1,7 @@
 import { ABILITIES } from "../battle/abilities";
 import type { AbilityId } from "../battle/abilities";
 import { FORMATS } from "./formats";
-import { odds, steady, type Weight } from "./learn";
+import { alone, odds, type Weight } from "./learn";
 import { FORMAT_IDS, type FormatId } from "./types";
 
 /**
@@ -31,7 +31,10 @@ export function kindName(group: string): string | null {
   return null;
 }
 
-/** A kind only stands out after a few results, and when its steady score is clearly above or below usual. */
+/**
+ * A kind only stands out after a few results, and when its steady score is clearly above or below usual: by its own
+ * results, since those are what's shown, never by what a channel's other channels found.
+ */
 const STANDS_OUT = 1.15;
 
 export function insights(weights: Weight[]): Insights {
@@ -41,7 +44,7 @@ export function insights(weights: Weight[]): Insights {
     return { format: f, name: FORMATS[f].name, plural: FORMATS[f].plural, score: w?.score ?? 1, samples: w?.samples ?? 0, share: share[f] };
   }).sort((a, b) => Number(b.samples > 0) - Number(a.samples > 0) || b.score - a.score);
   const kinds = weights
-    .filter((w) => w.kind === "key" && w.samples >= 3 && (steady(w) >= STANDS_OUT || steady(w) <= 1 / STANDS_OUT))
+    .filter((w) => w.kind === "key" && w.samples >= 3 && (alone(w) >= STANDS_OUT || alone(w) <= 1 / STANDS_OUT))
     .map((w) => ({ group: w.name, name: kindName(w.name), score: w.score, samples: w.samples }))
     .filter((k): k is KindInsight => k.name !== null)
     .sort((a, b) => b.score - a.score);

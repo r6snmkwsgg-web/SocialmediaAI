@@ -22,9 +22,12 @@ export class TikTokError extends Error {
   get retry(): boolean {
     return this.status >= 500 || this.status === 429 || this.code === "rate_limit_exceeded";
   }
-  /** TikTok's daily cap on creators for an app under review is full: worth trying again tomorrow, not giving up on */
+  /**
+   * A daily cap is full, TikTok's on creators for an app under review or
+   * the account's own on posts: worth trying again tomorrow, not giving up on
+   */
   get tomorrow(): boolean {
-    return this.code === "reached_active_user_cap";
+    return this.code === "reached_active_user_cap" || this.code === "spam_risk_too_many_posts";
   }
 }
 

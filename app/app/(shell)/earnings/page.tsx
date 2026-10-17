@@ -1,11 +1,12 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ChannelFilter } from "@/components/app/channel-filter";
 import { ConnectList } from "@/components/app/connect";
 import { DailyBars, say } from "@/components/app/daily-bars";
 import { button, Card, CardHead, Empty, PageHead } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
-import { earningsOf, hasStripe, LIVE_COINS } from "@/lib/server/earnings";
+import { earningsOf, hasStripe, LIVE_COINS, type EarningsChannel, type Series } from "@/lib/server/earnings";
 import { configured } from "@/lib/server/env";
 import { addGoal, removeGoal, stripeConnect, stripeDisconnect } from "./actions";
 
@@ -23,15 +24,56 @@ const field = "border-2 border-edge-strong bg-surface px-3 py-2 text-[15px] text
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
+/**
+ * What the totals of several channels leave out, said plainly: they're
+ * added up only as far as every channel has reported, a channel added
+ * later counts from its first report, and one that needs reconnecting
+ * stops at its last.
+ */
+function channelNotes(channels: EarningsChannel[], series: Series[]): string[] {
+  const shown = (["youtube", "tiktok"] as const).flatMap((p) => {
+    const start = series.find((s) => s.source === p)?.points[0]?.day;
+    return start ? [{ start, mine: channels.filter((c) => c.platform === p) }] : [];
+  });
+  const several = shown.some((x) => x.mine.length > 1);
+  const notes = shown.flatMap(({ start, mine }) => {
+    // later than the chart starts, and than the channel whose figures go back furthest
+    const first = mine.map((c) => c.from ?? start).sort()[0];
+    const later = mine.length > 1 ? mine.filter((c) => c.from && c.from > start && c.from > first).map((c) => `${c.name}'s figures start on ${shortDay(c.from!)}.`) : [];
+    const stopped = mine.filter((c) => c.expired && c.through).map((c) => `${c.name} needs reconnecting: its figures stop on ${shortDay(c.through!)}.`);
+    return [...later, ...stopped];
+  });
+  return several ? ["Adds up your channels. Each day shows once every channel Hookline was reading then has reported it.", ...notes] : notes;
+}
+
+/** What's the account's as a whole, so it shows only with all its channels. */
+const ACCOUNT_WIDE: Partial<Record<Series["source"], string>> = { tiktok: "TikTok views", live: "gift coins seen on your LIVEs", stripe: "Stripe sales" };
+
+const listed = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+
 export default async function Earnings({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
   const days = q.days === "90" ? 90 : 30;
-  const [{ series, goals, unverified }, channels, stripe] = await Promise.all([earningsOf(me.id, days), channelsOf(me.id), hasStripe(me.id)]);
+  const [all, channels, stripe] = await Promise.all([earningsOf(me.id, days), channelsOf(me.id), hasStripe(me.id)]);
+  // with more than one YouTube channel with figures, one can be picked to see its own (anything else means all of them)
+  const youtube = all.channels.filter((x) => x.platform === "youtube");
+  const picked = youtube.length > 1 ? (youtube.find((x) => x.id === q.channel) ?? null) : null;
+  const { series, goals, unverified } = picked ? await earningsOf(me.id, days, picked.id) : all;
   const hasLive = series.some((s) => s.source === "live");
   const c = configured();
   const has = (p: "youtube" | "tiktok") => channels.some((x) => x.platform === p && x.status === "connected");
   const note = typeof q.error === "string" ? NOTES[q.error] : q.stripe === "1" ? { text: "Stripe is connected. Your sales show up below once they've synced." } : undefined;
+  // the account's own figures, which one channel on its own leaves out
+  const elsewhere = [...new Set(all.series.map((s) => ACCOUNT_WIDE[s.source]).filter((s): s is string => !!s))];
+  // all the channels added up: how, and where one's figures start later or stop; or one channel's, and where it stops
+  const notes = picked
+    ? [
+        ...(picked.expired && picked.through ? [`${picked.name} needs reconnecting: its figures stop on ${shortDay(picked.through)}.`] : []),
+        ...(elsewhere.length ? [`Your ${listed(elsewhere)} show under All channels.`] : []),
+      ]
+    : channelNotes(all.channels, series);
+  const allHref = `/app/earnings${days === 90 ? "?days=90" : ""}`;
 
   return (
     <>
@@ -42,19 +84,32 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
         action={
           <div role="group" aria-label="Period" className="flex border-2 border-fg">
             {[30, 90].map((d) => (
-              <Link key={d} href={`/app/earnings?days=${d}`} aria-current={days === d ? "true" : undefined} className={`px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] ${days === d ? "bg-fg text-surface" : "text-muted hover:text-fg"}`}>
+              <Link
+                key={d}
+                href={`/app/earnings?days=${d}${picked ? `&channel=${picked.id}` : ""}`}
+                aria-current={days === d ? "true" : undefined}
+                className={`px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.14em] ${days === d ? "bg-fg text-surface" : "text-muted hover:text-fg"}`}
+              >
                 {d} days
               </Link>
             ))}
           </div>
         }
       />
+      {youtube.length > 1 && (
+        <ChannelFilter
+          channels={youtube.map((x) => ({ id: x.id, name: x.name, status: x.expired ? "expired" : "connected" }))}
+          picked={picked?.id ?? null}
+          path="/app/earnings"
+          keep={{ days: days === 90 ? "90" : null }}
+        />
+      )}
       {note && <p role={note.bad ? "alert" : "status"} className={`mb-6 border-2 px-4 py-3 text-[15px] ${note.bad ? "border-signal" : "border-fg bg-card"}`}>{note.text}</p>}
 
       <Card className="mb-8">
         <CardHead title="Goals" />
         <div className="flex flex-col gap-5 px-5 py-5">
-          {goals.length === 0 && <p className="text-[14px] text-muted">A number to aim for, tracked from your real figures. Set one below.</p>}
+          {goals.length === 0 && !picked && <p className="text-[14px] text-muted">A number to aim for, tracked from your real figures. Set one below.</p>}
           {goals.map((g) => {
             const share = Math.min(1, g.progress / g.target);
             return (
@@ -77,7 +132,13 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
               </div>
             );
           })}
-          {series.length > 0 && (
+          {/* goals count every channel, so they're set with all of them shown */}
+          {picked && (
+            <p className={`text-[14px] text-muted ${goals.length ? "border-t-2 border-edge pt-5" : ""}`}>
+              Goals count all your channels. <Link href={allHref} className="text-fg underline decoration-signal decoration-2 underline-offset-4">Pick All channels</Link> to set one.
+            </p>
+          )}
+          {series.length > 0 && !picked && (
             <form action={addGoal} className="flex flex-wrap items-end gap-3 border-t-2 border-edge pt-5">
               <label className="flex flex-col gap-1.5">
                 <span className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">Count</span>
@@ -102,6 +163,12 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
         </div>
       </Card>
 
+      {notes.length > 0 && (
+        <div className="mb-6 flex flex-col gap-1 border-l-4 border-edge-strong pl-3 text-[13px] leading-relaxed text-muted">
+          {notes.map((t) => <p key={t}>{t}</p>)}
+        </div>
+      )}
+
       {series.length === 0 ? (
         <Empty
           title="Nothing connected yet"
@@ -116,7 +183,9 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                 <p className="mt-1 font-display text-4xl leading-none tabular-nums">{say(s.total, s.unit, s.currency)}</p>
                 <p className="mt-1 text-[12px] text-muted">Last {days} days{s.note ? ` · ${s.note}` : ""}</p>
                 {s.through && s.through < s.points[s.points.length - 1].day && (
-                  <p className="mt-0.5 text-[12px] text-muted">Reported up to {shortDay(s.through)}. YouTube adds the days after that later.</p>
+                  <p className="mt-0.5 text-[12px] text-muted">
+                    Reported up to {shortDay(s.through)}. {picked?.expired ? "Nothing more comes until it's reconnected." : "YouTube adds the days after that later."}
+                  </p>
                 )}
                 {s.from && s.from > s.points[0].day && (
                   <p className="mt-0.5 text-[12px] text-muted">Figures start {shortDay(s.from)}, as far back as Stripe was read when you connected it.</p>
@@ -128,57 +197,70 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
         </ul>
       )}
 
-      <div className="mt-10 grid gap-6 lg:grid-cols-2">
-        {(!has("youtube") || !has("tiktok")) && (
-          <Card>
-            <CardHead title="Add your channels" />
-            <div className="px-5 py-5">
-              <ConnectList platforms={(["youtube", "tiktok"] as const).filter((p) => !has(p))} channels={channels} ready={{ youtube: c.youtube, tiktok: c.tiktok }} next="/app/earnings" youtubeApi={c.youtubeAudited} posts={me.plan.scheduling} tiktokProfile={c.tiktokProfile} />
-              <p className="mt-3 text-[12px] leading-relaxed text-muted">YouTube gives views, subscribers and, for channels in the Partner Program, YouTube&rsquo;s estimate of revenue. TikTok gives views; it doesn&rsquo;t share earnings with apps.</p>
-            </div>
-          </Card>
-        )}
-        <Card>
-          <CardHead title="Sales through Stripe" />
-          <div className="flex flex-col gap-3 px-5 py-5 text-[14px]">
-            {stripe ? (
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <span>Connected with a read-only key.</span>
-                <form action={stripeDisconnect}><button type="submit" className={button.quiet}>Disconnect</button></form>
+      {/* connecting, Stripe and the LIVE coins are the account's as a whole, so they show with all its channels */}
+      {!picked && (
+        <div className="mt-10 grid gap-6 lg:grid-cols-2">
+          {(!has("youtube") || !has("tiktok")) && (
+            <Card>
+              <CardHead title="Add your channels" />
+              <div className="px-5 py-5">
+                <ConnectList
+                  platforms={(["youtube", "tiktok"] as const).filter((p) => !has(p))}
+                  channels={channels}
+                  ready={{ youtube: c.youtube, tiktok: c.tiktok }}
+                  next="/app/earnings"
+                  room={me.plan.channels}
+                  plan={me.plan.name}
+                  youtubeApi={c.youtubeAudited}
+                  posts={me.plan.scheduling}
+                  tiktokProfile={c.tiktokProfile}
+                />
+                <p className="mt-3 text-[12px] leading-relaxed text-muted">YouTube gives views, subscribers and, for channels in the Partner Program, YouTube&rsquo;s estimate of revenue. TikTok gives views; it doesn&rsquo;t share earnings with apps.</p>
               </div>
-            ) : (
-              <>
-                <p className="leading-relaxed text-muted">
-                  Sell something? Add a Stripe <b className="text-fg">restricted key</b> that can only read balance transactions, and your sales show up here. In Stripe: Developers, API keys, Create restricted key.
-                </p>
-                <form action={stripeConnect} className="flex flex-wrap gap-2">
-                  <label className="sr-only" htmlFor="rk">Restricted key</label>
-                  <input id="rk" name="key" placeholder="rk_live_…" autoComplete="off" spellCheck={false} className={`${field} min-w-0 flex-1 font-mono text-[13px]`} />
-                  <button type="submit" className={button.secondary}>Connect</button>
-                </form>
-                <p className="text-[12px] text-muted">It&rsquo;s stored encrypted and only ever used to read.</p>
-              </>
-            )}
-          </div>
-        </Card>
-        {(!hasLive || unverified.lives > 0) && (
+            </Card>
+          )}
           <Card>
-            <CardHead title={LIVE_COINS} />
-            <div className="flex flex-col gap-3 px-5 py-5 text-[14px] leading-relaxed text-muted">
-              {unverified.lives > 0 && (
-                <p className="border-l-2 border-signal pl-3 text-fg/80">
-                  Not counted: {unverified.coins.toLocaleString("en-US")} gift coins seen on {unverified.lives} LIVE{unverified.lives === 1 ? "" : "s"} in the last {days} days that {unverified.lives === 1 ? "wasn't" : "weren't"} verified as yours. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">See why</Link>
-                </p>
-              )}
-              {!hasLive && (
-                <p>
-                  Play the game on your own TikTok LIVE, through your game address and Hookline Bridge, and the gift coins it sees show up here. They&rsquo;re what viewers sent, not what TikTok pays you. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Set it up</Link>
-                </p>
+            <CardHead title="Sales through Stripe" />
+            <div className="flex flex-col gap-3 px-5 py-5 text-[14px]">
+              {stripe ? (
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <span>Connected with a read-only key.</span>
+                  <form action={stripeDisconnect}><button type="submit" className={button.quiet}>Disconnect</button></form>
+                </div>
+              ) : (
+                <>
+                  <p className="leading-relaxed text-muted">
+                    Sell something? Add a Stripe <b className="text-fg">restricted key</b> that can only read balance transactions, and your sales show up here. In Stripe: Developers, API keys, Create restricted key.
+                  </p>
+                  <form action={stripeConnect} className="flex flex-wrap gap-2">
+                    <label className="sr-only" htmlFor="rk">Restricted key</label>
+                    <input id="rk" name="key" placeholder="rk_live_…" autoComplete="off" spellCheck={false} className={`${field} min-w-0 flex-1 font-mono text-[13px]`} />
+                    <button type="submit" className={button.secondary}>Connect</button>
+                  </form>
+                  <p className="text-[12px] text-muted">It&rsquo;s stored encrypted and only ever used to read.</p>
+                </>
               )}
             </div>
           </Card>
-        )}
-      </div>
+          {(!hasLive || unverified.lives > 0) && (
+            <Card>
+              <CardHead title={LIVE_COINS} />
+              <div className="flex flex-col gap-3 px-5 py-5 text-[14px] leading-relaxed text-muted">
+                {unverified.lives > 0 && (
+                  <p className="border-l-2 border-signal pl-3 text-fg/80">
+                    Not counted: {unverified.coins.toLocaleString("en-US")} gift coins seen on {unverified.lives} LIVE{unverified.lives === 1 ? "" : "s"} in the last {days} days that {unverified.lives === 1 ? "wasn't" : "weren't"} verified as yours. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">See why</Link>
+                  </p>
+                )}
+                {!hasLive && (
+                  <p>
+                    Play the game on your own TikTok LIVE, through your game address and Hookline Bridge, and the gift coins it sees show up here. They&rsquo;re what viewers sent, not what TikTok pays you. <Link href="/app/live" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Set it up</Link>
+                  </p>
+                )}
+              </div>
+            </Card>
+          )}
+        </div>
+      )}
     </>
   );
 }

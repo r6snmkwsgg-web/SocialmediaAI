@@ -178,7 +178,8 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   it("disconnecting a channel takes its tokens with it", async () => {
-    await db.asUser(B, (tx) => tx`delete from public.channels`);
+    const [mine] = await db.admin((tx) => tx<{ id: string }[]>`select id from public.channels where user_id = ${B}`);
+    await (await import("@/lib/server/channels")).disconnectChannel(B, mine.id);
     const left = await db.admin((tx) => tx<{ n: number }[]>`select count(*)::int as n from public.channel_tokens t join public.channels c on c.id = t.channel_id where c.user_id = ${B}`);
     expect(left[0].n).toBe(0);
     const all = await db.admin((tx) => tx<{ n: number }[]>`select count(*)::int as n from public.channel_tokens`);
@@ -269,7 +270,7 @@ describe.skipIf(!safe)("the database", () => {
     await expect(db.asUser(A, (tx) => tx`insert into public.tiktok_usernames (channel_id, user_id, username) values (${ch.id}, ${A}, 'a.streams')`)).rejects.toThrow(/permission denied/);
     await expect(db.asUser(E, (tx) => tx`update public.tiktok_usernames set username = 'famous.one'`)).rejects.toThrow(/permission denied/);
     // disconnecting TikTok takes its username with it
-    await db.asUser(E, (tx) => tx`delete from public.channels where id = ${ch.id}`);
+    await (await import("@/lib/server/channels")).disconnectChannel(E, ch.id);
     expect(await live.tiktokUsernamesOf(E)).toEqual([]);
   });
 
@@ -610,19 +611,19 @@ describe.skipIf(!safe)("the database", () => {
     expect(like).toMatchObject({ made: 0, short: "dry" });
     expect(like.note).toMatch(/no new would-you-rathers left/);
     // but everything else can still be made, so the queue and the bell don't say there's nothing new at all
-    expect(await gen.shortsNoteOf(G)).toBeNull();
+    expect(await gen.shortsNoteOf({ userId: G, channelId: null })).toBeNull();
     expect(await toldOf()).toHaveLength(0);
     // when a day's Shorts couldn't all be made, the queue says why and the bell says it once, however often it's tried
     const at = new Date();
-    await gen.noteDry(G, null, like.note, at);
-    await gen.noteDry(G, at, like.note, new Date(at.getTime() + 60_000));
-    expect(await gen.shortsNoteOf(G)).toBe(like.note);
+    await gen.noteDry({ userId: G, channelId: null }, null, like.note, at);
+    await gen.noteDry({ userId: G, channelId: null }, at, like.note, new Date(at.getTime() + 60_000));
+    expect(await gen.shortsNoteOf({ userId: G, channelId: null })).toBe(like.note);
     const told = await toldOf();
     expect(told).toHaveLength(1);
     expect(told[0].body).toBe(like.note);
     // a day's Short made in full (from the formats that have something), and then there's nothing to say
     expect(await gen.makeShorts(G, { origin: "daily", count: 1 })).toBe(1);
-    expect(await gen.shortsNoteOf(G)).toBeNull();
+    expect(await gen.shortsNoteOf({ userId: G, channelId: null })).toBeNull();
   });
 
   it("makes text stories only once the creator turns them on, even like a rising one", async () => {
@@ -641,11 +642,11 @@ describe.skipIf(!safe)("the database", () => {
     })!;
     const [{ id: K }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values ('k@test.local') returning id`);
     await db.admin((tx) => tx`update public.profiles set timezone = ${zone}, onboarded_at = now(), goal = 'shorts' where id = ${K}`);
-    expect(await gen.dueForShorts(new Date(), 100)).toContain(K);
+    expect((await gen.dueForShorts(new Date(), 100)).map((u) => u.userId)).toContain(K);
     expect(await gen.runDailyShorts(new Date(), 100, -1)).toEqual([]);
     const log = await gen.runDailyShorts(new Date(), 100);
     expect(log).toContain(`${K}: 3 made`);
-    expect(await gen.dueForShorts(new Date(), 100)).not.toContain(K);
+    expect((await gen.dueForShorts(new Date(), 100)).map((u) => u.userId)).not.toContain(K);
   }, 30_000);
 
   it("shows each account its own earnings, day by day, and its goals' progress", async () => {
@@ -718,23 +719,23 @@ describe.skipIf(!safe)("the database", () => {
     expect(runs.filter((r) => r.user_id !== N).every((r) => r.outcome === "allowance" && r.tried_at.getTime() === now.getTime())).toBe(true);
     expect(runs.find((r) => r.user_id === N)?.outcome).toBe("made");
     // nobody tried today comes back today
-    const later = await gen.dueForShorts(new Date(now.getTime() + 3 * 3600_000), 100);
+    const later = (await gen.dueForShorts(new Date(now.getTime() + 3 * 3600_000), 100)).map((u) => u.userId);
     expect(later.filter((id) => capped.includes(id) || id === N)).toEqual([]);
 
     // tomorrow everyone's due again, longest waiting first
     const tomorrow = new Date(now.getTime() + 86400_000);
     await db.admin((tx) => tx`update public.shorts_runs set tried_at = tried_at - interval '1 day' where user_id = ${capped[31]}`);
-    const due = await gen.dueForShorts(tomorrow, 100);
+    const due = (await gen.dueForShorts(tomorrow, 100)).map((u) => u.userId);
     expect(due[0]).toBe(capped[31]);
     expect(capped.every((id) => due.includes(id)) && due.includes(N)).toBe(true);
 
     // a try that went wrong is tried again after an hour, not every few minutes
     await db.admin((tx) => tx`delete from public.shorts_runs where user_id = ${capped[0]}`);
     unreadable.add(capped[0]);
-    expect(await gen.tryDaily(capped[0], now)).toMatch(/failed: Stripe is down/);
+    expect(await gen.tryDaily({ userId: capped[0], channelId: null }, now)).toMatch(/failed: Stripe is down/);
     unreadable.delete(capped[0]);
-    expect(await gen.dueForShorts(new Date(now.getTime() + 30 * 60_000), 100)).not.toContain(capped[0]);
-    expect(await gen.dueForShorts(new Date(now.getTime() + 61 * 60_000), 100)).toContain(capped[0]);
+    expect((await gen.dueForShorts(new Date(now.getTime() + 30 * 60_000), 100)).map((u) => u.userId)).not.toContain(capped[0]);
+    expect((await gen.dueForShorts(new Date(now.getTime() + 61 * 60_000), 100)).map((u) => u.userId)).toContain(capped[0]);
 
     // people can read their own tries, not anyone else's, and can't write them
     expect(await db.asUser(N, (tx) => tx`select user_id from public.shorts_runs`)).toEqual([{ user_id: N }]);
@@ -749,7 +750,7 @@ describe.skipIf(!safe)("the database", () => {
     const day0 = new Date();
     day0.setUTCHours(6, 3, 0, 0);
     const at = (days: number, minutes = 0) => new Date(day0.getTime() + days * 86400_000 + minutes * 60_000);
-    const tick = async (t: Date) => ((await gen.dueForShorts(t, 100000)).includes(F) ? gen.tryDaily(F, t) : null);
+    const tick = async (t: Date) => ((await gen.dueForShorts(t, 100000)).some((u) => u.userId === F) ? gen.tryDaily({ userId: F, channelId: null }, t) : null);
 
     expect(await tick(at(0))).toBe(`${F}: 3 made`);
     // the run's Shorts are stamped a few seconds after its tick, as they are for real
@@ -780,9 +781,9 @@ describe.skipIf(!safe)("the database", () => {
     const [{ id: L }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values ('last@test.local') returning id`);
     // a timezone the database doesn't know counts as UTC, as it does everywhere else
     await db.admin((tx) => tx`update public.profiles set timezone = 'Not/AZone', goal = 'shorts', onboarded_at = now() where id = ${L}`);
-    expect(await gen.dueForShorts(now, 25)).toContain(L);
+    expect((await gen.dueForShorts(now, 25)).map((u) => u.userId)).toContain(L);
     // before 6am where they are, nobody's due
-    expect(await gen.dueForShorts(new Date(now.getTime() - 7 * 3600_000), 25)).not.toContain(L);
+    expect((await gen.dueForShorts(new Date(now.getTime() - 7 * 3600_000), 25)).map((u) => u.userId)).not.toContain(L);
     await db.admin((tx) => tx`delete from auth.users where email like 'many%@test.local' or id = ${L}`);
   });
 
@@ -817,8 +818,8 @@ describe.skipIf(!safe)("the database", () => {
       const [ch] = await tx<{ id: string }[]>`insert into public.channels (user_id, platform, external_id, made_for_kids) values (${Q}, 'youtube', ${TEST_CHANNEL}, false) returning id`;
       await tx`insert into public.channel_tokens (channel_id, access_token) values (${ch.id}, 'sealed')`;
       return tx<{ id: string }[]>`
-        insert into public.videos (user_id, format, params, key, title, status, file_path, scheduled_for, decided_at)
-        select ${Q}, 'wyr', '{"pairs":[]}', 'wyr', 'Held ' || g, 'ready', 'q/' || g || '.mp4', now() + make_interval(days => 2 + g), now()
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, file_path, scheduled_for, decided_at)
+        select ${Q}, ${ch.id}, 'wyr', '{"pairs":[]}', 'wyr', 'Held ' || g, 'ready', 'q/' || g || '.mp4', now() + make_interval(days => 2 + g), now()
         from generate_series(1, 2) g returning id`;
     });
     onTestFinished(() => void upload.mockReset());
@@ -851,8 +852,9 @@ describe.skipIf(!safe)("the database", () => {
 
     // held for quota, then after the reset the channel's access has gone: it shows that, not the quota
     const [again] = await db.admin((tx) => tx<{ id: string }[]>`
-      insert into public.videos (user_id, format, params, key, title, status, file_path, scheduled_for, decided_at, waiting_on, waiting_until)
-      values (${Q}, 'wyr', '{"pairs":[]}', 'wyr', 'Held again', 'ready', 'q/3.mp4', now() + interval '3 days', now(), 'youtube_quota', ${until})
+      insert into public.videos (user_id, channel_id, format, params, key, title, status, file_path, scheduled_for, decided_at, waiting_on, waiting_until)
+      select ${Q}, id, 'wyr', '{"pairs":[]}', 'wyr', 'Held again', 'ready', 'q/3.mp4', now() + interval '3 days', now(), 'youtube_quota', ${until}
+      from public.channels where user_id = ${Q}
       returning id`);
     upload.mockReset();
     upload.mockImplementation(async () => {
@@ -977,10 +979,11 @@ describe.skipIf(!safe)("the database", () => {
       clean_path: string | null; channel_id: string | null; youtube_id: string | null; youtube_verified: boolean; tiktok_post: object | null; tiktok_at: Date | null; description: string;
       youtube_status: string | null; youtube_wanted: string | null; youtube_publish_at: Date | null; made_for_kids: boolean | null;
     };
-    /** A Short as the server would have left it (so past the guard on what YouTube said) */
+    /** A Short as the server would have left it (so past the guard on what YouTube said), made for its owner's YouTube channel unless it says otherwise */
     const video = async (over: Partial<Video> & { user_id: string }) => {
+      const [own] = await db.admin((tx) => tx<{ id: string }[]>`select id from public.channels where user_id = ${over.user_id} and platform = 'youtube' order by added_at, id limit 1`);
       const v: Video = {
-        status: "ready", params: { pairs: [] }, decided_at: null, scheduled_for: null, uploaded_at: null, file_path: null, clean_path: null, channel_id: null,
+        status: "ready", params: { pairs: [] }, decided_at: null, scheduled_for: null, uploaded_at: null, file_path: null, clean_path: null, channel_id: own?.id ?? null,
         youtube_id: null, youtube_verified: false, tiktok_post: null, tiktok_at: null, description: "Pick one. #shorts #wyr",
         youtube_status: null, youtube_wanted: null, youtube_publish_at: null, made_for_kids: null, ...over,
       };
@@ -1205,12 +1208,12 @@ describe.skipIf(!safe)("the database", () => {
       const choices = { privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false };
       const due = { user_id: E, decided_at: new Date(), file_path: `${E}/t.mp4`, tiktok_post: choices, tiktok_at: new Date(Date.now() - 60_000), description: "Pick one. #shorts #wyr" };
       const first = await video({ ...due, clean_path: `${E}/t-clean.mp4` });
-      let full = false;
+      let full: string | null = null;
       const sent: { title?: string; bytes?: string } = {};
       stubFetch((u, init) => {
         if (u.endsWith("/post/publish/creator_info/query/")) return { data: { creator_nickname: "e", privacy_level_options: ["SELF_ONLY"], max_video_post_duration_sec: 600 }, error: { code: "ok" } };
         if (u.endsWith("/post/publish/video/init/")) {
-          if (full) return new Response(JSON.stringify({ error: { code: "reached_active_user_cap", message: "cap" } }), { status: 403 });
+          if (full) return new Response(JSON.stringify({ error: { code: full, message: "cap" } }), { status: 403 });
           sent.title = (JSON.parse(String(init?.body)) as { post_info: { title: string } }).post_info.title;
           return { data: { publish_id: "pub-1", upload_url: "https://tiktok.test/up" }, error: { code: "ok" } };
         }
@@ -1225,7 +1228,7 @@ describe.skipIf(!safe)("the database", () => {
       expect(sent.bytes).toBe("CLEAN");
       expect(sent.title).toBe("Would you rather\n\nPick one. #wyr");
 
-      full = true;
+      full = "reached_active_user_cap";
       const second = await video({ ...due, clean_path: `${E}/t-clean.mp4` });
       const before = Date.now();
       await post.postDue();
@@ -1233,10 +1236,20 @@ describe.skipIf(!safe)("the database", () => {
       expect(r).toMatchObject({ tiktok_publish_id: null, tiktok_error: null, posting_at: null });
       expect((r.tiktok_at as Date).getTime()).toBeGreaterThan(before + 23 * 3600_000);
       expect((await (await import("@/lib/server/notify")).notificationsOf(E)).items.some((n) => n.title === "TikTok is full for today")).toBe(true);
+      // the account's own daily limit being full goes tomorrow too, rather than waiting for the creator
+      full = "spam_risk_too_many_posts";
+      const capped = await video({ ...due, clean_path: `${E}/t-clean.mp4` });
+      await post.postDue();
+      const c = await row(capped);
+      expect(c).toMatchObject({ tiktok_publish_id: null, tiktok_error: null, posting_at: null });
+      expect((c.tiktok_at as Date).getTime()).toBeGreaterThan(before + 23 * 3600_000);
+      expect((await (await import("@/lib/server/notify")).notificationsOf(E)).items.find((n) => n.href === `/app/shorts/${capped}`)).toMatchObject({
+        title: "TikTok is full for today", body: "Would you rather: TikTok's daily limit for this account is full. It goes at the same time tomorrow.",
+      });
 
       // one made before TikTok was connected waits for its copy without the tag
       const third = await video(due);
-      full = false;
+      full = null;
       await post.postDue();
       expect(await row(third)).toMatchObject({ tiktok_publish_id: null });
       const jobs = await db.admin((tx) => tx<{ clean: boolean }[]>`select clean from public.render_jobs where video_id = ${third}`);
@@ -1289,7 +1302,7 @@ describe.skipIf(!safe)("the database", () => {
       const seen = await video({ ...up, channel_id: L.channel, youtube_id: "lostpublic1" });
       const unseen = await video({ ...up, channel_id: L.channel, youtube_id: "lostunseen1" });
       // its channel was disconnected, and there's no other
-      const orphan = await video({ ...up, youtube_id: "orphanvide1" });
+      const orphan = await video({ ...up, channel_id: null, youtube_id: "orphanvide1" });
       const calls = stubFetch((u) => {
         const ids = new URL(u).searchParams.get("id")!.split(",");
         return { items: ids.filter((id) => id === "lostpublic1").map((id) => ({ id, snippet: { channelId: "UClchannel" }, status: { uploadStatus: "processed", privacyStatus: "public" } })) };
@@ -1317,7 +1330,7 @@ describe.skipIf(!safe)("the database", () => {
 
       // disconnected, with another channel connected: that one can't see the first one's private videos, so missing isn't "deleted"
       const N = await someone("truth-n@test.local", { external_id: "UCnchannel", made_for_kids: false });
-      const elsewhere = await video({ ...up, user_id: N.user, youtube_id: "elsewhere01" });
+      const elsewhere = await video({ ...up, user_id: N.user, channel_id: null, youtube_id: "elsewhere01" });
       const asked = stubFetch(() => ({ items: [] }));
       await post.confirmYouTube();
       const asN = asked.filter((c) => new URL(c.url).searchParams.get("id") === "elsewhere01");
@@ -1401,6 +1414,1022 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: channels
+  describe("channels: a Short for each channel", () => {
+    let channels: typeof import("@/lib/server/channels");
+    let store: typeof import("@/lib/server/channels-store");
+    let ledger: typeof import("@/lib/server/shorts/ledger");
+    let plans: typeof import("@/lib/billing/plans").PLANS;
+    let seal: (s: string) => string;
+    /** everyone these tests make, deleted at the end */
+    const made: string[] = [];
+    // every job runs at the morning run's tick: 6:05 this morning, in UTC where these accounts are
+    const now = new Date();
+    now.setUTCHours(6, 5, 0, 0);
+    const today = now.toISOString().slice(0, 10);
+
+    /**
+     * Someone new on a plan, onboarded for Shorts in UTC, with YouTube
+     * channels Hookline holds tokens for, connected a day apart in the order
+     * given, each answered as not made for kids unless it says otherwise.
+     * Each channel's access token is `ya29.<email>.<n>`.
+     */
+    type Has = { title?: string; status?: string; shortsOn?: boolean; external?: string; madeForKids?: boolean | null };
+    const someone = async (plan: "free" | "pro" | "creator", youtube: Has[] = []) => {
+      const email = `w2-channels-${made.length + 1}@test.local`;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      made.push(user);
+      await db.admin(async (tx) => {
+        await tx`update public.profiles set timezone = 'UTC', goal = 'shorts', onboarded_at = now() - interval '30 days' where id = ${user}`;
+        if (plan !== "free") await tx`insert into public.subscriptions (user_id, plan, status) values (${user}, ${plan}, 'active')`;
+      });
+      const ids: string[] = [];
+      const externals: string[] = [];
+      for (const [i, c] of youtube.entries()) {
+        const external = c.external ?? `UCw2ch${made.length}n${i}`;
+        const added = new Date(Date.UTC(2026, 0, 1 + i));
+        const [ch] = await db.admin((tx) => tx<{ id: string }[]>`
+          insert into public.channels (user_id, platform, external_id, title, status, shorts_on, made_for_kids, connected_at, added_at)
+          values (${user}, 'youtube', ${external}, ${c.title ?? `Channel ${i + 1}`}, ${c.status ?? "connected"}, ${c.shortsOn ?? true},
+            ${c.madeForKids === undefined ? false : c.madeForKids}, ${added}, ${added})
+          returning id`);
+        await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at) values (${ch.id}, ${seal(`ya29.${email}.${i}`)}, now() + interval '1 hour')`);
+        ids.push(ch.id);
+        externals.push(external);
+      }
+      return { user, email, channels: ids, externals };
+    };
+
+    /** Posted Shorts on a channel, each with its first day's views read on time. */
+    const posted = async (user: string, channel: string, views: number[]) => {
+      const vids = await db.admin((tx) => tx<{ id: string; posted_at: Date }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, posted_at, youtube_id, youtube_verified)
+        select ${user}, ${channel}, 'quiz', '{"questions":[]}', 'quiz:capitals', 'Quiz ' || g, 'posted', now() - interval '4 days',
+          now() - interval '4 days' + make_interval(mins => g), ${`yt${channel.slice(0, 8)}`} || g, true
+        from generate_series(1, ${views.length}) g order by g returning id, posted_at`);
+      for (const [i, v] of vids.entries()) {
+        await db.admin((tx) => tx`insert into public.video_stats (video_id, checkpoint, views, fetched_at) values (${v.id}, '24h', ${views[i]}, ${new Date(v.posted_at.getTime() + 24 * 3600_000)})`);
+      }
+      return vids.map((v) => v.id);
+    };
+
+    const videosOf = (user: string) => db.admin((tx) => tx<{ id: string; title: string; channel_id: string | null; params: { look?: { id: number } }; suggested_for: Date | null }[]>`
+      select id, title, channel_id, params, suggested_for from public.videos where user_id = ${user} order by suggested_for nulls last, created_at`);
+    const videoRow = async (id: string) => (await db.admin((tx) => tx<Record<string, unknown>[]>`select * from public.videos where id = ${id}`))[0];
+
+    /** A time today, in UTC where these accounts are. */
+    const at = (hour: number, minute = 0) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate(), hour, minute));
+    /** TikTok's questions, answered */
+    const choices = { privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false } as const;
+
+    /** What YouTube's upload is asked for while a test lasts: which channel, and how. */
+    const uploads = () => {
+      const seen: { channel: string; title: string; madeForKids: boolean; publishAt: Date | null }[] = [];
+      onTestFinished(() => void upload.mockReset());
+      upload.mockReset();
+      upload.mockImplementation(async (...a) => {
+        const [channel, , meta] = a as [string, Buffer, { title: string; madeForKids: boolean; publishAt: Date | null }];
+        seen.push({ channel, title: meta.title, madeForKids: meta.madeForKids, publishAt: meta.publishAt });
+        return `w2chup${seen.length}`;
+      });
+      return seen;
+    };
+
+    /** Until `n` of this database's sessions are waiting on a lock another one holds. */
+    const waiting = async (n: number) => {
+      for (let i = 0; i < 150; i++) {
+        const [{ k }] = await db.admin((tx) => tx<{ k: number }[]>`
+          select count(distinct l.pid)::int as k from pg_locks l join pg_stat_activity a on a.pid = l.pid
+          where not l.granted and a.datname = current_database()`);
+        if (k >= n) return;
+        await new Promise((r) => setTimeout(r, 25));
+      }
+      throw new Error(`fewer than ${n} waited`);
+    };
+
+    beforeAll(async () => {
+      if (!safe) return;
+      channels = await import("@/lib/server/channels");
+      store = await import("@/lib/server/channels-store");
+      ledger = await import("@/lib/server/shorts/ledger");
+      plans = (await import("@/lib/billing/plans")).PLANS;
+      seal = (await import("@/lib/server/crypto")).seal;
+    });
+
+    afterAll(async () => {
+      if (!safe || !made.length) return;
+      await db.admin((tx) => tx`delete from auth.users where id = any(${made}::uuid[])`);
+    });
+
+    it("makes each of a Creator's channels its own five in one morning run, in its own look, and no more", async () => {
+      const c = await someone("creator", [{ title: "Ball Clash" }, { title: "Quiz Den" }]);
+      const units = (await gen.dueForShorts(now, 100000)).filter((u) => u.userId === c.user);
+      expect(units).toEqual(c.channels.map((channelId) => ({ userId: c.user, channelId })));
+      const log: string[] = [];
+      for (const u of units) log.push(await gen.tryDaily(u, now));
+      expect(log).toEqual(c.channels.map((id) => `${c.user} ${id}: 5 made`));
+
+      const shorts = await videosOf(c.user);
+      const of = (id: string) => shorts.filter((s) => s.channel_id === id);
+      for (const id of c.channels) {
+        expect(of(id)).toHaveLength(5);
+        // one look for each channel
+        expect(new Set(of(id).map((s) => s.params.look?.id)).size).toBe(1);
+        // five today, two hours apart within the channel, whatever the other channel has (both fit in one day only that way)
+        const times = of(id).map((s) => s.suggested_for!.getTime());
+        for (let i = 1; i < times.length; i++) expect(times[i] - times[i - 1]).toBeGreaterThanOrEqual(2 * 3600_000);
+        expect(times.every((t) => new Date(t).toISOString().slice(0, 10) === today)).toBe(true);
+      }
+      const look = of(c.channels[0])[0].params.look?.id;
+      expect(look).not.toBe(of(c.channels[1])[0].params.look?.id);
+
+      // the same look the next time, and the account's 10 are all it gets today
+      expect(await gen.makeShorts(c.user, { origin: "replacement", channelId: c.channels[0], now })).toBe(1);
+      expect((await videosOf(c.user)).filter((s) => s.channel_id === c.channels[0]).every((s) => s.params.look?.id === look)).toBe(true);
+      for (const id of c.channels) expect(await gen.makeShorts(c.user, { origin: "daily", channelId: id, count: 1, now })).toBe(0);
+      expect(await gen.makeShorts(c.user, { origin: "daily", now })).toBe(0);
+      const a = await gen.allowancesOf(c.user, plans.creator, "UTC", now);
+      expect(a.account).toMatchObject({ limit: 10, made: 10, left: 0, units: 2 });
+
+      // each channel's try written down, and neither is tried again today
+      const runs = await db.admin((tx) => tx<{ channel_id: string; outcome: string; made: number }[]>`select channel_id, outcome, made from public.shorts_runs where user_id = ${c.user} order by tried_at, channel_id`);
+      expect(new Set(runs.map((r) => r.channel_id))).toEqual(new Set(c.channels));
+      expect(runs.every((r) => r.outcome === "made" && r.made === 5)).toBe(true);
+      expect((await gen.dueForShorts(new Date(now.getTime() + 3600_000), 100000)).filter((u) => u.userId === c.user)).toEqual([]);
+      // one morning note for the account, which doesn't say how many came or that they're all in
+      const notes = (await (await import("@/lib/server/notify")).notificationsOf(c.user)).items.filter((n) => n.kind === "ready");
+      expect(notes.map((n) => [n.title, n.body])).toEqual([["New Shorts to swipe", "Each of your channels gets its own today. Swipe right on the ones you want, left for something else."]]);
+    }, 120_000);
+
+    it("finds the same channels for the morning run as the app counts, and none when every channel is switched off", async () => {
+      const pro = await someone("pro", [{}, {}]);
+      const gone = await someone("free", [{ status: "revoked" }]);
+      const none = await someone("free");
+      const mixed = await someone("creator", [{ status: "expired" }, {}, { shortsOn: false }]);
+      const same = async (a: { user: string }, plan: keyof typeof plans, want: (string | null)[]) => {
+        const due = (await gen.dueForShorts(now, 100000)).filter((u) => u.userId === a.user).map((u) => u.channelId);
+        expect(due).toEqual(want);
+        expect((await gen.allowancesOf(a.user, plans[plan], "UTC", now)).order).toEqual(want);
+      };
+      // Pro has room for the first; a disconnected channel gets nothing, so the account is its own again; expired ones still get Shorts
+      await same(pro, "pro", [pro.channels[0]]);
+      await same(gone, "free", [null]);
+      await same(none, "free", [null]);
+      await same(mixed, "creator", mixed.channels.slice(0, 2));
+      // switched off, the next one takes its place; all off, none
+      expect(await channels.setChannelSettings(pro.user, pro.channels[0], { shortsOn: false })).toBe(true);
+      await same(pro, "pro", [pro.channels[1]]);
+      await channels.setChannelSettings(pro.user, pro.channels[1], { shortsOn: false });
+      await same(pro, "pro", []);
+      expect(await gen.makeShortsSaying(pro.user, { origin: "daily", now })).toMatchObject({ made: 0, short: "stopped", channels: 0 });
+      expect(await gen.tryDaily({ userId: pro.user, channelId: pro.channels[1] }, now)).toBe(`${pro.user} ${pro.channels[1]}: Shorts off`);
+      // only on their own YouTube channels, and only what's given is written
+      expect(await channels.setChannelSettings(none.user, pro.channels[0], { shortsOn: true })).toBe(false);
+      expect(await channels.setChannelSettings(pro.user, pro.channels[0], {})).toBe(true);
+      expect((await channels.channelsOf(pro.user)).map((x) => x.shortsOn)).toEqual([false, false]);
+    });
+
+    it("makes an account with no channel its own Shorts, and gives them and its look to its first channel", async () => {
+      const f = await someone("free");
+      const unit = { userId: f.user, channelId: null };
+      expect(await gen.tryDaily(unit, now)).toBe(`${f.user}: 3 made`);
+      // its try is written down again without trouble
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + 60_000))).toBe(`${f.user}: allowance used`);
+      expect(await db.admin((tx) => tx`select channel_id, outcome from public.shorts_runs where user_id = ${f.user}`)).toEqual([{ channel_id: null, outcome: "allowance" }]);
+      const look = await ledger.lookFor(f.user);
+      const before = await videosOf(f.user);
+      expect(before).toHaveLength(3);
+      expect(before.every((v) => v.channel_id === null && v.params.look?.id === look.id)).toBe(true);
+      // and one already on YouTube, from a channel it had before
+      const [up] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, format, params, key, title, status, decided_at, scheduled_for, uploaded_at, file_path,
+          youtube_id, youtube_verified, youtube_status, youtube_wanted, youtube_publish_at)
+        values (${f.user}, 'wyr', '{"pairs":[]}', 'wyr', 'Up already', 'scheduled', now(), '2020-01-01T00:00:00Z', '2019-12-31T23:00:00Z', 'x/up.mp4',
+          'w2chupalready', true, 'uploaded', 'public', '2020-01-01T00:00:00Z')
+        returning id`);
+
+      // its first channel takes over the Shorts not on YouTube, the look and the morning run
+      const first = await store.saveChannel(f.user, "youtube", { externalId: "UCw2chfirstone", title: "First", handle: "@first", avatarUrl: null }, { access: "ya29.w2-first", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null });
+      expect(await channels.adoptOrphans(f.user, first)).toBe(3);
+      const after = await videosOf(f.user);
+      expect(after.filter((v) => v.channel_id === first).map((v) => v.id).sort()).toEqual(before.map((v) => v.id).sort());
+      expect(after.find((v) => v.id === up.id)?.channel_id).toBeNull();
+      expect((await ledger.lookFor(f.user, first)).id).toBe(look.id);
+      expect(await db.admin((tx) => tx`select channel_id from public.shorts_runs where user_id = ${f.user}`)).toEqual([{ channel_id: first }]);
+      // the week's 3 are still all it gets
+      const a = await gen.allowancesOf(f.user, plans.free, "UTC", now);
+      expect(a.order).toEqual([first]);
+      expect(a.units.get(first)).toMatchObject({ made: 3, left: 0 });
+      expect(await gen.makeShorts(f.user, { origin: "daily", now })).toBe(0);
+
+      // the one already up is still checked the way it was, asked as their connected channel
+      const calls = stubFetch(() => ({ items: [{ id: "w2chupalready", snippet: { channelId: "UCw2chfirstone" }, status: { uploadStatus: "processed", privacyStatus: "public" } }] }));
+      await post.confirmYouTube(new Date("2020-01-01T00:40:00Z"));
+      expect(calls.map((x) => new Headers(x.init?.headers).get("authorization"))).toEqual(["Bearer ya29.w2-first"]);
+      expect(await db.admin((tx) => tx`select status, channel_id from public.videos where id = ${up.id}`)).toEqual([{ status: "posted", channel_id: null }]);
+      // a second channel takes nothing over: which one those were for isn't known
+      const second = await store.saveChannel(f.user, "youtube", { externalId: "UCw2chsecondone", title: "Second", handle: null, avatarUrl: null }, { access: "ya29.w2-second", refresh: null, expiresAt: null, scopes: null });
+      await db.admin((tx) => tx`update public.videos set channel_id = null where user_id = ${f.user} and youtube_id is null`);
+      expect(await channels.adoptOrphans(f.user, second)).toBe(0);
+      expect(await channels.adoptOrphans(f.user, first)).toBe(0);
+    });
+
+    it("disconnects softly: the channel and its Shorts stay, its keys, username and figures go, and connecting it again carries on", async () => {
+      const live = await import("@/lib/server/live");
+      const d = await someone("creator", [{ title: "Main" }, { title: "Second" }]);
+      const [x, y] = d.channels;
+      const [tt] = await db.admin((tx) => tx<{ id: string }[]>`insert into public.channels (user_id, platform, external_id, title) values (${d.user}, 'tiktok', ${`w2ch-tt-${d.user}`}, 'D') returning id`);
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token) values (${tt.id}, ${seal("act.w2ch")})`);
+      await live.rememberTikTok(d.user, tt.id, "w2ch.d");
+      // figures read with each channel's access, and the account's own Stripe sales
+      await db.admin((tx) => tx`
+        insert into public.metrics (user_id, channel_id, source, metric, day, value)
+        values (${d.user}, ${x}, 'youtube', 'views', ${today}, 10), (${d.user}, ${y}, 'youtube', 'views', ${today}, 20),
+          (${d.user}, ${tt.id}, 'tiktok', 'views_total', ${today}, 30), (${d.user}, null, 'stripe', 'revenue:usd', ${today}, 5)`);
+      expect(await gen.makeShorts(d.user, { origin: "daily", channelId: x, count: 1, now })).toBe(1);
+      const look = await ledger.lookFor(d.user, x);
+      // TikTok choices for a Short that hasn't gone yet, and one that has
+      const choices = db.sql().json({ privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false });
+      const [waiting, sent] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, tiktok_post, tiktok_at, tiktok_publish_id)
+        values (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Waits for TikTok', 'ready', ${choices}, now() + interval '2 hours', null),
+          (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Went to TikTok', 'posted', ${choices}, now() - interval '2 hours', 'pub-w2ch')
+        returning id`);
+
+      // nobody signed in deletes a channel, even their own, and nobody else disconnects it
+      await expect(db.asUser(d.user, (tx) => tx`delete from public.channels where id = ${y}`)).rejects.toThrow(/permission denied/);
+      expect(await channels.disconnectChannel(A, x)).toBeNull();
+
+      expect(await channels.disconnectChannel(d.user, x)).toEqual({ platform: "youtube", cleared: 0 });
+      const statusOf = async (id: string) => (await db.admin((tx) => tx<{ status: string; added_at: Date }[]>`select status, added_at from public.channels where id = ${id}`))[0];
+      expect((await statusOf(x)).status).toBe("revoked");
+      const tokens = await db.admin((tx) => tx<{ channel_id: string }[]>`select channel_id from public.channel_tokens where channel_id in ${tx([x, y, tt.id])}`);
+      expect(tokens.map((t) => t.channel_id).sort()).toEqual([y, tt.id].sort());
+      const figures = async () => (await db.admin((tx) => tx<{ source: string; channel_id: string | null }[]>`select source, channel_id from public.metrics where user_id = ${d.user} order by source, channel_id`));
+      expect(await figures()).toEqual([{ source: "stripe", channel_id: null }, { source: "tiktok", channel_id: tt.id }, { source: "youtube", channel_id: y }]);
+      // and Earnings shows only the rest: Second's views, with no subscriber figures yet, so those days are unknown
+      const shown = (await earn.earningsOf(d.user, 30)).series;
+      expect(shown.find((s) => s.id === "youtube:views")).toMatchObject({ total: 20 });
+      expect(shown.find((s) => s.id === "youtube:subscribers")?.points.map((p) => p.value)).toEqual(Array(30).fill(null));
+      // its Shorts keep their channel; tomorrow's run passes it by, and Settings still lists it while it has Shorts
+      expect((await videosOf(d.user)).filter((v) => v.channel_id === x)).toHaveLength(1);
+      expect((await gen.dueForShorts(new Date(now.getTime() + 86400_000), 100000)).filter((u) => u.userId === d.user)).toEqual([{ userId: d.user, channelId: y }]);
+      expect((await channels.channelsOf(d.user)).map((c) => c.id)).toEqual([y, tt.id]);
+      expect((await channels.channelsOf(d.user, { disconnected: true })).map((c) => c.id)).toEqual([x, y, tt.id]);
+      expect((await channels.shortsChannelsOf(d.user)).map((c) => [c.id, c.name, c.status])).toEqual([[x, "Main", "revoked"], [y, "Second", "connected"]]);
+      // a token refresh failing afterwards doesn't bring it back as expired
+      await store.markExpired(x);
+      expect((await statusOf(x)).status).toBe("revoked");
+      expect((await (await import("@/lib/server/notify")).notificationsOf(d.user)).items.some((n) => n.title === "Reconnect YouTube")).toBe(false);
+
+      // connecting it again: the same channel, with its look, at the end of the line for the plan's room
+      const tokensAgain = { access: "ya29.w2-again", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null };
+      expect(await store.saveChannel(d.user, "youtube", { externalId: d.externals[0], title: "Main", handle: null, avatarUrl: null }, tokensAgain)).toBe(x);
+      const back = await statusOf(x);
+      expect(back.status).toBe("connected");
+      expect(back.added_at.getTime()).toBeGreaterThan((await statusOf(y)).added_at.getTime());
+      expect((await ledger.lookFor(d.user, x)).id).toBe(look.id);
+      // one that only expired keeps its place
+      const kept = (await statusOf(y)).added_at;
+      await store.markExpired(y);
+      expect((await statusOf(y)).status).toBe("expired");
+      await store.saveChannel(d.user, "youtube", { externalId: d.externals[1], title: "Second", handle: null, avatarUrl: null }, tokensAgain);
+      expect(await statusOf(y)).toEqual({ status: "connected", added_at: kept });
+
+      // TikTok: its username goes, so it can't verify LIVEs, and so do the choices made for posts that haven't gone to it
+      expect(await live.tiktokUsernamesOf(d.user)).toEqual(["w2ch.d"]);
+      expect(await channels.disconnectChannel(d.user, tt.id)).toEqual({ platform: "tiktok", cleared: 1 });
+      expect(await live.tiktokUsernamesOf(d.user)).toEqual([]);
+      const tiktok = await db.admin((tx) => tx<{ id: string; tiktok_post: unknown; tiktok_at: Date | null; tiktok_publish_id: string | null }[]>`
+        select id, tiktok_post, tiktok_at, tiktok_publish_id from public.videos where id in ${tx([waiting.id, sent.id])}`);
+      expect(tiktok.find((v) => v.id === waiting.id)).toMatchObject({ tiktok_post: null, tiktok_at: null });
+      expect(tiktok.find((v) => v.id === sent.id)).toMatchObject({ tiktok_publish_id: "pub-w2ch", tiktok_post: expect.objectContaining({ privacy: "SELF_ONLY" }) });
+      expect((await figures()).map((r) => r.source)).toEqual(["stripe", "youtube"]);
+    });
+
+    it("keeps each Short on one of its owner's own channels, and only the server moves it", async () => {
+      const m = await someone("pro", [{}, { shortsOn: false }]);
+      const o = await someone("pro", [{}]);
+      const insert = (tx: Parameters<Parameters<Db["admin"]>[0]>[0], channel: string) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title) values (${m.user}, ${channel}, 'wyr', '{}', 'wyr', 'Mine') returning id`;
+      // not on someone else's channel, whoever writes it
+      await expect(db.asUser(m.user, (tx) => insert(tx, o.channels[0]))).rejects.toThrow(/videos_channel_owner/);
+      await expect(db.admin((tx) => insert(tx, o.channels[0]))).rejects.toThrow(/videos_channel_owner/);
+      const [v] = await db.asUser(m.user, (tx) => insert(tx, m.channels[0]));
+      // moved to another of theirs only by the server; wave 1's rule on what YouTube said still holds
+      await expect(db.asUser(m.user, (tx) => tx`update public.videos set channel_id = ${m.channels[1]} where id = ${v.id}`)).rejects.toThrow(/only the server moves a Short/);
+      await expect(db.asUser(m.user, (tx) => tx`update public.videos set channel_id = null where id = ${v.id}`)).rejects.toThrow(/only the server moves a Short/);
+      await expect(db.asUser(m.user, (tx) => tx`update public.videos set youtube_id = 'w2chnotmine' where id = ${v.id}`)).rejects.toThrow(/only the server records what YouTube said/);
+      expect(await db.asUser(m.user, (tx) => tx`update public.videos set title = 'Still mine to change' where id = ${v.id} returning id`)).toHaveLength(1);
+      expect(await db.admin((tx) => tx`update public.videos set channel_id = ${m.channels[1]} where id = ${v.id} returning id`)).toHaveLength(1);
+      // a channel's Shorts switch is theirs to change, and the rest of the row isn't
+      expect(await db.asUser(m.user, (tx) => tx`update public.channels set shorts_on = true where id = ${m.channels[1]} returning id`)).toHaveLength(1);
+      await expect(db.asUser(m.user, (tx) => tx`update public.channels set added_at = now() where id = ${m.channels[1]}`)).rejects.toThrow(/permission denied/);
+      // what each channel has learned is the server's to write, and only its owner's to read
+      await expect(db.asUser(m.user, (tx) => tx`insert into public.channel_weights (channel_id, user_id, kind, name) values (${m.channels[0]}, ${m.user}, 'format', 'quiz')`)).rejects.toThrow(/permission denied/);
+      await db.admin((tx) => tx`insert into public.channel_weights (channel_id, user_id, kind, name, score, samples) values (${m.channels[0]}, ${m.user}, 'format', 'quiz', 2, 3)`);
+      await expect(db.admin((tx) => tx`insert into public.channel_weights (channel_id, user_id, kind, name) values (${m.channels[0]}, ${o.user}, 'format', 'wyr')`)).rejects.toThrow(/foreign key/);
+      expect(await db.asUser(m.user, (tx) => tx`select name from public.channel_weights`)).toEqual([{ name: "quiz" }]);
+      expect(await db.asUser(o.user, (tx) => tx`select name from public.channel_weights`)).toEqual([]);
+    });
+
+    it("measures each channel against its own usual, learns for it and the account, and starts a new channel from the others", async () => {
+      const l = await someone("creator", [{ title: "Big" }, { title: "Small" }, { title: "New" }]);
+      const [big, small, fresh] = l.channels;
+      await posted(l.user, big, [400, 500, 600]);
+      const [, , , next] = await posted(l.user, small, [10, 11, 12, 30]);
+      // 30 views against Small's usual of 11, not Big's 500
+      await stats.learn(l.user, next, "quiz", "quiz:capitals", 30, 24, small);
+      const lift = (30 + 10) / (11 + 10);
+      const account = await db.admin((tx) => tx<{ kind: string; name: string; score: number; samples: number }[]>`select kind, name, score, samples from public.weights where user_id = ${l.user} order by kind, name`);
+      expect(account.map((w) => [w.kind, w.name, w.samples])).toEqual([["format", "quiz", 1], ["key", "quiz:capitals", 1]]);
+      expect(account[0].score).toBeCloseTo(lift, 4);
+      const own = await db.admin((tx) => tx<{ channel_id: string; name: string; score: number }[]>`select channel_id, name, score from public.channel_weights where user_id = ${l.user} order by name`);
+      expect(own.map((w) => [w.channel_id, w.name])).toEqual([[small, "quiz"], [small, "quiz:capitals"]]);
+      expect(own[0].score).toBeCloseTo(lift, 4);
+      // the note says whose usual it beat
+      const [note] = (await (await import("@/lib/server/notify")).notificationsOf(l.user)).items.filter((n) => n.kind === "results");
+      expect(note).toMatchObject({ title: "1.9× your usual views", body: "Quiz 4 beat Small's usual Short in its first day. Hookline will make more like it there." });
+
+      // a channel with no results of its own starts from the others'; Small goes by its own
+      const { weightsFor } = await import("@/lib/server/shorts/weights");
+      const { steady } = await import("@/lib/shorts/learn");
+      const [freshQuiz] = (await db.asUser(l.user, (tx) => weightsFor(tx, fresh))).filter((w) => w.name === "quiz");
+      expect(freshQuiz).toMatchObject({ kind: "format", score: 1, samples: 0 });
+      expect(freshQuiz.prior).toBeCloseTo(steady({ score: lift, samples: 1 }), 4);
+      const [smallQuiz] = (await db.asUser(l.user, (tx) => weightsFor(tx, small))).filter((w) => w.name === "quiz");
+      expect(smallQuiz).toMatchObject({ samples: 1, prior: 1 });
+      expect((await db.asUser(l.user, (tx) => weightsFor(tx, null))).map((w) => w.name).sort()).toEqual(["quiz", "quiz:capitals"]);
+      // and nobody else sees what it learned
+      expect(await db.asUser(A, (tx) => weightsFor(tx, fresh))).toEqual([]);
+    });
+
+    it("shows each Short with its channel, against its own channel's usual", async () => {
+      const lib = await import("@/lib/server/shorts/library");
+      const g = await someone("creator", [{ title: "Big" }, { title: "Small" }]);
+      const [big, small] = g.channels;
+      const bigs = await posted(g.user, big, [400, 500, 600, 2000]);
+      const smalls = await posted(g.user, small, [10, 11, 12, 30]);
+      const items = (await lib.libraryOf(g.user)).items;
+      const item = (id: string) => items.find((x) => x.id === id)!;
+      expect(item(smalls[3])).toMatchObject({ channelId: small });
+      expect(item(smalls[3]).vsUsual).toBeCloseTo((30 + 10) / (11.5 + 10), 6);
+      expect(item(bigs[3]).vsUsual).toBeCloseTo((2000 + 10) / (550 + 10), 6);
+      // a Short's own page leaves it out of its usual
+      expect(await lib.shortOf(g.user, smalls[3])).toMatchObject({ channelId: small, typical: 11 });
+      const month = await lib.calendarOf(g.user, new Date(Date.now() - 30 * 86400_000), new Date(Date.now() + 86400_000));
+      expect(month.find((x) => x.id === bigs[0])?.channelId).toBe(big);
+      // with two channels there's no one usual for the account
+      expect((await lib.insightsFor(g.user)).typical).toBeNull();
+    });
+
+    it("replaces a swiped-away Short on its own channel, and not for one that's disconnected", async () => {
+      const r = await someone("creator", [{}, {}]);
+      const [x, y] = r.channels;
+      const newest = async () => (await db.admin((tx) => tx<{ channel_id: string }[]>`select channel_id from public.videos where user_id = ${r.user} order by created_at desc limit 1`))[0];
+      expect(await gen.makeShorts(r.user, { origin: "replacement", channelId: y, now })).toBe(1);
+      expect((await newest()).channel_id).toBe(y);
+      await channels.disconnectChannel(r.user, y);
+      expect(await gen.makeShortsSaying(r.user, { origin: "replacement", channelId: y, now })).toMatchObject({ made: 0, short: "allowance" });
+      // left to it, one goes to the channel with the most room
+      expect(await gen.makeShorts(r.user, { origin: "replacement", now })).toBe(1);
+      expect((await newest()).channel_id).toBe(x);
+    });
+
+    it("has room for as many channels as the plan, one TikTok account, and always for one they have", async () => {
+      const five = await someone("creator", [{}, {}, {}, {}, {}]);
+      expect(await channels.hasRoomFor(five.user, "youtube", "UCw2chsixth", plans.creator)).toBe(false);
+      expect(await channels.hasRoomFor(five.user, "youtube", five.externals[2], plans.creator)).toBe(true);
+      await channels.disconnectChannel(five.user, five.channels[4]);
+      expect(await channels.hasRoomFor(five.user, "youtube", "UCw2chsixth", plans.creator)).toBe(true);
+      // coming back after a disconnect takes a place like a new one
+      expect(await channels.hasRoomFor(five.user, "youtube", five.externals[4], plans.creator)).toBe(true);
+      const pro = await someone("pro", [{ status: "expired" }]);
+      expect(await channels.hasRoomFor(pro.user, "youtube", "UCw2chanother", plans.pro)).toBe(false);
+      expect(await channels.hasRoomFor(pro.user, "youtube", pro.externals[0], plans.pro)).toBe(true);
+      await db.admin((tx) => tx`insert into public.channels (user_id, platform, external_id) values (${five.user}, 'tiktok', 'w2ch-tt-five')`);
+      expect(await channels.hasRoomFor(five.user, "tiktok", "w2ch-tt-other", plans.creator)).toBe(false);
+      expect(await channels.hasRoomFor(five.user, "tiktok", "w2ch-tt-five", plans.creator)).toBe(true);
+      expect(await channels.hasRoomFor(pro.user, "tiktok", "w2ch-tt-pro", plans.pro)).toBe(true);
+    });
+
+    it("keeps each channel's figures apart in Earnings, and adds them up only as far as every one has reported", async () => {
+      const e = await someone("creator", [{ title: "Pop" }, { title: "Quiet" }]);
+      const [pop, quiet] = e.channels;
+      const ago = (n: number) => new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
+      // YouTube Analytics for each channel, read with its own access: Quiet hasn't reported the latest day yet
+      const reports: Record<string, (string | number)[][]> = {
+        [`ya29.${e.email}.0`]: [[ago(6), 100, 2], [ago(5), 200, 3], [ago(4), 300, 4]],
+        [`ya29.${e.email}.1`]: [[ago(6), 10, 1], [ago(5), 20, 0]],
+      };
+      stubFetch((u, init) => {
+        const rows = reports[(new Headers(init?.headers).get("authorization") ?? "").replace("Bearer ", "")];
+        // anyone else's channels aren't these tests' to read; and neither of these is in the Partner Program
+        if (!u.startsWith("https://youtubeanalytics.googleapis.com/") || !rows) return new Response("{}", { status: 500 });
+        return new URL(u).searchParams.get("metrics")!.includes("estimatedRevenue") ? new Response("{}", { status: 403 }) : { rows };
+      });
+      await earn.syncEarnings(now);
+      const kept = await db.admin((tx) => tx<{ channel_id: string; n: number }[]>`select channel_id, count(*)::int as n from public.metrics where user_id = ${e.user} group by channel_id`);
+      expect(new Map(kept.map((k) => [k.channel_id, k.n]))).toEqual(new Map([[pop, 6], [quiet, 4]]));
+
+      const views = async (channelId?: string) => (await earn.earningsOf(e.user, 30, channelId)).series.find((s) => s.id === "youtube:views")!;
+      const on = (s: Awaited<ReturnType<typeof views>>, n: number) => s.points.find((p) => p.day === ago(n))?.value;
+      const all = await views();
+      expect([6, 5, 4].map((n) => on(all, n))).toEqual([110, 220, null]);
+      expect(all).toMatchObject({ total: 330, through: ago(5) });
+      // one channel picked: only its own
+      const one = await views(pop);
+      expect([6, 5, 4].map((n) => on(one, n))).toEqual([100, 200, 300]);
+      expect(one).toMatchObject({ total: 600, through: ago(4) });
+      const everything = await earn.earningsOf(e.user, 30);
+      expect(everything.channels).toEqual([
+        { id: pop, platform: "youtube", name: "Pop", expired: false, from: ago(6), through: ago(4) },
+        { id: quiet, platform: "youtube", name: "Quiet", expired: false, from: ago(6), through: ago(5) },
+      ]);
+      // goals count every channel
+      await db.asUser(e.user, (tx) => tx`insert into public.goals (user_id, source, metric, target, period, label) values (${e.user}, 'youtube', 'views', 1000, 'all', 'views')`);
+      expect((await earn.earningsOf(e.user, 30, pop)).goals[0]).toMatchObject({ progress: 330 });
+
+      // one that needs reconnecting counts up to its last report, and doesn't hold the rest back
+      await store.markExpired(quiet);
+      const lost = await views();
+      expect([6, 5, 4].map((n) => on(lost, n))).toEqual([110, 220, 300]);
+      expect(lost).toMatchObject({ total: 630, through: ago(4) });
+      // a disconnected one's figures are gone
+      await channels.disconnectChannel(e.user, pop);
+      const left = await views();
+      expect([6, 5, 4].map((n) => on(left, n))).toEqual([10, 20, null]);
+      expect(left).toMatchObject({ total: 30, through: ago(5) });
+      expect((await earn.earningsOf(e.user, 30)).channels.map((c) => [c.id, c.expired])).toEqual([[quiet, true]]);
+    });
+
+    it("gives each account's earlier Shorts, look, learning, runs and figures to its first channel when the migration's last part runs again", async () => {
+      const { unitsOf } = await import("@/lib/shorts/channels");
+      const one = await someone("pro", [{}]);
+      const two = await someone("creator", [{}, {}]);
+      // Pro, with an older channel that needs reconnecting and a newer one the old connect check let in, where posting went
+      const lost = await someone("pro", [{ status: "expired" }, {}]);
+      // one channel, after another that said who it's for was disconnected, which used to delete it and leave its Shorts with none
+      const after = await someone("pro", [{}]);
+      for (const [i, a] of [one, two, lost, after].entries()) {
+        await db.admin(async (tx) => {
+          await tx`
+            insert into public.videos (user_id, format, params, key, title, status, youtube_id, youtube_verified, uploaded_at)
+            values (${a.user}, 'wyr', '{}', 'wyr', 'Not up yet', 'review', null, false, null),
+              (${a.user}, 'wyr', '{}', 'wyr', 'Up already', 'posted', ${`w2chup${i}`}, true, now())`;
+          await tx`insert into public.content_ledger (item, kind, user_id) values (${`look:${990000 + i}`}, 'look', ${a.user})`;
+          await tx`insert into public.weights (user_id, kind, name, score, samples) values (${a.user}, 'format', 'quiz', 2, 5)`;
+          await tx`insert into public.shorts_runs (user_id, tried_at, outcome, made, next_try_at) values (${a.user}, now(), 'made', 3, now())`;
+          await tx`insert into public.metrics (user_id, source, metric, day, value) values (${a.user}, 'youtube', 'views', ${today}, 100), (${a.user}, 'stripe', 'revenue:usd', ${today}, 5)`;
+        });
+      }
+      // what may be another channel's: one uploaded before this one was connected, a link pasted by hand, YouTube figures
+      // from before its own 35 days back, and a TikTok's totals from the day it was connected and before
+      const [tt] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.channels (user_id, platform, external_id, title, connected_at, added_at)
+        values (${one.user}, 'tiktok', ${`w2ch-tt-${one.user}`}, 'TT', '2026-01-10T12:00:00Z', '2026-01-10T12:00:00Z') returning id`);
+      await db.admin(async (tx) => {
+        await tx`
+          insert into public.videos (user_id, format, params, key, title, status, youtube_id, youtube_verified, uploaded_at, posted_at)
+          values (${one.user}, 'wyr', '{}', 'wyr', 'Up before it was connected', 'posted', 'w2chupold', true, '2025-12-01T12:00:00Z', '2025-12-01T12:00:00Z'),
+            (${one.user}, 'wyr', '{}', 'wyr', 'Pasted by hand', 'posted', 'w2chuphand', false, null, now())`;
+        await tx`
+          insert into public.metrics (user_id, source, metric, day, value)
+          values (${one.user}, 'youtube', 'views', '2025-11-01', 40), (${one.user}, 'tiktok', 'views_total', '2026-01-10', 500),
+            (${one.user}, 'tiktok', 'views_total', ${today}, 900)`;
+        await tx`insert into public.audience_log (user_id, channel_id, source, made_for_kids, privacy) values (${after.user}, null, 'channel', false, 'public')`;
+      });
+      const ids = [one.user, two.user, lost.user, after.user];
+      type Seen = { user_id: string; channel_id: string | null; title?: string; source?: string; day?: string };
+      type Order = { id: string; user_id: string; platform: "youtube" | "tiktok"; status: "connected" | "expired" | "revoked"; shorts_on: boolean; added_at: Date };
+      // inside a transaction that's then undone, so nobody else's rows change
+      class Undone extends Error {
+        constructor(readonly seen: Record<string, Seen[]>, readonly order: Order[]) {
+          super("undone");
+        }
+      }
+      const migration = readFileSync("supabase/migrations/20261018010000_channels.sql", "utf8");
+      // the order the migration puts channels in, then its last part
+      const order = migration.slice(migration.indexOf("update public.channels c set added_at"), migration.indexOf("alter table public.channels alter column added_at"));
+      const { seen, order: channelOrder } = await db.admin(async (tx) => {
+        await tx.unsafe(order);
+        await tx.unsafe(migration.slice(migration.indexOf("drop table if exists pg_temp.first_youtube")));
+        const read = (table: string, more = "") => tx.unsafe(`select user_id, channel_id${more} from public.${table} where user_id = any($1::uuid[]) order by 1, 2`, [ids]);
+        throw new Undone({
+          videos: (await read("videos", ", title")) as never,
+          looks: (await read("content_ledger")) as never,
+          weights: (await read("channel_weights")) as never,
+          runs: (await read("shorts_runs")) as never,
+          metrics: (await read("metrics", ", source, to_char(day, 'YYYY-MM-DD') as day")) as never,
+        }, (await tx.unsafe(`select id, user_id, platform, status, shorts_on, added_at from public.channels where user_id = any($1::uuid[]) order by added_at, id`, [ids])) as never);
+      }).catch((err) => {
+        if (err instanceof Undone) return { seen: err.seen, order: err.order };
+        throw err;
+      });
+      const of = (table: string, a: { user: string }) => seen[table].filter((r) => r.user_id === a.user);
+      // one channel: everything was its, and what Hookline uploaded to it is on it; what may be on another channel stays
+      // unknown, and only the figures it read itself are kept
+      expect(of("videos", one).map((v) => [v.title, v.channel_id]).sort()).toEqual([
+        ["Not up yet", one.channels[0]], ["Pasted by hand", null], ["Up already", one.channels[0]], ["Up before it was connected", null],
+      ]);
+      for (const t of ["looks", "weights", "runs"]) expect(of(t, one).map((r) => r.channel_id)).toEqual([one.channels[0]]);
+      expect(of("metrics", one).map((m) => [m.source, m.channel_id, m.day]).sort()).toEqual([
+        ["stripe", null, today], ["tiktok", tt.id, today], ["youtube", one.channels[0], today],
+      ]);
+      // two channels: what isn't on YouTube goes where posting would have sent it, the rest stays unknown, and YouTube's
+      // figures (which overwrote each other) go to be read again
+      expect(of("videos", two).map((v) => [v.title, v.channel_id]).sort()).toEqual([["Not up yet", two.channels[0]], ["Up already", null]]);
+      for (const t of ["looks", "weights", "runs"]) expect(of(t, two).map((r) => r.channel_id)).toEqual([two.channels[0]]);
+      expect(of("metrics", two).map((m) => [m.source, m.channel_id])).toEqual([["stripe", null]]);
+      // posting went to the connected one, so it comes first, and the app gives Pro's one place to the channel that has the
+      // account's Shorts, look, learning and run
+      expect(channelOrder.filter((c) => c.user_id === lost.user).map((c) => c.id)).toEqual([lost.channels[1], lost.channels[0]]);
+      const rows = channelOrder.filter((c) => c.user_id === lost.user).map((c) => ({ id: c.id, platform: c.platform, status: c.status, shortsOn: c.shorts_on, addedAt: c.added_at }));
+      expect(unitsOf(rows, plans.pro.channels)).toEqual([lost.channels[1]]);
+      expect(of("videos", lost).find((v) => v.title === "Not up yet")?.channel_id).toBe(lost.channels[1]);
+      for (const t of ["looks", "weights", "runs"]) expect(of(t, lost).map((r) => r.channel_id)).toEqual([lost.channels[1]]);
+      // a channel that answered and is gone may have been where it went
+      expect(of("videos", after).map((v) => [v.title, v.channel_id]).sort()).toEqual([["Not up yet", after.channels[0]], ["Up already", null]]);
+      // and it was all undone
+      expect((await videosOf(one.user)).every((v) => v.channel_id === null)).toBe(true);
+      expect((await channels.channelsOf(lost.user)).map((c) => c.id)).toEqual(lost.channels);
+    });
+
+    it("uploads each Short only to the channel it was made for, with that channel's answer, and never to anyone else's", async () => {
+      const c = await someone("creator", [{ title: "Test one", external: TEST_CHANNEL, madeForKids: true }, { title: "Not a test one" }]);
+      const [test, other] = c.channels;
+      const soon = new Date(now.getTime() + 3 * 3600_000);
+      const ready = async (user: string, channel: string | null, title: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+        values (${user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', ${now}, ${soon}, ${`${user}/${title}.mp4`}) returning id`))[0].id;
+      const mine = await ready(c.user, test, "For the test channel");
+      const byHand = await ready(c.user, other, "For the other channel");
+      const nowhere = await ready(c.user, null, "For no channel");
+      // someone else's Short pointed at that test channel, as if the key that stops it were gone: the upload's own join still refuses it
+      const x = await someone("pro");
+      const [rogue] = await db.admin(async (tx) => {
+        await tx`set local session_replication_role = replica`;
+        return tx<{ id: string }[]>`
+          insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+          values (${x.user}, ${test}, 'wyr', '{"pairs":[]}', 'wyr', 'Not theirs', 'ready', ${now}, ${soon}, 'w2ch/rogue.mp4') returning id`;
+      });
+      const seen = uploads();
+      // what's on YouTube already isn't these tests' to say
+      stubFetch(() => new Response("{}", { status: 500 }));
+      await post.postDue(now, 100);
+      expect(seen.filter((u) => [test, other].includes(u.channel) || u.title === "Not theirs")).toEqual([
+        { channel: test, title: "For the test channel", madeForKids: true, publishAt: soon },
+      ]);
+      expect(await videoRow(mine)).toMatchObject({ status: "scheduled", channel_id: test, youtube_id: expect.stringMatching(/^w2chup/) });
+      // before YouTube's audit, the other channel's is the creator's to post; one with no channel never uploads
+      for (const id of [byHand, nowhere, rogue.id]) expect(await videoRow(id)).toMatchObject({ status: "ready", youtube_id: null });
+      await db.admin((tx) => tx`delete from public.videos where id = ${rogue.id}`);
+    });
+
+    it("posts nothing to a disconnected channel, and once it's connected again its late Shorts get new times two hours apart and go up", async () => {
+      const c = await someone("creator", [{ title: "Comes back", external: TEST_CHANNEL }]);
+      const [ch] = c.channels;
+      const why = ["Would you rathers do about as well as your usual Short (4 posted)", "Posts at 4pm, a starting guess until your own numbers come in"];
+      const kept = async (title: string, status: string, when: Date, tiktok = false) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path, why, tiktok_post, tiktok_at)
+        values (${c.user}, ${ch}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, ${status}, ${now}, ${when}, ${status === "ready" ? `${c.user}/${title}.mp4` : null},
+          ${tx.json(why)}, ${tiktok ? tx.json(choices) : null}, ${tiktok ? when : null})
+        returning id`))[0].id;
+      // two whose times passed while it was away (one going to TikTok too), one being made that's due in five minutes, one at
+      // noon, and one of today's still waiting for a yes, suggested for 4pm
+      const early = await kept("Early", "ready", at(3, 5), true);
+      const later = await kept("Later", "ready", at(5, 5));
+      const making = await kept("Making", "approved", at(6, 10));
+      const noon = await kept("Noon", "ready", at(12));
+      await db.admin((tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, suggested_for) values (${c.user}, ${ch}, 'wyr', '{"pairs":[]}', 'wyr', 'Today', 'review', ${at(16)})`);
+      expect(await channels.disconnectChannel(c.user, ch)).toEqual({ platform: "youtube", cleared: 0 });
+      const seen = uploads();
+      stubFetch(() => new Response("{}", { status: 500 }));
+      await post.postDue(now, 100);
+      expect(seen.filter((u) => u.channel === ch)).toEqual([]);
+
+      // connected again, the late ones get the channel's next free times (Creator's 10am, 7pm and 9pm, since noon and 4pm
+      // are booked) instead of all going up at once, and its TikTok time goes with the one that had one
+      const back = await channels.connectChannel(c.user, "youtube", { externalId: TEST_CHANNEL, title: "Comes back", handle: null, avatarUrl: null },
+        { access: "ya29.w2-back", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null }, plans.creator, now);
+      expect(back).toEqual({ id: ch, already: false, moved: 3 });
+      const rows = await db.admin((tx) => tx<{ id: string; scheduled_for: Date; why: string[]; tiktok_at: Date | null }[]>`
+        select id, scheduled_for, why, tiktok_at from public.videos where user_id = ${c.user} and scheduled_for is not null order by scheduled_for`);
+      expect(rows.map((r) => [r.id, r.scheduled_for])).toEqual([[early, at(10)], [noon, at(12)], [later, at(19)], [making, at(21)]]);
+      expect(rows[0]).toMatchObject({ why: [why[0], "Posts at 10am, a starting guess until your own numbers come in"], tiktok_at: at(10) });
+      // nobody else can move them
+      expect(await queue.retimeLate(A, ch, now)).toBe(0);
+
+      // and up they go, each public at its new time
+      await post.postDue(now, 100);
+      expect(seen.filter((u) => u.channel === ch).map((u) => [u.title, u.publishAt])).toEqual([["Early", at(10)], ["Noon", at(12)], ["Later", at(19)]]);
+    });
+
+    it("saves a channel that's back and gives its late Shorts new times together, so none can go up before they have them", async () => {
+      const c = await someone("creator", [{ title: "All at once", external: TEST_CHANNEL }]);
+      const [ch] = c.channels;
+      const late = async (title: string, when: Date) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+        values (${c.user}, ${ch}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', ${now}, ${when}, ${`${c.user}/${title}.mp4`}) returning id`))[0].id;
+      const first = await late("First", at(3));
+      const second = await late("Second", at(4));
+      // and one being sent to TikTok right now, which is left as it is
+      const sending = await late("Being sent", at(5));
+      await db.admin((tx) => tx`update public.videos set posting_at = now() where id = ${sending}`);
+      await channels.disconnectChannel(c.user, ch);
+      // one of them held, so connecting stops partway through giving them new times
+      let connecting: ReturnType<typeof channels.connectChannel> | undefined;
+      await db.admin(async (tx) => {
+        await tx`select id from public.videos where id = ${second} for update`;
+        connecting = channels.connectChannel(c.user, "youtube", { externalId: TEST_CHANNEL, title: "All at once", handle: null, avatarUrl: null },
+          { access: "ya29.w2-once", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null }, plans.creator, now);
+        await waiting(1);
+        // until they all have them, it isn't connected, so nothing can go up to it
+        expect((await db.admin((t) => t<{ status: string }[]>`select status from public.channels where id = ${ch}`))[0].status).toBe("revoked");
+      });
+      expect(await connecting).toEqual({ id: ch, already: false, moved: 2 });
+      const rows = await db.admin((tx) => tx<{ id: string; scheduled_for: Date }[]>`
+        select id, scheduled_for from public.videos where id in ${tx([first, second, sending])} order by scheduled_for`);
+      expect(rows.map((r) => [r.id, r.scheduled_for])).toEqual([[sending, at(5)], [first, at(10)], [second, at(12)]]);
+    });
+
+    it("gives a channel's late Shorts new times once it first says who it's for, instead of all going up then", async () => {
+      const c = await someone("creator", [{ title: "Unanswered", external: TEST_CHANNEL, madeForKids: null }]);
+      const [ch] = c.channels;
+      const clock = new Date();
+      // kept while it hadn't said, so nothing went up to it, and their times passed
+      const ids: string[] = [];
+      for (const hours of [3, 2]) {
+        ids.push((await db.admin((tx) => tx<{ id: string }[]>`
+          insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+          values (${c.user}, ${ch}, 'wyr', '{"pairs":[]}', 'wyr', ${`Waited ${hours}`}, 'ready', ${clock}, ${new Date(clock.getTime() - hours * 3600_000)},
+            ${`${c.user}/waited-${hours}.mp4`}) returning id`))[0].id);
+      }
+      const seen = uploads();
+      stubFetch(() => new Response("{}", { status: 500 }));
+      await post.postDue(clock, 100);
+      expect(seen.filter((u) => u.channel === ch)).toEqual([]);
+
+      expect(await channels.setAudience(c.user, ch, false, "public")).toBe(true);
+      const times = (await db.admin((tx) => tx<{ scheduled_for: Date }[]>`
+        select scheduled_for from public.videos where id in ${tx(ids)} order by scheduled_for`)).map((r) => r.scheduled_for.getTime());
+      expect(times[0]).toBeGreaterThanOrEqual(clock.getTime() + 3600_000);
+      expect(times[1] - times[0]).toBeGreaterThanOrEqual(2 * 3600_000);
+      // so they go up to go public at those times, not all at once now
+      await post.postDue(new Date(), 100);
+      expect(seen.filter((u) => u.channel === ch).map((u) => u.publishAt?.getTime())).toEqual(times);
+    });
+
+    it("leaves the times alone on a channel the creator posts to themselves, whenever it takes over Shorts or comes back", async () => {
+      const c = await someone("pro");
+      // kept with no channel, for the creator to post, their times passed, one going to TikTok too
+      const kept = async (title: string, when: Date, tiktok = false) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, format, params, key, title, status, decided_at, scheduled_for, file_path, why, tiktok_post, tiktok_at)
+        values (${c.user}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', ${now}, ${when}, ${`${c.user}/${title}.mp4`},
+          ${tx.json(["Best posted around 4pm, a starting guess until your own numbers come in"])}, ${tiktok ? tx.json(choices) : null}, ${tiktok ? at(16) : null})
+        returning id`))[0].id;
+      const ids = [await kept("Two days back", new Date(now.getTime() - 2 * 86400_000), true), await kept("This morning", at(5))];
+      const before = await db.admin((tx) => tx<{ id: string; scheduled_for: Date; why: string[]; tiktok_at: Date | null }[]>`
+        select id, scheduled_for, why, tiktok_at from public.videos where id in ${tx(ids)} order by id`);
+      const info = { externalId: "UCw2chbyhand", title: "By hand", handle: null, avatarUrl: null };
+      const tokens = { access: "ya29.w2-hand", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null };
+      const first = await channels.connectChannel(c.user, "youtube", info, tokens, plans.pro, now);
+      expect(first).toMatchObject({ already: false, moved: 0 });
+      // it takes them over, at the times the creator saw
+      const after = async () => db.admin((tx) => tx<{ id: string; scheduled_for: Date; why: string[]; tiktok_at: Date | null; channel_id: string }[]>`
+        select id, scheduled_for, why, tiktok_at, channel_id from public.videos where id in ${tx(ids)} order by id`);
+      expect(await after()).toEqual(before.map((v) => ({ ...v, channel_id: first!.id })));
+      // and the same when it's connected again
+      await channels.disconnectChannel(c.user, first!.id);
+      expect(await channels.connectChannel(c.user, "youtube", info, tokens, plans.pro, now)).toEqual({ id: first!.id, already: false, moved: 0 });
+      expect(await after()).toEqual(before.map((v) => ({ ...v, channel_id: first!.id })));
+    });
+
+    it("keeps each channel's own times and answer on a yes, and the account's TikTok posts two hours apart", async () => {
+      const c = await someone("creator", [{ title: "Grown-ups" }, { title: "Kids", madeForKids: true }]);
+      const [grown, kids] = c.channels;
+      const review = async (channel: string, suggested: Date) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, suggested_for, why)
+        values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Would you rather', 'review', ${suggested},
+          ${tx.json(["Posts at noon, a starting guess until your own numbers come in"])})
+        returning id`))[0].id;
+
+      // Grown-ups has 10am, going to TikTok too, and noon
+      const ten = await review(grown, at(10));
+      const twelve = await review(grown, at(12));
+      expect(await queue.approve(c.user, ten, plans.creator, now, choices)).toBe(true);
+      expect(await queue.approve(c.user, twelve, plans.creator, now)).toBe(true);
+      expect(await videoRow(ten)).toMatchObject({ scheduled_for: at(10), tiktok_at: at(10), made_for_kids: false });
+      expect(await queue.approve(A, twelve, plans.creator, now)).toBe(false);
+
+      // a yes after its time on Kids takes Kids' own first free time, 10am, whatever Grown-ups has then, with Kids' answer;
+      // the account's one TikTok gets it two hours after Grown-ups' post there
+      const late = await review(kids, new Date(now.getTime() - 3600_000));
+      expect(await queue.approve(c.user, late, plans.creator, now, choices)).toBe(true);
+      expect(await videoRow(late)).toMatchObject({
+        scheduled_for: at(10), tiktok_at: at(12), made_for_kids: true, params: { pairs: [], allowComments: false },
+        why: ["Posts at 10am, a starting guess until your own numbers come in"],
+      });
+
+      // TikTok chosen later for one at 11am: two hours from both
+      const eleven = await review(kids, at(11));
+      expect(await queue.approve(c.user, eleven, plans.creator, now)).toBe(true);
+      expect(await queue.chooseTikTok(c.user, eleven, choices, now)).toBe(true);
+      expect(await videoRow(eleven)).toMatchObject({ scheduled_for: at(11), tiktok_at: at(14) });
+      expect(await queue.chooseTikTok(A, eleven, choices, now)).toBe(false);
+      // and one whose time has passed goes now, unless a post went to TikTok in the last two hours
+      await db.admin((tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, tiktok_post, tiktok_at, tiktok_publish_id, tiktok_posted_at)
+        values (${c.user}, ${grown}, 'wyr', '{"pairs":[]}', 'wyr', 'Sent', 'posted', ${now}, ${tx.json(choices)}, ${at(5, 5)}, 'w2ch-sent', ${at(5, 5)})`);
+      const [passed] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+        values (${c.user}, ${kids}, 'wyr', '{"pairs":[]}', 'wyr', 'Passed', 'ready', ${now}, ${at(5, 35)}, 'w2ch/passed.mp4') returning id`);
+      expect(await queue.chooseTikTok(c.user, passed.id, choices, now)).toBe(true);
+      expect((await videoRow(passed.id)).tiktok_at).toEqual(at(8));
+    });
+
+    it("books the account's posting times one at a time, so two kept at once still go to TikTok two hours apart", async () => {
+      const c = await someone("creator", [{ title: "One tab" }, { title: "Other tab" }]);
+      const review = async (channel: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, suggested_for, why)
+        values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Would you rather', 'review', ${at(16)},
+          ${tx.json(["Posts at 4pm, a starting guess until your own numbers come in"])})
+        returning id`))[0].id;
+      const [a, b] = [await review(c.channels[0]), await review(c.channels[1])];
+      // both kept for 4pm with TikTok, at the same moment, while another booking for the account is under way
+      const book = async (start: () => Promise<boolean>[], n: number) => {
+        let booked: Promise<boolean[]> | undefined;
+        await db.admin(async (tx) => {
+          await queue.lockTimes(tx, c.user);
+          booked = Promise.all(start());
+          await waiting(n);
+        });
+        return booked;
+      };
+      expect(await book(() => [queue.approve(c.user, a, plans.creator, now, choices), queue.approve(c.user, b, plans.creator, now, choices)], 2)).toEqual([true, true]);
+      expect((await Promise.all([a, b].map(videoRow))).map((v) => v.scheduled_for)).toEqual([at(16), at(16)]);
+      const tiktok = async (ids: string[]) => (await Promise.all(ids.map(videoRow))).map((v) => (v.tiktok_at as Date).getTime()).sort((x, y) => x - y);
+      expect(await tiktok([a, b])).toEqual([at(16).getTime(), at(18).getTime()]);
+      // and TikTok chosen later waits its turn too
+      const [later] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for)
+        values (${c.user}, ${c.channels[0]}, 'wyr', '{"pairs":[]}', 'wyr', 'Later', 'approved', ${now}, ${at(17)}) returning id`);
+      expect(await book(() => [queue.chooseTikTok(c.user, later.id, choices, now)], 1)).toEqual([true]);
+      expect(await tiktok([a, b, later.id])).toEqual([at(16).getTime(), at(18).getTime(), at(20).getTime()]);
+    });
+
+    it("gives each channel's waiting Shorts that channel's answer, and no other channel's", async () => {
+      const c = await someone("creator", [{ title: "Kids", madeForKids: null }, { title: "Grown-ups", madeForKids: null }]);
+      const [kids, grown] = c.channels;
+      const waiting = async (channel: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at)
+        values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Waiting', 'approved', ${now}) returning id`))[0].id;
+      const k = await waiting(kids);
+      const g = await waiting(grown);
+      expect(await channels.setAudience(c.user, kids, true, "public")).toBe(true);
+      expect(await videoRow(k)).toMatchObject({ made_for_kids: true, params: { pairs: [], allowComments: false } });
+      expect(await videoRow(g)).toMatchObject({ made_for_kids: null, params: { pairs: [] } });
+      expect(await channels.setAudience(c.user, grown, false, "public")).toBe(true);
+      expect(await videoRow(g)).toMatchObject({ made_for_kids: false, params: { pairs: [] } });
+      expect(await videoRow(k)).toMatchObject({ made_for_kids: true });
+      // and nobody else's answers reach them
+      expect(await queue.fitAudience(A, kids)).toBe(0);
+    });
+
+    it("leaves a Short made for a YouTube channel ready for it once TikTok has it, even while that channel needs reconnecting", async () => {
+      const c = await someone("pro", [{ title: "Away", status: "expired" }]);
+      const [tt] = await db.admin((tx) => tx<{ id: string }[]>`insert into public.channels (user_id, platform, external_id, title) values (${c.user}, 'tiktok', ${`w2ch-tt-${c.user}`}, 'TT') returning id`);
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at) values (${tt.id}, ${seal("act.w2ch.away")}, now() + interval '1 hour')`);
+      const due = async (channel: string | null, title: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path, clean_path, tiktok_post, tiktok_at)
+        values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', ${now}, ${at(6)}, 'w2ch/away.mp4', 'w2ch/away.mp4', ${tx.json(choices)}, ${at(6)})
+        returning id`))[0].id;
+      const forYouTube = await due(c.channels[0], "Kept for YouTube");
+      const tiktokOnly = await due(null, "TikTok only");
+      stubFetch((u) => {
+        if (u.endsWith("/post/publish/creator_info/query/")) return { data: { creator_nickname: "w2", privacy_level_options: ["SELF_ONLY"], max_video_post_duration_sec: 600 }, error: { code: "ok" } };
+        if (u.endsWith("/post/publish/video/init/")) return { data: { publish_id: "w2ch-pub", upload_url: "https://tiktok.test/w2ch" }, error: { code: "ok" } };
+        if (u === "https://tiktok.test/w2ch") return {};
+        return new Response("{}", { status: 500 });
+      });
+      await post.postDue(now, 100);
+      // it can still go up to YouTube once that channel is back, or the creator posts it there and says so
+      expect(await videoRow(forYouTube)).toMatchObject({ status: "ready", tiktok_publish_id: "w2ch-pub", posted_at: null });
+      // with no YouTube channel to go to, TikTok is where it's posted
+      expect(await videoRow(tiktokOnly)).toMatchObject({ status: "posted", tiktok_publish_id: "w2ch-pub" });
+    });
+
+    it("keeps the TikTok choices made for the TikTok posts go to when an extra one from before is disconnected", async () => {
+      const c = await someone("pro");
+      // the first connected gets the posts; one connected after it, from before there was one a plan, gets none
+      const tiktok = async (n: number) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.channels (user_id, platform, external_id, title, connected_at, added_at)
+        values (${c.user}, 'tiktok', ${`w2ch-tt${n}-${c.user}`}, ${`TT ${n}`}, ${new Date(Date.UTC(2026, 0, n))}, ${new Date(Date.UTC(2026, 0, n))}) returning id`))[0].id;
+      const posting = await tiktok(1);
+      const extra = await tiktok(2);
+      const [pending] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, format, params, key, title, status, decided_at, scheduled_for, file_path, tiktok_post, tiktok_at)
+        values (${c.user}, 'wyr', '{"pairs":[]}', 'wyr', 'For TikTok', 'ready', ${now}, ${at(16)}, 'w2ch/tt.mp4', ${tx.json(choices)}, ${at(16)}) returning id`);
+      expect(await channels.disconnectChannel(c.user, extra)).toEqual({ platform: "tiktok", cleared: 0 });
+      expect(await videoRow(pending.id)).toMatchObject({ tiktok_post: choices, tiktok_at: at(16) });
+      // the one posts go to takes them with it
+      expect(await channels.disconnectChannel(c.user, posting)).toEqual({ platform: "tiktok", cleared: 1 });
+      expect(await videoRow(pending.id)).toMatchObject({ tiktok_post: null, tiktok_at: null });
+    });
+
+    it("moves a Short whose link is on another of the creator's channels, asking its own channel first, and refuses one on a disconnected channel", async () => {
+      const c = await someone("creator", [{ title: "Made for" }, { title: "Really on" }, { title: "Gone" }]);
+      const [madeFor, reallyOn, gone] = c.channels;
+      await channels.disconnectChannel(c.user, gone);
+      const ready = async (channel: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, file_path)
+        values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Posted by hand', 'ready', ${now}, 'w2ch/hand.mp4') returning id`))[0].id;
+      const on = (channelId: string) => async () => ({ state: { channelId, uploadStatus: "processed", privacy: "public", failureReason: null, rejectionReason: null, madeForKids: false } as VideoState });
+
+      const v = await ready(madeFor);
+      expect(await queue.markPosted(c.user, v, "https://youtube.com/shorts/w2chmoved01", on(c.externals[1]))).toEqual({ ok: true, checked: true, moved: "Really on" });
+      expect(await videoRow(v)).toMatchObject({ status: "posted", channel_id: reallyOn, youtube_id: "w2chmoved01", youtube_verified: true });
+      // on a channel they disconnected: not theirs to count any more, and said how to fix it
+      const w = await ready(madeFor);
+      expect(await queue.markPosted(c.user, w, "https://youtube.com/shorts/w2chgone001", on(c.externals[2]))).toEqual({
+        ok: false, message: "That video is on Gone, which is disconnected. Connect it again so Hookline can check it, or leave the link empty.",
+      });
+      expect(await videoRow(w)).toMatchObject({ status: "ready", channel_id: madeFor, youtube_id: null });
+
+      // asked as the channel it was made for first, which sees its own private videos
+      const x = await ready(reallyOn);
+      const calls = stubFetch((u, init) => {
+        const id = new URL(u).searchParams.get("id");
+        const mine = new Headers(init?.headers).get("authorization") === `Bearer ya29.${c.email}.1`;
+        return { items: mine ? [{ id, snippet: { channelId: c.externals[1] }, status: { uploadStatus: "processed", privacyStatus: "private" } }] : [] };
+      });
+      expect(await queue.markPosted(c.user, x, "https://youtu.be/w2chfirst01")).toEqual({ ok: true, checked: true });
+      expect(calls.map((k) => new Headers(k.init?.headers).get("authorization"))).toEqual([`Bearer ya29.${c.email}.1`]);
+      expect(await queue.markPosted(A, w, "")).toMatchObject({ ok: false });
+    });
+
+    it("connects only as many channels as the plan has room for, even when two come back at once, and one TikTok account", async () => {
+      const tokens = { access: "ya29.w2-race", refresh: null, expiresAt: new Date(Date.now() + 3600_000), scopes: null };
+      const connect = (user: string, plan: keyof typeof plans, externalId: string, platform: "youtube" | "tiktok" = "youtube") =>
+        channels.connectChannel(user, platform, { externalId, title: externalId, handle: null, avatarUrl: null }, tokens, plans[plan], now);
+      // Pro has room for one: two at once, and only one gets it
+      const p = await someone("pro");
+      const two = await Promise.all([connect(p.user, "pro", "UCw2chraceone"), connect(p.user, "pro", "UCw2chracetwo")]);
+      expect(two.filter((x) => x === null)).toHaveLength(1);
+      const got = two.find((x) => x !== null)!;
+      expect(got).toMatchObject({ already: false, moved: 0 });
+      const theirs = await channels.channelsOf(p.user);
+      expect(theirs.map((x) => x.id)).toEqual([got.id]);
+      // the one they have connects again, and says it was connected already
+      expect(await connect(p.user, "pro", theirs[0].externalId)).toEqual({ id: got.id, already: true, moved: 0 });
+
+      // Creator's fifth place: two at once, and one gets it
+      const cr = await someone("creator", [{}, {}, {}, {}]);
+      const fifth = await Promise.all([connect(cr.user, "creator", "UCw2chfiftha"), connect(cr.user, "creator", "UCw2chfifthb")]);
+      expect(fifth.filter((x) => x === null)).toHaveLength(1);
+      expect((await channels.channelsOf(cr.user)).filter((x) => x.platform === "youtube")).toHaveLength(5);
+      // one TikTok account on every plan
+      expect(await connect(cr.user, "creator", "w2ch-tt-first", "tiktok")).toMatchObject({ already: false, moved: 0 });
+      expect(await connect(cr.user, "creator", "w2ch-tt-second", "tiktok")).toBeNull();
+      expect((await channels.channelsOf(cr.user)).filter((x) => x.platform === "tiktok").map((x) => x.externalId)).toEqual(["w2ch-tt-first"]);
+    });
+
+    it("says what each finished Short is waiting for, on the channel it was made for", async () => {
+      const notes = await import("@/lib/server/notify");
+      const c = await someone("creator", [{ title: "Quiz Den", external: TEST_CHANNEL, madeForKids: null }, { title: "Ball Clash" }]);
+      const [api, own] = c.channels;
+      const finish = async (channel: string | null, title: string) => {
+        const [v] = await db.admin((tx) => tx<{ id: string }[]>`
+          insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for)
+          values (${c.user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'rendering', ${now}, ${at(12)}) returning id`);
+        const [j] = await db.admin((tx) => tx<{ id: number }[]>`insert into public.render_jobs (video_id, priority, status) values (${v.id}, 2, 'running') returning id`);
+        const spec = { format: "wyr", params: { pairs: [] } } as Parameters<Render["finishJob"]>[0]["spec"];
+        await render.finishJob({ id: j.id, videoId: v.id, userId: c.user, spec, tag: false, attempts: 1, clean: false, alsoClean: false }, `${c.user}/${v.id}.mp4`);
+        const n = (await notes.notificationsOf(c.user)).items.find((x) => x.kind === "ready" && x.body?.startsWith(title));
+        return n ? { title: n.title, body: n.body, href: n.href === `/app/shorts/${v.id}` ? "its page" : n.href } : null;
+      };
+      // Hookline uploads to Quiz Den, once it's said whether it's made for kids
+      expect(await finish(api, "Asks first")).toEqual({
+        title: "One question before it posts", body: "Asks first. Say whether Quiz Den is made for kids, in Settings, and it posts.", href: `/app/settings#audience-${api}`,
+      });
+      expect(await finish(own, "By hand")).toEqual({ title: "Ready for you to post", body: "By hand. Download it, upload it to YouTube, then tap I posted it.", href: "its page" });
+      expect(await finish(null, "Nowhere")).toEqual({ title: "Ready to download", body: "Nowhere", href: "its page" });
+      // answered, it posts itself, and says so once it's up
+      expect(await channels.setAudience(c.user, api, false, "public")).toBe(true);
+      expect(await finish(api, "Posts itself")).toBeNull();
+      // Google stopped letting Hookline in: it waits for Quiz Den to be reconnected (and a question keeps its question mark)
+      await store.markExpired(api);
+      expect(await finish(api, "Fly or be invisible?")).toEqual({
+        title: "Ready once Quiz Den is back", body: "Fly or be invisible? Reconnect Quiz Den in Settings so it can post.", href: `/app/settings#audience-${api}`,
+      });
+      // disconnected, it's the creator's to post
+      await channels.disconnectChannel(c.user, api);
+      expect(await finish(api, "Gone")).toMatchObject({ title: "Ready for you to post", href: "its page" });
+    });
+
+    it("shows one channel's queue when it's picked, each Short saying which channel it's for", async () => {
+      const q = await someone("creator", [{ title: "Left" }, { title: "Right" }]);
+      const [left, right] = q.channels;
+      for (const id of q.channels) expect(await gen.makeShorts(q.user, { origin: "daily", channelId: id, count: 2, now })).toBe(2);
+      const [up] = await posted(q.user, right, [50]);
+      const all = await queue.queueOf(q.user);
+      expect(all.waiting.map((w) => w.channelId).sort()).toEqual([left, left, right, right].sort());
+      expect(all.posted.map((p) => [p.id, p.channelId])).toEqual([[up, right]]);
+      const one = await queue.queueOf(q.user, left);
+      expect(one.waiting.map((w) => w.channelId)).toEqual([left, left]);
+      expect(one.posted).toEqual([]);
+      expect((await queue.queueOf(q.user, right)).posted.map((p) => p.id)).toEqual([up]);
+      // another account's channel shows nothing
+      expect(await queue.queueOf(A, left)).toEqual({ waiting: [], coming: [], posted: [] });
+    });
+
+    it("shows one channel's Shorts in the library and the calendar, and what's working on it against its own usual", async () => {
+      const lib = await import("@/lib/server/shorts/library");
+      const g = await someone("creator", [{ title: "Big" }, { title: "Small" }]);
+      const [big, small] = g.channels;
+      const bigs = await posted(g.user, big, [400, 500, 600]);
+      const smalls = await posted(g.user, small, [10, 11, 12, 30]);
+      const ids = (xs: { id: string }[]) => xs.map((x) => x.id).sort();
+
+      // one channel picked: only its Shorts, along with whatever else is asked for
+      expect(ids((await lib.libraryOf(g.user, { channel: small })).items)).toEqual([...smalls].sort());
+      expect((await lib.libraryOf(g.user, { channel: big, q: "Quiz 1" })).items.map((x) => x.id)).toEqual([bigs[0]]);
+      expect((await lib.libraryOf(g.user)).total).toBe(7);
+      const from = new Date(now.getTime() - 30 * 86400_000);
+      const to = new Date(now.getTime() + 86400_000);
+      expect(ids(await lib.calendarOf(g.user, from, to, big))).toEqual([...bigs].sort());
+      expect(await lib.calendarOf(g.user, from, to)).toHaveLength(7);
+      // another account's channel shows nothing
+      expect((await lib.libraryOf(A, { channel: small })).total).toBe(0);
+      expect(await lib.calendarOf(A, from, to, small)).toEqual([]);
+
+      // what each channel learned, and what the account learned across both
+      await db.admin(async (tx) => {
+        await tx`
+          insert into public.channel_weights (channel_id, user_id, kind, name, score, samples) values
+            (${big}, ${g.user}, 'format', 'battle', 2, 20), (${big}, ${g.user}, 'key', 'battle:spike', 1.6, 10),
+            (${small}, ${g.user}, 'format', 'quiz', 1.5, 4), (${small}, ${g.user}, 'key', 'battle:spike', 1, 3)`;
+        await tx`
+          insert into public.weights (user_id, kind, name, score, samples) values
+            (${g.user}, 'format', 'battle', 2, 20), (${g.user}, 'format', 'quiz', 1.5, 4), (${g.user}, 'key', 'battle:spike', 1.4, 13)`;
+      });
+      const mine = await lib.insightsFor(g.user, small);
+      const format = (x: typeof mine, f: string) => x.formats.find((y) => y.format === f)!;
+      // its own results, against its own usual (the middle of 10, 11, 12 and 30)
+      expect(mine).toMatchObject({ typical: 11.5, measured: 4 });
+      expect(format(mine, "quiz")).toMatchObject({ score: 1.5, samples: 4 });
+      expect(format(mine, "battle")).toMatchObject({ score: 1, samples: 0 });
+      // its odds start from what the other channel found: more battles than a format nobody has tried
+      expect(format(mine, "battle").share).toBeGreaterThan(format(mine, "wyr").share);
+      // a kind stands out by its own results: Spike did as usual here, whatever it did on the other channel
+      expect(mine.kinds).toEqual([]);
+      expect((await lib.insightsFor(g.user, big)).kinds).toEqual([expect.objectContaining({ group: "battle:spike", name: "Spike battles", samples: 10 })]);
+      // across both: the account's own results, with no one usual, since each channel has its own
+      const across = await lib.insightsFor(g.user);
+      expect(across).toMatchObject({ typical: null, measured: 24 });
+      expect(format(across, "battle")).toMatchObject({ score: 2, samples: 20 });
+      // and nobody else's channel tells them anything
+      expect(await lib.insightsFor(A, small)).toMatchObject({ measured: 0, typical: null, kinds: [] });
+    });
+
+    it("measures when each Short went out against its own channel's usual, for Trends' best times", async () => {
+      const t = await someone("creator", [{ title: "Loud" }, { title: "Quiet" }]);
+      const [loud, quiet] = t.channels;
+      const louds = await posted(t.user, loud, [900, 1000, 1100]);
+      const quiets = await posted(t.user, quiet, [9, 10, 11]);
+      // the loud channel's went out at 10am four days ago, the quiet one's at 4pm
+      const day = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate() - 4);
+      const sent = (ids: string[], hour: number) => db.admin((tx) => tx`update public.videos set posted_at = ${new Date(day + hour * 3600_000)} where id = any(${ids}::uuid[])`);
+      await sent(louds, 10);
+      await sent(quiets, 16);
+      const { map, posts } = await trends.postingTimes(t.user);
+      expect(posts).toBe(6);
+      // each about as good as its own channel's usual, so the quiet channel's aren't a hundredth of the loud one's
+      const weekday = new Date(day).getUTCDay();
+      const around = (lifts: number[]) => Math.exp(lifts.reduce((s, l) => s + Math.log(l), 0) / lifts.length);
+      expect(map.cells[weekday][3]).toBeCloseTo(around([910 / 1010, 1, 1110 / 1010]), 6);
+      expect(map.cells[weekday][5]).toBeCloseTo(around([19 / 20, 1, 21 / 20]), 6);
+      expect([map.counts[weekday][3], map.counts[weekday][5]]).toEqual([3, 3]);
+    });
+
+    it("names one channel's Earnings figures for it, and keeps the account's own figures for all of them", async () => {
+      const e = await someone("creator", [{ title: "Pop" }, { title: "Quiet" }]);
+      const [pop, quiet] = e.channels;
+      const day = new Date(now.getTime() - 5 * 86400_000).toISOString().slice(0, 10);
+      await db.admin(async (tx) => {
+        for (const [channel, views] of [[pop, 100], [quiet, 10]] as const) {
+          await tx`
+            insert into public.metrics (user_id, channel_id, source, metric, day, value) values
+              (${e.user}, ${channel}, 'youtube', 'views', ${day}, ${views}), (${e.user}, ${channel}, 'youtube', 'subscribers', ${day}, 1),
+              (${e.user}, ${channel}, 'youtube', 'revenue', ${day}, 2)`;
+        }
+        await tx`insert into public.metrics (user_id, source, metric, day, value) values (${e.user}, 'stripe', 'revenue:usd', ${day}, 40)`;
+      });
+      const labels = async (channelId?: string) => (await earn.earningsOf(e.user, 30, channelId)).series.map((s) => s.label);
+      expect(await labels(quiet)).toEqual(["Views on Quiet", "New subscribers on Quiet", "Quiet's YouTube revenue"]);
+      expect(await labels()).toEqual(["Views on YouTube", "New subscribers", "YouTube revenue", "Sales through Stripe (USD)"]);
+    });
+  });
 
   // wave 2: leaderboard
 

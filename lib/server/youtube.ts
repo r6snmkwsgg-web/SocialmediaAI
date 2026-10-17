@@ -81,7 +81,8 @@ export function youtubeAuthUrl(state: string, redirectUri: string): string {
     scope: YOUTUBE_SCOPES.join(" "),
     access_type: "offline",
     include_granted_scopes: "true",
-    prompt: "consent",
+    // Google's account chooser every time, so another channel (or a Brand Account) can be picked, and consent so a refresh token comes back
+    prompt: "consent select_account",
     state,
   });
   return `${AUTH}?${q}`;

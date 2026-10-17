@@ -18,5 +18,6 @@ export async function makeLike(form: FormData) {
   if (!format) redirect("/app/trends");
   const r = await makeShortsSaying(me.id, { origin: "daily", count: 1, like: format });
   revalidatePath("/app/shorts");
-  redirect(r.made ? "/app/shorts" : `/app/trends?error=${r.short === "dry" || r.short === "off" ? r.short : "allowance"}`);
+  // every channel switched off says so; otherwise the reason it couldn't make one, or the plan's allowance
+  redirect(r.made ? "/app/shorts" : `/app/trends?error=${r.short === "dry" || r.short === "off" || r.short === "stopped" ? r.short : "allowance"}`);
 }

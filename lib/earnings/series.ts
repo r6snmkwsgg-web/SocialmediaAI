@@ -61,6 +61,23 @@ export function fromTotals(days: string[], totals: Map<string, number>): Point[]
 
 export const sum = (ps: Point[]) => ps.reduce((a, p) => a + (p.value ?? 0), 0);
 
+/**
+ * Several sources' days added up, like each channel's views for all of
+ * them together. A part only counts from `from` (its first report) to
+ * `until` (its last, for one that can't be read any more): before or
+ * after that it adds nothing. A day is unknown while any part being read
+ * then hasn't reported it, and a day no part was being read is unknown too.
+ * Every part has the same days.
+ */
+export function addUp(parts: { points: Point[]; from: string | null; until?: string | null }[]): Point[] {
+  const days = parts[0]?.points.map((p) => p.day) ?? [];
+  return days.map((day, i) => {
+    const read = parts.filter((p) => p.from !== null && day >= p.from && (!p.until || day <= p.until));
+    if (!read.length || read.some((p) => p.points[i].value === null)) return { day, value: null };
+    return { day, value: read.reduce((a, p) => a + p.points[i].value!, 0) };
+  });
+}
+
 /** A goal's progress: this month so far, or everything ever. */
 export function goalProgress(values: Point[], period: "month" | "all", today: string): number {
   const month = today.slice(0, 7);

@@ -3,6 +3,7 @@ import { Wordmark } from "@/components/brand";
 import { TimezoneField } from "@/components/app/client-bits";
 import { ConnectList } from "@/components/app/connect";
 import { button } from "@/components/app/ui";
+import type { Plan } from "@/lib/billing/plans";
 import { account } from "@/lib/server/account";
 import { channelsOf, type Platform } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
@@ -59,16 +60,17 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
           </form>
         </section>
       ) : (
-        <Connect goal={goal ?? "both"} userId={me.id} posts={me.plan.scheduling} />
+        <Connect goal={goal ?? "both"} userId={me.id} plan={me.plan} />
       )}
     </div>
   );
 }
 
-/** `posts` is whether their plan posts Shorts for them. */
-async function Connect({ goal, userId, posts }: { goal: "shorts" | "live" | "both"; userId: string; posts: boolean }) {
+/** Their plan says whether Hookline posts Shorts for them, and how many YouTube channels it has room for. */
+async function Connect({ goal, userId, plan }: { goal: "shorts" | "live" | "both"; userId: string; plan: Plan }) {
   const channels = await channelsOf(userId);
   const c = configured();
+  const posts = plan.scheduling;
   const platforms: Platform[] = goal === "live" ? ["tiktok"] : ["youtube", "tiktok"];
   return (
     <section aria-labelledby="connect" className="flex flex-col gap-8">
@@ -90,6 +92,8 @@ async function Connect({ goal, userId, posts }: { goal: "shorts" | "live" | "bot
         channels={channels}
         ready={{ youtube: c.youtube, tiktok: c.tiktok }}
         next="/app/welcome?step=connect"
+        room={plan.channels}
+        plan={plan.name}
         audience={saveAudience}
         youtubeApi={c.youtubeAudited}
         tiktokProfile={c.tiktokProfile}

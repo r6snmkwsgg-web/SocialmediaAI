@@ -4,12 +4,13 @@ import { redirect } from "next/navigation";
 import { z } from "zod";
 import { requireUser, signOut } from "@/lib/server/auth";
 import { stripe } from "@/lib/server/billing";
-import { setAudience } from "@/lib/server/channels";
+import { disconnectChannel, setAudience, setChannelSettings } from "@/lib/server/channels";
 import { admin, asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { safeNext } from "@/lib/server/http";
 import { removeVideos } from "@/lib/server/storage";
 import { supabaseAdmin } from "@/lib/server/supabase-admin";
+import { channelSettingsFrom } from "@/lib/shorts/channels";
 import { validTimezone } from "@/lib/shorts/times";
 import { YT_PRIVACY } from "@/lib/shorts/youtube";
 
@@ -37,14 +38,25 @@ export async function saveShorts(form: FormData) {
   redirect("/app/settings?saved=1");
 }
 
+/** Disconnecting keeps the channel and its Shorts; its keys, and the figures read with them, go. */
 export async function disconnect(form: FormData) {
   const me = await requireUser();
   const id = z.uuid().safeParse(form.get("id"));
   if (!id.success) redirect("/app/settings");
-  // row-level security keeps this to their own channels; the tokens go with it
-  await asUser(me.id, (tx) => tx`delete from public.channels where id = ${id.data}`);
-  revalidatePath("/app/settings");
-  redirect("/app/settings?disconnected=1");
+  const done = await disconnectChannel(me.id, id.data);
+  revalidatePath("/app", "layout");
+  // the note says when TikTok choices made for that account were cleared
+  redirect(done ? `/app/settings?disconnected=${done.platform}${done.cleared ? "&cleared=1" : ""}` : "/app/settings");
+}
+
+/** A YouTube channel's own Shorts settings: whether it gets new Shorts, read only where the form showed its checkbox. */
+export async function saveChannelSettings(form: FormData) {
+  const me = await requireUser();
+  const id = z.uuid().safeParse(form.get("id"));
+  if (!id.success || !(await setChannelSettings(me.id, id.data, channelSettingsFrom(form)))) redirect("/app/settings?error=settings");
+  revalidatePath("/app", "layout");
+  // back where they were, with the channel saying it's saved
+  redirect(`/app/settings?saved=channel&channel=${id.data}#channel-${id.data}`);
 }
 
 const audience = z.object({

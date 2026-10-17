@@ -98,17 +98,22 @@ export async function takenInOtherWords(kind: FormatId, items: { id: string; wor
 /**
  * The channel's own look. The first time it's needed it takes the lowest
  * look number nobody has, so every channel's is different from every
- * other's; after that it's always the same one.
+ * other's; after that it's always the same one. Each of an account's
+ * YouTube channels has its own; an account with no channel has one too
+ * (`channelId` null), which its first channel takes over.
  */
-export async function lookFor(userId: string): Promise<Look> {
+export async function lookFor(userId: string, channelId: string | null = null): Promise<Look> {
   return admin(async (tx) => {
-    const [mine] = await tx<{ item: string }[]>`select item from public.content_ledger where kind = 'look' and user_id = ${userId} order by claimed_at limit 1`;
+    const [mine] = await tx<{ item: string }[]>`
+      select item from public.content_ledger
+      where kind = 'look' and ${channelId ? tx`channel_id = ${channelId}` : tx`user_id = ${userId} and channel_id is null`}
+      order by claimed_at limit 1`;
     if (mine) return lookNumber(Number(mine.item.slice("look:".length)));
     for (let tries = 0; tries < 8; tries++) {
       // look 0 is Hookline's own; the lowest free one is never past one more than the number taken
       const [got] = await tx<{ item: string }[]>`
-        insert into public.content_ledger (item, kind, user_id)
-        select 'look:' || n, 'look', ${userId}::uuid
+        insert into public.content_ledger (item, kind, user_id, channel_id)
+        select 'look:' || n, 'look', ${userId}::uuid, ${channelId}::uuid
         from generate_series(1, (select count(*) from public.content_ledger where kind = 'look')::int + 1) n
         where not exists (select 1 from public.content_ledger l where l.item = 'look:' || n)
         order by n

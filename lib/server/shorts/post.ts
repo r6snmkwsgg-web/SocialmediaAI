@@ -14,15 +14,17 @@ import { cleanCopy } from "./render";
 /**
  * Posting what's ready, on plans that post for you. YouTube gets each
  * Short as soon as it's rendered (public ones set to go public at their
- * time, the rest at their time), but only where Hookline may upload: every
- * channel once YouTube's audit has passed, the test channels before it.
- * Everyone else posts their own and Hookline checks the link. A Short
- * only counts as posted once YouTube says so. TikTok gets it at its time,
- * since TikTok can't schedule, with the choices the creator made for it
- * and without the free plan's tag. A lock on each video means two posters
- * running at once never post the same one twice. When YouTube's daily
- * upload quota runs out, the Shorts in line say they're waiting for it and
- * are tried again once it resets, not every minute.
+ * time, the rest at their time), on the channel it was made for and no
+ * other, but only where Hookline may upload: every channel once YouTube's
+ * audit has passed, the test channels before it. Everyone else posts
+ * their own and Hookline checks the link. A Short with no channel never
+ * uploads. A Short only counts as posted once YouTube says so. TikTok
+ * gets it at its time on the account's one TikTok, since TikTok can't
+ * schedule, with the choices the creator made for it and without the
+ * free plan's tag. A lock on each video means two posters running at
+ * once never post the same one twice. When YouTube's daily upload quota
+ * runs out, the Shorts in line say they're waiting for it and are tried
+ * again once it resets, not every minute.
  */
 
 /** YouTube's category for each format */
@@ -144,7 +146,8 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
   const log: string[] = await confirmYouTube(now);
   const { audited, test } = youtubeApi();
 
-  // only to channels Hookline may upload to, and only once the creator has said who the channel is for
+  // each to the channel it was made for, while that's connected, only where Hookline may upload, and only once the
+  // creator has said who the channel is for. Its owner's own channel: the key on videos keeps it so, and so does this join
   const youtube = await admin((tx) => tx<{
     id: string; user_id: string; title: string; description: string; format: FormatId; file_path: string; scheduled_for: Date;
     channel_id: string; privacy: string; kids: boolean;
@@ -153,10 +156,7 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
       coalesce(v.made_for_kids, c.made_for_kids) as kids
     from public.videos v
     join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
-    join lateral (
-      select id, external_id, privacy, made_for_kids from public.channels
-      where user_id = v.user_id and platform = 'youtube' and status = 'connected' order by connected_at limit 1
-    ) c on true
+    join public.channels c on c.id = v.channel_id and c.user_id = v.user_id and c.platform = 'youtube' and c.status = 'connected'
     where v.status = 'ready' and v.youtube_id is null and v.file_path is not null and v.scheduled_for is not null
       and c.made_for_kids is not null
       and (${audited} or c.external_id = any(string_to_array(${test.join(",")}, ',')))
@@ -182,7 +182,7 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
       });
       // up, not posted: it counts once YouTube says it's processed and can be seen
       await admin((tx) => tx`
-        update public.videos set youtube_id = ${ytId}, youtube_verified = true, channel_id = ${v.channel_id}, status = 'scheduled',
+        update public.videos set youtube_id = ${ytId}, youtube_verified = true, status = 'scheduled',
           youtube_status = 'uploaded', youtube_privacy = null, youtube_kids = null, youtube_checked_at = null,
           youtube_wanted = ${privacy}, youtube_publish_at = ${publishAt},
           posted_at = null, uploaded_at = ${now}, error = null, posting_at = null,
@@ -219,11 +219,12 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
       channel_id: string; youtube: boolean; priority: number;
     }[]>`
       select v.id, v.user_id, v.title, v.description, v.format, v.params, v.clean_path, v.tiktok_post, v.status, c.id as channel_id,
-        exists (select 1 from public.channels y where y.user_id = v.user_id and y.platform = 'youtube' and y.status = 'connected') as youtube,
+        v.channel_id is not null as youtube,
         case s.plan when 'creator' then 2 else 1 end as priority
       from public.videos v
       join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
-      join lateral (select id from public.channels where user_id = v.user_id and platform = 'tiktok' and status = 'connected' order by connected_at limit 1) c on true
+      -- every plan posts to one TikTok account: the first connected (extras connected before then stay, but nothing posts to them)
+      join lateral (select id from public.channels where user_id = v.user_id and platform = 'tiktok' and status = 'connected' order by added_at, id limit 1) c on true
       where v.status in ('ready', 'scheduled', 'posted') and v.file_path is not null
         and v.tiktok_post is not null and v.tiktok_publish_id is null and v.tiktok_error is null
         and v.tiktok_at <= ${now} and v.tiktok_at > ${new Date(now.getTime() - 86400_000)}
@@ -241,7 +242,8 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
         if (!choices.success) throw new TikTokError("The TikTok choices for this Short need making again.", 400, "choices");
         const length = seconds({ format: v.format, params: v.params } as Spec);
         const id = await tiktokPost(v.channel_id, await getVideo(file), tiktokCaption(v.title, v.description), choices.data, length);
-        // with no YouTube to post it to, TikTok is where it's posted
+        // with no YouTube channel to post it to, TikTok is where it's posted. One made for a channel stays ready for it,
+        // connected or not, so it still goes up there once it can, or the creator posts it there and says so
         const done = !v.youtube && v.status === "ready";
         await admin((tx) => tx`
           update public.videos set tiktok_publish_id = ${id}, tiktok_error = null, posting_at = null, tiktok_posted_at = ${now},
@@ -253,7 +255,7 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
         const e = err instanceof TikTokError ? err : null;
         const msg = e ? tiktokReason(e.code, e.message) : err instanceof Error ? err.message : String(err);
         if (e?.tomorrow) {
-          // TikTok's daily limit for apps under review is full: it goes at the same time tomorrow
+          // a daily limit is full (TikTok's for apps under review, or the account's own): it goes at the same time tomorrow
           await admin((tx) => tx`update public.videos set tiktok_at = ${new Date(now.getTime() + 86400_000)}, posting_at = null where id = ${v.id}`);
           await notify(v.user_id, { kind: "failed", title: "TikTok is full for today", body: `${v.title}: ${msg}`, href: `/app/shorts/${v.id}`, key: `tiktok-tomorrow:${v.id}:${now.toISOString().slice(0, 10)}` });
         } else if (e && !e.retry) {

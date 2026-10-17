@@ -1,11 +1,13 @@
 import { z } from "zod";
+import { atLocal, localParts, TRY_HOURS } from "./times";
 
 /**
  * What TikTok has the creator decide before anything posts to their
  * account, every time: who can see it (picked by them, never filled in),
  * whether people can comment, Duet and Stitch (all off until they switch
  * them on), and whether it promotes a brand. The form and the server
- * both judge the choices here, so they always agree.
+ * both judge the choices here, so they always agree. Every channel's
+ * Shorts go to the account's one TikTok, two hours apart.
  */
 
 export const PRIVACY = ["PUBLIC_TO_EVERYONE", "MUTUAL_FOLLOW_FRIENDS", "FOLLOWER_OF_CREATOR", "SELF_ONLY"] as const;
@@ -88,9 +90,33 @@ export function tiktokCaption(title: string, description: string): string {
   return (d ? `${title}\n\n${d}` : title).slice(0, 2200);
 }
 
+/** posts to one TikTok account are at least this many hours apart, whichever channel's Shorts they are */
+const TIKTOK_GAP_HOURS = 2;
+
+/**
+ * When a Short goes to TikTok: at its own time, unless that's within two
+ * hours of a post already booked for the account's TikTok (every
+ * channel's Shorts go to the one account, and TikTok watches for posts
+ * that come all at once). Then it's the first whole hour after its time,
+ * between 7am and 10pm where they are, that's two hours from every one
+ * booked, so a day holds 8 at most, under TikTok's own daily cap. One
+ * channel's own times are two hours apart already, so they never move.
+ */
+export function tiktokTime(at: Date, booked: Date[], tz: string): Date {
+  const clear = (t: Date) => booked.every((b) => Math.abs(b.getTime() - t.getTime()) >= TIKTOK_GAP_HOURS * 3600_000);
+  if (clear(at)) return at;
+  const start = localParts(at, tz);
+  for (let h = start.hour + 1; h <= start.hour + 30 * 24; h++) {
+    const t = atLocal(start.y, start.m, start.d, h, tz);
+    if (t.getTime() > at.getTime() && TRY_HOURS.includes(localParts(t, tz).hour) && clear(t)) return t;
+  }
+  return at;
+}
+
 /** TikTok's reasons for turning a post down, in words a creator can act on. */
 const REASONS: Record<string, string> = {
-  spam_risk_too_many_posts: "TikTok won't take more posts from this account today.",
+  spam_risk_too_many_posts: "TikTok's daily limit for this account is full. It goes at the same time tomorrow.",
+  spam_risk_too_many_pending_share: "TikTok holds at most 5 drafts from apps a day. Post the ones waiting in your drafts, or try again tomorrow.",
   spam_risk_user_banned_from_posting: "TikTok has stopped this account from posting.",
   reached_active_user_cap: "TikTok's daily limit for apps under review is full. It can go tomorrow.",
   unaudited_client_can_only_post_to_private_accounts: "While TikTok reviews Hookline, it can only post to private accounts.",

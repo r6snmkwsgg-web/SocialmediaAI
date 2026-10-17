@@ -1,15 +1,19 @@
 import { NextResponse, type NextRequest } from "next/server";
 import { currentUser } from "@/lib/server/auth";
-import { channelsOf } from "@/lib/server/channels";
-import { saveChannel } from "@/lib/server/channels-store";
+import { billingFor } from "@/lib/server/billing";
+import { channelsOf, connectChannel } from "@/lib/server/channels";
 import { origin } from "@/lib/server/http";
-import { rememberTikTok } from "@/lib/server/live";
-import { fitAudience } from "@/lib/server/shorts/queue";
 import { finishOAuth } from "@/lib/server/oauth";
 import { tiktokExchange, tiktokUser } from "@/lib/server/tiktok";
 import { youtubeChannel, youtubeExchange } from "@/lib/server/youtube";
 
-/** Back from Google or TikTok: swap the code for tokens, find the account, save both. */
+/**
+ * Back from Google or TikTok: swap the code for tokens, find the account,
+ * and connect it if the plan has room for it (checked again here, since
+ * the account chooser decides which one comes back). A grant made before
+ * a refusal stays at Google or TikTok, where the privacy page says to
+ * remove it.
+ */
 export async function GET(req: NextRequest, { params }: { params: Promise<{ platform: string }> }) {
   const { platform } = await params;
   const base = await origin();
@@ -24,23 +28,23 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
 
   const redirect = `${base}/api/connect/${platform}/callback`;
   try {
+    const { plan } = await billingFor(me.id);
     if (platform === "youtube") {
       const t = await youtubeExchange(code, redirect);
       const info = await youtubeChannel(t.access);
-      const id = await saveChannel(me.id, "youtube", info, t);
-      // YouTube may have the whole channel as made for kids: Shorts waiting for it get endings that don't ask for comments
-      await fitAudience(me.id);
-      // a new channel has a question to answer (made for kids or not) before anything posts to it: Settings and onboarding ask it
-      const fresh = (await channelsOf(me.id)).find((c) => c.id === id);
-      if (fresh?.madeForKids === null && !/^\/app\/(settings|welcome)/.test(next)) {
-        return NextResponse.redirect(`${base}/app/settings?connected=youtube#audience`);
-      }
+      const c = await connectChannel(me.id, "youtube", info, t, plan);
+      if (!c) return go("error=channels");
+      // which channel, for Settings' note, and how many of its Shorts got new times while it was away
+      const said = `connected=${c.already ? "already" : "youtube"}&channel=${c.id}${c.moved ? `&moved=${c.moved}` : ""}`;
+      // a channel with its question to answer (made for kids or not) before anything posts to it: Settings asks it, and onboarding
+      const fresh = (await channelsOf(me.id)).find((x) => x.id === c.id);
+      if (fresh?.madeForKids === null && !/^\/app\/welcome/.test(next)) return NextResponse.redirect(`${base}/app/settings?${said}#audience-${c.id}`);
+      return go(said);
     } else if (platform === "tiktok") {
       const t = await tiktokExchange(code, redirect);
       const info = await tiktokUser(t.access, t.scopes);
-      const id = await saveChannel(me.id, "tiktok", info, t);
-      // the username TikTok gave us is what makes a LIVE the game hears count as theirs
-      if (info.handle) await rememberTikTok(me.id, id, info.handle);
+      // every plan posts to one TikTok account
+      if (!(await connectChannel(me.id, "tiktok", info, t, plan))) return go("error=tiktokOne");
     } else {
       return go("error=platform");
     }

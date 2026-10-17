@@ -40,7 +40,7 @@ export default function Privacy() {
       <p>The services Hookline runs on: Supabase (accounts, database and video storage), Vercel (the website), Stripe (payments), Anthropic (the facts of each video are sent to Claude to suggest a title; no personal data is included), and YouTube and TikTok when you connect them.</p>
 
       <h2>Deleting it</h2>
-      <p>Settings, Delete account removes your account and everything above at once, cancels your plan, and deletes your rendered videos. Videos already posted stay on YouTube and TikTok, where you can delete them yourself. Disconnecting an account in Settings deletes its tokens straight away.</p>
+      <p>Settings, Delete account removes your account and everything above at once, cancels your plan, and deletes your rendered videos. Videos already posted stay on YouTube and TikTok, where you can delete them yourself. Disconnecting an account in Settings deletes its tokens and the figures read with it straight away, and for TikTok your username too. The Shorts made for it stay with your account.</p>
     </LegalPage>
   );
 }

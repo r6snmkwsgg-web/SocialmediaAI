@@ -189,10 +189,14 @@ export function keeping(a: { scheduling: boolean; youtube: { api: boolean; answe
   return "self";
 }
 
-/** The toast after a yes: a time it posts only when something will post it, and otherwise the best time to post it. */
-export function keptNote(how: Keeping, when: string | null): string {
+/**
+ * The toast after a yes: a time it posts only when something will post
+ * it, and otherwise the best time to post it. `channel` names the channel
+ * still to say whether it's made for kids.
+ */
+export function keptNote(how: Keeping, when: string | null, channel?: string): string {
   if (how === "posts" && when) return `Posting ${when}`;
-  if (how === "answer") return "Kept. Say whether your channel is made for kids, in Settings, and it posts.";
+  if (how === "answer") return `Kept. Say whether ${channel ?? "your channel"} is made for kids, in Settings, and it posts.`;
   if (how === "self" && when) return `Kept. Best time to post it: ${when}`;
   return "Kept. It's being made into a video now.";
 }

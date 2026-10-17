@@ -38,7 +38,8 @@ export async function overview(): Promise<Overview> {
         (select count(*) from public.profiles where onboarded_at is not null)::int as onboarded,
         (select count(*) from public.channels where platform = 'youtube' and status = 'connected')::int as youtube,
         (select count(*) from public.channels where platform = 'tiktok' and status = 'connected')::int as tiktok,
-        (select count(*) from public.channels where status <> 'connected')::int as lost,
+        -- needing reconnecting: Google or TikTok stopped letting Hookline in (one the creator disconnected isn't lost)
+        (select count(*) from public.channels where status = 'expired')::int as lost,
         (select count(*) from public.videos where created_at > now() - interval '24 hours')::int as made,
         (select count(*) from public.videos where decided_at > now() - interval '24 hours' and status not in ('review', 'rejected'))::int as approved,
         (select count(*) from public.videos where posted_at > now() - interval '24 hours')::int as posted,

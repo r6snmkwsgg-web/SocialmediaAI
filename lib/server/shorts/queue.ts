@@ -1,26 +1,29 @@
 import "server-only";
-import type { Plan } from "../../billing/plans";
+import { postsPerDay, type Plan } from "../../billing/plans";
+import { channelNames, isActive } from "../../shorts/channels";
 import type { HeldBack } from "../../shorts/history";
 import { isWhenLine, planSlots, validTimezone, whenLine } from "../../shorts/times";
-import type { TikTokChoices } from "../../shorts/tiktok";
+import { tiktokTime, type TikTokChoices } from "../../shorts/tiktok";
 import type { FormatId, Spec } from "../../shorts/types";
-import { brokenOf, commentsOn, YT_PRIVACY, type VideoState, type YouTubePrivacy } from "../../shorts/youtube";
+import { brokenOf, commentsOn, postsThroughApi, YT_PRIVACY, type VideoState, type YouTubePrivacy } from "../../shorts/youtube";
 import { billingFor } from "../billing";
 import { admin, asUser, type Tx } from "../db";
-import { configured } from "../env";
+import { configured, youtubeApi } from "../env";
 import { YouTubeError, youtubeAccess, youtubeIdFrom, youtubeVideoStates } from "../youtube";
 import { hourResults } from "./hours";
 
 /**
  * The Shorts queue as one account sees it: what's waiting for a yes or
  * no, what's on its way (rendering, ready, scheduled), and what's posted
- * with its views so far.
+ * with its views so far. Each Short says which YouTube channel it's for
+ * (`channelId`, null for one made while the account had none).
  */
 
-export type Waiting = { id: string; spec: Spec; key: string; title: string; description: string; why: string[]; suggestedFor: Date | null; origin: string };
+export type Waiting = { id: string; channelId: string | null; spec: Spec; key: string; title: string; description: string; why: string[]; suggestedFor: Date | null; origin: string };
 
 export type Coming = {
   id: string;
+  channelId: string | null;
   spec: Spec;
   title: string;
   description: string;
@@ -47,6 +50,7 @@ export type Coming = {
 
 export type Posted = {
   id: string;
+  channelId: string | null;
   title: string;
   format: FormatId;
   postedAt: Date | null;
@@ -61,41 +65,46 @@ export type Posted = {
 
 const privacyOf = (p: string | null): YouTubePrivacy | null => ((YT_PRIVACY as readonly string[]).includes(p ?? "") ? (p as YouTubePrivacy) : null);
 
-export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; coming: Coming[]; posted: Posted[] }> {
+/** The queue, or with `channelId` only that channel's Shorts. */
+export async function queueOf(userId: string, channelId?: string): Promise<{ waiting: Waiting[]; coming: Coming[]; posted: Posted[] }> {
   return asUser(userId, async (tx) => {
-    const waiting = await tx<{ id: string; format: FormatId; params: Spec["params"]; key: string; title: string; description: string; why: string[]; suggested_for: Date | null; origin: string }[]>`
-      select id, format, params, key, title, description, why, suggested_for, origin from public.videos
-      where status = 'review' order by suggested_for nulls last, created_at`;
+    const only = channelId ? tx`and v.channel_id = ${channelId}` : tx``;
+    const waiting = await tx<{ id: string; channel_id: string | null; format: FormatId; params: Spec["params"]; key: string; title: string; description: string; why: string[]; suggested_for: Date | null; origin: string }[]>`
+      select v.id, v.channel_id, v.format, v.params, v.key, v.title, v.description, v.why, v.suggested_for, v.origin from public.videos v
+      where v.status = 'review' ${only} order by v.suggested_for nulls last, v.created_at`;
     const coming = await tx<{
-      id: string; format: FormatId; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null;
+      id: string; channel_id: string | null; format: FormatId; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null;
       error: string | null; youtube_id: string | null; tiktok_publish_id: string | null; tiktok_chosen: boolean; tiktok_at: Date | null; tiktok_error: string | null; file_path: string | null;
       tiktok_file: boolean; cleaning: boolean; made_for_kids: boolean | null; youtube_kids: boolean | null; channel_kids: boolean | null;
       waiting_on: HeldBack["on"] | null; waiting_until: Date | null;
     }[]>`
-      select v.id, v.format, v.params, v.title, v.description, v.status, v.scheduled_for, v.error, v.youtube_id, v.tiktok_publish_id, v.file_path,
+      select v.id, v.channel_id, v.format, v.params, v.title, v.description, v.status, v.scheduled_for, v.error, v.youtube_id, v.tiktok_publish_id, v.file_path,
         v.tiktok_post is not null as tiktok_chosen, v.tiktok_at, v.tiktok_error, v.clean_path is not null as tiktok_file,
         exists (select 1 from public.render_jobs c where c.video_id = v.id and c.clean and c.status in ('queued', 'running')) as cleaning,
         v.made_for_kids, v.youtube_kids,
-        -- YouTube's verdict on the channel it goes to (the one it went to, or the one posting picks)
-        case when v.channel_id is not null then (select youtube_kids from public.channels where id = v.channel_id)
-          else (select youtube_kids from public.channels where platform = 'youtube' and status = 'connected' order by connected_at limit 1) end as channel_kids,
+        -- YouTube's verdict on the channel it's for, the only one it goes to
+        (select youtube_kids from public.channels where id = v.channel_id) as channel_kids,
         v.waiting_until, case when v.status = 'ready' and v.waiting_until > now() then v.waiting_on end as waiting_on,
         j.progress, j.status as job
       from public.videos v
       left join lateral (select progress, status from public.render_jobs where video_id = v.id and not clean order by id desc limit 1) j on true
-      where v.status in ('approved', 'rendering', 'ready', 'scheduled', 'failed') and v.decided_at > now() - interval '30 days'
+      where v.status in ('approved', 'rendering', 'ready', 'scheduled', 'failed') and v.decided_at > now() - interval '30 days' ${only}
       order by v.scheduled_for nulls last, v.decided_at`;
     const posted = await tx<{
-      id: string; title: string; format: FormatId; posted_at: Date | null; youtube_id: string | null; youtube_verified: boolean; youtube_privacy: string | null; youtube_kids: boolean | null;
-      stats: { checkpoint: "1h" | "24h" | "72h"; views: string }[] | null;
+      id: string; channel_id: string | null; title: string; format: FormatId; posted_at: Date | null; youtube_id: string | null; youtube_verified: boolean; youtube_privacy: string | null;
+      youtube_kids: boolean | null; stats: { checkpoint: "1h" | "24h" | "72h"; views: string }[] | null;
     }[]>`
-      select v.id, v.title, v.format, v.posted_at, v.youtube_id, v.youtube_verified, v.youtube_privacy, v.youtube_kids,
+      select v.id, v.channel_id, v.title, v.format, v.posted_at, v.youtube_id, v.youtube_verified, v.youtube_privacy, v.youtube_kids,
         (select json_agg(json_build_object('checkpoint', s.checkpoint, 'views', s.views)) from public.video_stats s where s.video_id = v.id) as stats
-      from public.videos v where v.status = 'posted' order by v.posted_at desc nulls last limit 30`;
+      from public.videos v where v.status = 'posted' ${only} order by v.posted_at desc nulls last limit 30`;
     return {
-      waiting: waiting.map((r) => ({ id: r.id, spec: { format: r.format, params: r.params } as Spec, key: r.key, title: r.title, description: r.description, why: r.why, suggestedFor: r.suggested_for, origin: r.origin })),
+      waiting: waiting.map((r) => ({
+        id: r.id, channelId: r.channel_id, spec: { format: r.format, params: r.params } as Spec, key: r.key, title: r.title, description: r.description, why: r.why, suggestedFor: r.suggested_for,
+        origin: r.origin,
+      })),
       coming: coming.map((r) => ({
         id: r.id,
+        channelId: r.channel_id,
         spec: { format: r.format, params: r.params } as Spec,
         title: r.title,
         description: r.description,
@@ -116,6 +125,7 @@ export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; com
       })),
       posted: posted.map((r) => ({
         id: r.id,
+        channelId: r.channel_id,
         title: r.title,
         format: r.format,
         postedAt: r.posted_at,
@@ -130,42 +140,93 @@ export async function queueOf(userId: string): Promise<{ waiting: Waiting[]; com
 }
 
 /**
+ * The posting times a channel's kept Shorts have (or the Shorts with no
+ * channel, for an account without one): a new time keeps two hours from
+ * these, and another channel's times are its own. `review` counts the
+ * times suggested to the ones still waiting for a yes too, and `except`
+ * leaves out the Shorts being given a time. Run as the user, so it only
+ * sees their own.
+ */
+async function takenOn(tx: Tx, channelId: string | null, opts: { review?: boolean; except?: string[] } = {}): Promise<Date[]> {
+  const statuses = ["approved", "rendering", "ready", "scheduled", ...(opts.review ? ["review"] : [])];
+  const except = opts.except ?? [];
+  const rows = await tx<{ t: Date }[]>`
+    select coalesce(scheduled_for, suggested_for) as t from public.videos
+    where status in ${tx(statuses)} and coalesce(scheduled_for, suggested_for) is not null
+      and ${channelId ? tx`channel_id = ${channelId}` : tx`channel_id is null`} ${except.length ? tx`and id not in ${tx(except)}` : tx``}`;
+  return rows.map((r) => r.t);
+}
+
+/**
+ * Posting times are booked one at a time for each account, so two
+ * bookings at once (two tabs, or a channel coming back while a Short is
+ * kept) each see the other's: every channel's Shorts share the account's
+ * one TikTok. Held until the transaction ends, and taken before anything
+ * else in it, so it never waits on a Short another booking holds.
+ */
+export async function lockTimes(tx: Tx, userId: string): Promise<void> {
+  await tx`select pg_advisory_xact_lock(hashtext(${`times:${userId}`}))`;
+}
+
+/**
+ * The account's TikTok posts around now and after: each with a TikTok
+ * time that hasn't been sent or turned down, and each sent in the last
+ * two hours. Every channel's Shorts go to the account's one TikTok, so a
+ * new TikTok time keeps two hours from all of these. `except` leaves out
+ * the Shorts being given a time. Read under `lockTimes`.
+ */
+async function bookedTikTok(tx: Tx, userId: string, now: Date, except: string[] = []): Promise<Date[]> {
+  const since = new Date(now.getTime() - 2 * 3600_000);
+  const rows = await tx<{ t: Date }[]>`
+    select coalesce(tiktok_posted_at, tiktok_at) as t from public.videos
+    where user_id = ${userId} and tiktok_post is not null ${except.length ? tx`and id not in ${tx(except)}` : tx``}
+      and ((tiktok_publish_id is null and tiktok_error is null and tiktok_at > ${since}) or tiktok_posted_at > ${since})`;
+  return rows.map((r) => r.t);
+}
+
+/**
  * A yes: it goes in the render queue, ahead of free accounts on the paid
  * plans. On a plan that posts for you, it keeps its suggested time (or
- * the next free one at the channel's usual hours if that's passed, and
- * its "why" says the new time), and goes to TikTok then too if the
- * creator made their TikTok choices for it.
+ * the next free one at its channel's usual hours if that's passed, two
+ * hours from that channel's others, and its "why" says the new time), and
+ * goes to TikTok then too if the creator made their TikTok choices for
+ * it (a little later if another of the account's TikTok posts is within
+ * two hours of then).
  *
- * Who it's for is the YouTube channel's answer, unless the creator chose
+ * Who it's for is its YouTube channel's answer, unless the creator chose
  * differently for this Short (`kids`). One made for kids, or going to a
  * channel YouTube has set as made for kids, gets an ending that doesn't
  * ask for comments, since YouTube turns them off.
  */
 export async function approve(userId: string, id: string, plan: Plan, now = new Date(), tiktok: TikTokChoices | null = null, kids: boolean | null = null): Promise<boolean> {
   const done = await asUser(userId, async (tx) => {
-    const [v] = await tx<{ suggested_for: Date | null; timezone: string; why: string[] }[]>`
-      select v.suggested_for, p.timezone, v.why from public.videos v join public.profiles p on p.id = v.user_id where v.id = ${id} and v.status = 'review'`;
+    // a plan that posts books its time, and maybe TikTok's
+    if (plan.scheduling) await lockTimes(tx, userId);
+    const [v] = await tx<{ suggested_for: Date | null; timezone: string; why: string[]; channel_id: string | null }[]>`
+      select v.suggested_for, p.timezone, v.why, v.channel_id from public.videos v join public.profiles p on p.id = v.user_id where v.id = ${id} and v.status = 'review'`;
     if (!v) return false;
+    const tz = validTimezone(v.timezone);
     let at: Date | null = null;
     let why = v.why;
     if (plan.scheduling) {
       at = v.suggested_for && v.suggested_for.getTime() > now.getTime() + 15 * 60_000 ? v.suggested_for : null;
       if (!at) {
-        const tz = validTimezone(v.timezone);
-        const taken = await tx<{ t: Date }[]>`select coalesce(scheduled_for, suggested_for) as t from public.videos where status in ('approved', 'rendering', 'ready', 'scheduled') and coalesce(scheduled_for, suggested_for) is not null`;
-        const slot = planSlots(1, now, tz, await hourResults(tx, tz), taken.map((r) => r.t), Math.random, 0)[0];
+        const slot = planSlots(1, now, tz, await hourResults(tx, tz, v.channel_id), await takenOn(tx, v.channel_id), Math.random, 0, [], postsPerDay(plan))[0];
         at = slot?.at ?? null;
         why = [...v.why.filter((w) => !isWhenLine(w)), ...(slot ? [whenLine(slot, tz, true)] : [])];
       }
     }
-    const [ch] = await tx<{ made_for_kids: boolean | null; youtube_kids: boolean | null }[]>`
-      select made_for_kids, youtube_kids from public.channels where user_id = ${userId} and platform = 'youtube' and status = 'connected' order by connected_at limit 1`;
+    // the channel it's for: its answer, and YouTube's verdict on it
+    const [ch] = v.channel_id
+      ? await tx<{ made_for_kids: boolean | null; youtube_kids: boolean | null }[]>`select made_for_kids, youtube_kids from public.channels where id = ${v.channel_id}`
+      : [];
     const audience = kids ?? ch?.made_for_kids ?? null;
     const comments = commentsOn({ madeForKids: audience, channelKids: ch?.youtube_kids });
     const post = plan.scheduling && tiktok ? tiktok : null;
+    const tiktokAt = post && at ? tiktokTime(at, await bookedTikTok(tx, userId, now, [id]), tz) : null;
     await tx`
       update public.videos set status = 'approved', decided_at = now(), scheduled_for = ${at}, why = ${tx.json(why)}, error = null,
-        tiktok_post = ${post ? tx.json(post) : null}, tiktok_at = ${post ? at : null}, tiktok_error = null,
+        tiktok_post = ${post ? tx.json(post) : null}, tiktok_at = ${tiktokAt}, tiktok_error = null,
         made_for_kids = ${audience},
         params = case when ${!comments} then params || '{"allowComments": false}'::jsonb else params - 'allowComments' end
       where id = ${id}`;
@@ -176,22 +237,21 @@ export async function approve(userId: string, id: string, plan: Plan, now = new 
 }
 
 /**
- * Shorts kept but not yet on YouTube, brought in line with who the channel
- * is for once that's known (the creator's answer, or YouTube's verdict on
- * the whole channel when it's connected). One kept before there was an
- * answer takes it, and one that will be made for kids is made again if
- * its ending asks for comments YouTube will turn off. One being made right
- * now is made again when it finishes (finishJob checks). Returns how many
- * are made again.
+ * A channel's Shorts kept but not yet on YouTube, brought in line with who
+ * the channel is for once that's known (the creator's answer, or YouTube's
+ * verdict on the whole channel when it's connected). One kept before there
+ * was an answer takes it, and one that will be made for kids is made again
+ * if its ending asks for comments YouTube will turn off. One being made
+ * right now is made again when it finishes (finishJob checks). Other
+ * channels' Shorts go by their own answers. Returns how many are made again.
  */
-export async function fitAudience(userId: string): Promise<number> {
+export async function fitAudience(userId: string, channelId: string): Promise<number> {
   const [c] = await admin((tx) => tx<{ made_for_kids: boolean | null; youtube_kids: boolean | null }[]>`
-    select made_for_kids, youtube_kids from public.channels
-    where user_id = ${userId} and platform = 'youtube' and status = 'connected' order by connected_at limit 1`);
+    select made_for_kids, youtube_kids from public.channels where id = ${channelId} and user_id = ${userId} and platform = 'youtube'`);
   if (!c) return 0;
   const priority = (await billingFor(userId)).plan.priority;
   return admin(async (tx) => {
-    const waiting = tx`user_id = ${userId} and youtube_id is null and status in ('approved', 'rendering', 'ready')`;
+    const waiting = tx`user_id = ${userId} and channel_id = ${channelId} and youtube_id is null and status in ('approved', 'rendering', 'ready')`;
     // the database logs each Short taking the channel's answer, like any other choice
     if (c.made_for_kids !== null) await tx`update public.videos set made_for_kids = ${c.made_for_kids} where ${waiting} and made_for_kids is null`;
     const again = await tx<{ id: string }[]>`
@@ -210,15 +270,76 @@ export async function fitAudience(userId: string): Promise<number> {
 /**
  * TikTok choices made later: for a Short approved before TikTok was
  * connected, or one TikTok turned down. It goes at its time, or now if
- * that's passed.
+ * that's passed, and later if that's within two hours of another of the
+ * account's TikTok posts.
  */
 export async function chooseTikTok(userId: string, id: string, choices: TikTokChoices, now = new Date()): Promise<boolean> {
-  const rows = await asUser(userId, (tx) => tx`
-    update public.videos set tiktok_post = ${tx.json(choices)}, tiktok_error = null,
-      tiktok_at = greatest(coalesce(scheduled_for, ${now}), ${now})
-    where id = ${id} and status in ('approved', 'rendering', 'ready', 'scheduled', 'posted') and tiktok_publish_id is null
-    returning id`);
-  return rows.length > 0;
+  return asUser(userId, async (tx) => {
+    await lockTimes(tx, userId);
+    const [v] = await tx<{ scheduled_for: Date | null; timezone: string }[]>`
+      select v.scheduled_for, p.timezone from public.videos v join public.profiles p on p.id = v.user_id
+      where v.id = ${id} and v.status in ('approved', 'rendering', 'ready', 'scheduled', 'posted') and v.tiktok_publish_id is null`;
+    if (!v) return false;
+    const due = v.scheduled_for && v.scheduled_for.getTime() > now.getTime() ? v.scheduled_for : now;
+    const at = tiktokTime(due, await bookedTikTok(tx, userId, now, [id]), validTimezone(v.timezone));
+    const rows = await tx`
+      update public.videos set tiktok_post = ${tx.json(choices)}, tiktok_error = null, tiktok_at = ${at}
+      where id = ${id} and tiktok_publish_id is null returning id`;
+    return rows.length > 0;
+  });
+}
+
+/**
+ * A channel back after being away (connected again, or connected for the
+ * first time and taking over the account's Shorts), or one that has just
+ * said who it's for: its kept Shorts that aren't on YouTube yet and whose
+ * time has passed, or is under 15 minutes off, get the channel's next free
+ * times at its own hours, two hours apart and from everything else booked
+ * on it (the times suggested to today's Shorts too), instead of all going
+ * up at once. Only where Hookline uploads them itself: anywhere else
+ * nothing goes up by itself, so their times stay as the creator saw them.
+ * Each one's "why" says its new time, and a TikTok time not used yet moves
+ * with it, two hours from the account's other TikTok posts. One being
+ * posted right now is left alone. `within` is a transaction already under
+ * way, and the plan it's for. Returns how many moved.
+ */
+export async function retimeLate(userId: string, channelId: string, now = new Date(), within?: { tx: Tx; plan: Plan }): Promise<number> {
+  const plan = within?.plan ?? (await billingFor(userId)).plan;
+  // nothing goes up by itself on a plan that doesn't post
+  if (!plan.scheduling) return 0;
+  const run = async (tx: Tx) => {
+    await lockTimes(tx, userId);
+    // nor anywhere Hookline doesn't upload: a channel that isn't connected, or one the creator posts to themselves
+    const [c] = await tx<{ external_id: string; status: string }[]>`
+      select external_id, status from public.channels where id = ${channelId} and user_id = ${userId} and platform = 'youtube'`;
+    if (c?.status !== "connected" || !postsThroughApi(c.external_id, youtubeApi())) return 0;
+    const late = await tx<{ id: string; why: string[]; tiktok_at: Date | null; tiktok_publish_id: string | null; tiktok_error: string | null }[]>`
+      select id, why, tiktok_at, tiktok_publish_id, tiktok_error from public.videos
+      where user_id = ${userId} and channel_id = ${channelId} and status in ('approved', 'rendering', 'ready')
+        and youtube_id is null and scheduled_for is not null and scheduled_for < ${new Date(now.getTime() + 15 * 60_000)}
+        and (posting_at is null or posting_at < now() - interval '30 minutes')
+      order by scheduled_for, id`;
+    if (!late.length) return 0;
+    const [p] = await tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`;
+    const tz = validTimezone(p?.timezone);
+    const ids = late.map((v) => v.id);
+    const taken = await takenOn(tx, channelId, { review: true, except: ids });
+    const slots = planSlots(late.length, now, tz, await hourResults(tx, tz, channelId), taken, Math.random, 0, [], postsPerDay(plan));
+    const booked = await bookedTikTok(tx, userId, now, ids);
+    let moved = 0;
+    for (const [i, v] of late.entries()) {
+      const slot = slots[i];
+      if (!slot) continue;
+      const why = [...v.why.filter((w) => !isWhenLine(w)), whenLine(slot, tz, plan.scheduling)];
+      // still to go to TikTok (not sent, and not turned down): it goes with its new time
+      const tiktok = v.tiktok_at && !v.tiktok_publish_id && !v.tiktok_error ? tiktokTime(slot.at, booked, tz) : null;
+      if (tiktok) booked.push(tiktok);
+      await tx`update public.videos set scheduled_for = ${slot.at}, why = ${tx.json(why)}, tiktok_at = ${tiktok ?? v.tiktok_at} where id = ${v.id}`;
+      moved++;
+    }
+    return moved;
+  };
+  return within ? run(within.tx) : asUser(userId, run);
 }
 
 export async function reject(userId: string, id: string): Promise<boolean> {
@@ -233,14 +354,20 @@ export async function retitle(userId: string, id: string, title: string, descrip
 /**
  * What YouTube says about a pasted link: the video, or null when YouTube
  * doesn't show one; "unchecked" when there's no way to ask (no API key and
- * no channel to ask with); "error" when asking failed.
+ * no channel to ask with); "error" when asking failed. `first` is the
+ * channel the Short was made for, asked before the rest.
  */
-export type Lookup = (userId: string, youtubeId: string) => Promise<{ state: VideoState | null } | "unchecked" | "error">;
+export type Lookup = (userId: string, youtubeId: string, first?: string | null) => Promise<{ state: VideoState | null } | "unchecked" | "error">;
 
-/** Asked as the creator's own channels first, which see their private videos too, then with the API key. */
-const lookUp: Lookup = async (userId, youtubeId) => {
-  const channels = await admin((tx) => tx<{ id: string }[]>`
-    select id from public.channels where user_id = ${userId} and platform = 'youtube' and status = 'connected' order by connected_at`);
+/**
+ * Asked as the creator's own connected channels, which see their private
+ * videos too (the Short's own channel first, where it's most likely to
+ * be), then with the API key.
+ */
+const lookUp: Lookup = async (userId, youtubeId, first = null) => {
+  const connected = await admin((tx) => tx<{ id: string }[]>`
+    select id from public.channels where user_id = ${userId} and platform = 'youtube' and status = 'connected' order by added_at, id`);
+  const channels = [...connected.filter((c) => c.id === first), ...connected.filter((c) => c.id !== first)];
   let asked = false;
   for (const c of channels) {
     try {
@@ -262,17 +389,20 @@ const lookUp: Lookup = async (userId, youtubeId) => {
   return asked ? { state: null } : "unchecked";
 };
 
-export type PostedResult = { ok: true; checked: boolean } | { ok: false; message: string };
+/** `moved` names the channel a Short went to when its link was on another of the creator's channels than the one it was made for. */
+export type PostedResult = { ok: true; checked: boolean; moved?: string } | { ok: false; message: string };
 
 /**
  * For a Short someone posted themselves, optionally with the YouTube link
  * so its views are tracked. A link only counts once YouTube says the video
- * is on one of their own channels. When there's no way to ask YouTube, the
+ * is on one of their own channels that isn't disconnected. On another of
+ * theirs than the one it was made for, the Short moves to that one, so its
+ * views count where it really is. When there's no way to ask YouTube, the
  * link is kept but left out of views and learning.
  */
 export async function markPosted(userId: string, id: string, link: string | null, look: Lookup = lookUp): Promise<PostedResult> {
-  const [v] = await asUser(userId, (tx) => tx<{ id: string }[]>`
-    select id from public.videos where id = ${id} and file_path is not null
+  const [v] = await asUser(userId, (tx) => tx<{ id: string; channel_id: string | null }[]>`
+    select id, channel_id from public.videos where id = ${id} and file_path is not null
       and status in ('ready', 'scheduled', 'failed') and (status <> 'scheduled' or youtube_id is null)`);
   if (!v) return { ok: false, message: "That Short can't be marked as posted." };
   const text = (link ?? "").trim();
@@ -292,7 +422,7 @@ export async function markPosted(userId: string, id: string, link: string | null
     select 1 from public.videos where youtube_id = ${youtubeId} and id <> ${id} and (user_id = ${userId} or youtube_verified) limit 1`);
   if (taken) return { ok: false, message: "That video is already linked to another Short." };
 
-  const found = await look(userId, youtubeId);
+  const found = await look(userId, youtubeId, v.channel_id);
   if (found === "error") return { ok: false, message: "YouTube didn't answer, so the link couldn't be checked. Try again in a few minutes." };
   if (found === "unchecked") {
     await admin((tx) => tx`
@@ -305,23 +435,29 @@ export async function markPosted(userId: string, id: string, link: string | null
   // one YouTube rejected, couldn't process or deleted isn't posted, whoever uploaded it
   const broken = brokenOf(s);
   if (broken) return { ok: false, message: broken };
-  const channels = await admin((tx) => tx<{ id: string; external_id: string }[]>`
-    select id, external_id from public.channels where user_id = ${userId} and platform = 'youtube' order by connected_at`);
+  const channels = await admin((tx) => tx<{ id: string; external_id: string; status: string; title: string | null; handle: string | null }[]>`
+    select id, external_id, status, title, handle from public.channels where user_id = ${userId} and platform = 'youtube' order by added_at, id`);
+  const names = channelNames(channels);
   const mine = channels.find((c) => c.external_id === s.channelId);
+  // one they disconnected doesn't count as theirs any more: Hookline can't ask it, and it may not be theirs now
+  if (mine && !isActive(mine)) {
+    return { ok: false, message: `That video is on ${names.get(mine.id)}, which is disconnected. Connect it again so Hookline can check it, or leave the link empty.` };
+  }
   if (!mine) {
     return {
       ok: false,
-      message: channels.length
+      message: channels.some(isActive)
         ? "That video is on a channel you haven't connected to Hookline. Paste the link to the one on your channel."
         : "Connect your YouTube channel in Settings first, so Hookline can check the video is yours.",
     };
   }
+  // it's on the channel YouTube says it's on, which may be another of theirs than the one it was made for
   await admin((tx) => tx`
     update public.videos set status = 'posted', posted_at = now(), error = null, channel_id = ${mine.id},
       youtube_id = ${youtubeId}, youtube_verified = true, youtube_status = ${s.uploadStatus}, youtube_privacy = ${s.privacy},
       youtube_kids = ${s.madeForKids}, youtube_checked_at = now(), youtube_wanted = null, youtube_publish_at = null
     where id = ${id} and user_id = ${userId}`);
-  return { ok: true, checked: true };
+  return v.channel_id && v.channel_id !== mine.id ? { ok: true, checked: true, moved: names.get(mine.id)! } : { ok: true, checked: true };
 }
 
 /**

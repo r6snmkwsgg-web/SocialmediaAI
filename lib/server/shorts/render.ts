@@ -3,6 +3,7 @@ import type { Spec } from "../../shorts/types";
 import type { PlanId } from "../../billing/plans";
 import { PLANS } from "../../billing/plans";
 import { commentsAllowed } from "../../shorts/youtube";
+import { shownChannelNames } from "../channels";
 import { admin, type Tx } from "../db";
 import { youtubeApi } from "../env";
 import { notify } from "../notify";
@@ -77,14 +78,15 @@ export async function finishJob(job: Job, filePath: string, cleanPath: string | 
       return;
     }
     const clean = cleanPath ?? (job.tag ? null : filePath);
-    const [v] = await tx<{ title: string; youtube_api: boolean; youtube_answered: boolean; youtube: boolean; tiktok: boolean }[]>`
+    // the YouTube channel it was made for, as things stand: whether Hookline uploads to it, and whether it's said who it's for
+    const [v] = await tx<{ title: string; channel_id: string | null; channel: "connected" | "expired" | "revoked" | null; youtube_api: boolean; youtube_answered: boolean; tiktok: boolean }[]>`
       update public.videos set status = 'ready', file_path = ${filePath}, clean_path = ${clean}, error = null where id = ${job.videoId} and ${ending(tx)}
-      returning title,
+      returning title, channel_id,
+        (select c.status from public.channels c where c.id = videos.channel_id and c.platform = 'youtube') as channel,
         scheduled_for is not null and exists (
-          select 1 from public.channels c where c.user_id = videos.user_id and c.platform = 'youtube' and c.status = 'connected'
+          select 1 from public.channels c where c.id = videos.channel_id and c.platform = 'youtube'
             and (${audited} or c.external_id = any(string_to_array(${test.join(",")}, ',')))) as youtube_api,
-        exists (select 1 from public.channels c where c.user_id = videos.user_id and c.platform = 'youtube' and c.status = 'connected' and c.made_for_kids is not null) as youtube_answered,
-        exists (select 1 from public.channels c where c.user_id = videos.user_id and c.platform = 'youtube' and c.status = 'connected') as youtube,
+        exists (select 1 from public.channels c where c.id = videos.channel_id and c.platform = 'youtube' and c.made_for_kids is not null) as youtube_answered,
         scheduled_for is not null and tiktok_post is not null as tiktok`;
     if (!v) {
       const [again] = await tx`update public.videos set status = 'approved' where id = ${job.videoId} and status = 'rendering' returning id`;
@@ -92,12 +94,20 @@ export async function finishJob(job: Job, filePath: string, cleanPath: string | 
       return;
     }
     const href = `/app/shorts/${job.videoId}`;
+    const settings = `/app/settings#audience-${v.channel_id}`;
+    const name = async () => (await shownChannelNames(tx, job.userId)).get(v.channel_id!) ?? "your channel";
+    // the title opens the note: a quiz's question keeps its own question mark
+    const title = /[.!?]$/.test(v.title) ? v.title : `${v.title}.`;
     // one that posts itself says so when it's up; one waiting on the creator says what for
-    if (v.youtube_api && !v.youtube_answered) {
-      await notify(job.userId, { kind: "ready", title: "One question before it posts", body: `${v.title}. Say whether your channel is made for kids, in Settings, and it posts.`, href: "/app/settings", key: `ready:${job.videoId}` }, tx);
-    } else if (!v.youtube_api && v.youtube) {
-      await notify(job.userId, { kind: "ready", title: "Ready for you to post", body: `${v.title}. Download it, upload it to YouTube, then tap I posted it.`, href, key: `ready:${job.videoId}` }, tx);
-    } else if (!v.youtube_api && !v.tiktok) {
+    if (v.youtube_api && v.channel === "connected" && !v.youtube_answered) {
+      const channel = await name();
+      await notify(job.userId, { kind: "ready", title: "One question before it posts", body: `${title} Say whether ${channel} is made for kids, in Settings, and it posts.`, href: settings, key: `ready:${job.videoId}` }, tx);
+    } else if (v.youtube_api && v.channel === "expired") {
+      const channel = await name();
+      await notify(job.userId, { kind: "ready", title: `Ready once ${channel} is back`, body: `${title} Reconnect ${channel} in Settings so it can post.`, href: settings, key: `ready:${job.videoId}` }, tx);
+    } else if (v.channel && (!v.youtube_api || v.channel === "revoked")) {
+      await notify(job.userId, { kind: "ready", title: "Ready for you to post", body: `${title} Download it, upload it to YouTube, then tap I posted it.`, href, key: `ready:${job.videoId}` }, tx);
+    } else if (!v.channel && !v.tiktok) {
       await notify(job.userId, { kind: "ready", title: "Ready to download", body: v.title, href, key: `ready:${job.videoId}` }, tx);
     }
   });

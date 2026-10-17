@@ -73,7 +73,7 @@ export function planNote(row: SubRow, posts = false): { kind: "plan" | "account"
   if (row.cancel_at_period_end) return { kind: "plan", title: `${name} won't renew`, body: "It stays on until the end of the time you've paid for.", key };
   if (row.status === "active" || row.status === "trialing") {
     const pro = posts ? "Your Shorts now post themselves at your best times." : "Three Shorts a day, without the tag, and every LIVE game.";
-    return { kind: "plan", title: `You're on ${name}`, body: row.plan === "creator" ? "Up to five channels, your own LIVE gift menu, and first in line for rendering." : pro, key };
+    return { kind: "plan", title: `You're on ${name}`, body: row.plan === "creator" ? "Up to five YouTube channels, each with its own Shorts, your own LIVE gift menu, and first in line for rendering." : pro, key };
   }
   return null;
 }

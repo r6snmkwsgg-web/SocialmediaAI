@@ -1,22 +1,24 @@
 import "server-only";
 import { rng } from "../../battle/sim";
-import type { Plan } from "../../billing/plans";
+import { postsPerDay, PLANS, type Plan } from "../../billing/plans";
+import { roomLeft, unitsOf, type ChannelRow } from "../../shorts/channels";
 import { words } from "../../shorts/checks";
 import { bankIds, contentIds, finish, FORMATS, ledgerClaims } from "../../shorts/formats";
 import { bankQuestions } from "../../shorts/formats/quiz";
 import { STORIES } from "../../shorts/formats/texts";
 import { bankPairs } from "../../shorts/formats/wyr";
 import { kindName, times as timesUsual } from "../../shorts/insights";
-import { chooseFormats, dryNote, formatReason, formatsFor, kindScore, odds, standout, type Weight } from "../../shorts/learn";
+import { chooseFormats, dryNote, formatReason, formatsFor, kindScore, odds, standout } from "../../shorts/learn";
 import { atLocal, EXPLORE, localParts, planSlots, validTimezone, whenLine } from "../../shorts/times";
 import type { Candidate, Context, Ending, FormatId, Spec } from "../../shorts/types";
 import { billingFor } from "../billing";
-import { admin, asUser, withUserLock } from "../db";
+import { admin, asUser, withUserLock, type Tx } from "../db";
 import { notify } from "../notify";
 import { hourResults } from "./hours";
 import { claude, freshPairs, freshQuestions, freshStories } from "./fresh";
 import { claim, lookFor, takenCharts, takenInOtherWords, takenOf } from "./ledger";
 import { plainDescription, writeCopy } from "./titles";
+import { weightsFor } from "./weights";
 
 /**
  * Making a channel's Shorts: as many as the plan allows today, in the
@@ -27,9 +29,13 @@ import { plainDescription, writeCopy } from "./titles";
  * the channel's own look and ends one of a few ways. Runs every morning
  * from the worker, and when someone opens an empty queue. When there's
  * nothing new left to make, it says so instead of making nothing quietly.
- * The morning run remembers when it last tried each account, how that
- * went and when to try next, so accounts that can't get Shorts today wait
+ * The morning run remembers when it last tried each channel, how that
+ * went and when to try next, so channels that can't get Shorts today wait
  * their turn instead of holding up everyone else.
+ *
+ * Every YouTube channel that gets Shorts is made for on its own (a unit),
+ * with its own share of the plan, history, look, times and learning; an
+ * account with no channel is one unit by itself, as it always was.
  */
 
 /** replacements for swiped-away Shorts, a day */
@@ -39,18 +45,30 @@ type Profile = { timezone: string; goal: string | null; text_stories: boolean; s
 
 type Past = { format: FormatId; params: Spec["params"]; status: string; suggested_for: Date | null; scheduled_for: Date | null; posted_at: Date | null; measuring: boolean };
 
+/** Who a run of Shorts is for: one of the account's YouTube channels, or the account itself (null) while it has none. */
+export type Unit = { userId: string; channelId: string | null };
+
 /** `frees` is when more can next be made once it's used up: the oldest of the week's turning a week old, or tomorrow. */
 export type Allowance = { per: "week" | "day"; limit: number; made: number; left: number; replacementsLeft: number; frees: Date };
+
+/**
+ * What an account can still have made: the whole account against the
+ * plan's total (`units` is how many get Shorts), each unit's own share by
+ * its channel (null for the account's own), and the units in the order
+ * they come, first connected first.
+ */
+export type Allowances = { account: Allowance & { units: number }; units: Map<string | null, Allowance>; order: (string | null)[] };
 
 /** How a morning try at making Shorts went, as `shorts_runs` keeps it: some made, the plan's allowance used up, nothing new left, or an error. */
 export type Outcome = "made" | "allowance" | "nothing_new" | "failed";
 /**
  * How many it made, and when fewer than it should have, why: the plan's
  * allowance, nothing new left (`note` says it in words), or, asked for one
- * format, that format is off. `retry` is when the morning run should try
- * this account again.
+ * format, that format is off; and `stopped` when no channel of the
+ * account's gets Shorts. `retry` is when the morning run should try this
+ * unit again; `channels` is how many units the account has.
  */
-export type Made = { made: number; short: null | "allowance" | "dry" | "off"; note: string | null; retry: Date };
+export type Made = { made: number; short: null | "allowance" | "dry" | "off" | "stopped"; note: string | null; retry: Date; channels: number };
 
 /** Midnight today, or `days` from today, wherever they are. */
 function startOfLocalDay(now: Date, tz: string, days = 0): Date {
@@ -58,18 +76,67 @@ function startOfLocalDay(now: Date, tz: string, days = 0): Date {
   return atLocal(p.y, p.m, p.d + days, 0, tz);
 }
 
-export async function allowanceOf(userId: string, plan: Plan, tz: string, now = new Date()): Promise<Allowance> {
+/**
+ * Each unit's allowance: the plan's Shorts for each channel that gets
+ * them, counted over that channel's own Shorts, and never past the plan's
+ * total for the account, counted over all of them (so Shorts made today
+ * for a channel since disconnected or switched off still count). Free
+ * counts the last 7 days; the paid plans count today where they are.
+ * Replacements for swiped-away Shorts are 10 a day for each unit.
+ */
+export async function allowancesOf(userId: string, plan: Plan, tz: string, now = new Date()): Promise<Allowances> {
   const since = plan.shorts.per === "week" ? new Date(now.getTime() - 7 * 86400_000) : startOfLocalDay(now, tz);
   const today = startOfLocalDay(now, tz);
-  const [r] = await asUser(userId, (tx) => tx<{ made: number; oldest: Date | null; replaced: number; channels: number }[]>`
-    select
-      (select count(*) from public.videos where origin = 'daily' and created_at >= ${since})::int as made,
-      (select min(created_at) from public.videos where origin = 'daily' and created_at >= ${since}) as oldest,
-      (select count(*) from public.videos where origin = 'replacement' and created_at >= ${today})::int as replaced,
-      (select count(*) from public.channels where platform = 'youtube' and status = 'connected')::int as channels`);
-  const limit = plan.shorts.count * (plan.channels > 1 ? Math.max(1, Math.min(plan.channels, r.channels)) : 1);
-  const frees = plan.shorts.per === "week" && r.oldest ? new Date(r.oldest.getTime() + 7 * 86400_000) : startOfLocalDay(now, tz, 1);
-  return { per: plan.shorts.per, limit, made: r.made, left: Math.max(0, limit - r.made), replacementsLeft: Math.max(0, REPLACEMENTS_PER_DAY - r.replaced), frees };
+  const { counts, channels } = await asUser(userId, async (tx) => ({
+    counts: await tx<{ channel_id: string | null; made: number; oldest: Date | null; replaced: number }[]>`
+      select channel_id,
+        count(*) filter (where origin = 'daily' and created_at >= ${since})::int as made,
+        min(created_at) filter (where origin = 'daily' and created_at >= ${since}) as oldest,
+        count(*) filter (where origin = 'replacement' and created_at >= ${today})::int as replaced
+      from public.videos where created_at >= ${since < today ? since : today}
+      group by channel_id`,
+    channels: await tx<{ id: string; platform: ChannelRow["platform"]; status: ChannelRow["status"]; shorts_on: boolean; added_at: Date }[]>`
+      select id, platform, status, shorts_on, added_at from public.channels where platform = 'youtube'`,
+  }));
+  const order = unitsOf(channels.map((c) => ({ id: c.id, platform: c.platform, status: c.status, shortsOn: c.shorts_on, addedAt: c.added_at })), plan.channels);
+  const each = plan.shorts.count;
+  const accountMade = counts.reduce((a, c) => a + c.made, 0);
+  const oldest = counts.map((c) => c.oldest).filter((d): d is Date => !!d).sort((a, b) => a.getTime() - b.getTime())[0];
+  const frees = plan.shorts.per === "week" && oldest ? new Date(oldest.getTime() + 7 * 86400_000) : startOfLocalDay(now, tz, 1);
+  const units = new Map(order.map((id): [string | null, Allowance] => {
+    const c = counts.find((x) => x.channel_id === id);
+    const made = c?.made ?? 0;
+    const left = roomLeft({ each, units: order.length, made, accountMade });
+    return [id, { per: plan.shorts.per, limit: each, made, left, replacementsLeft: Math.max(0, REPLACEMENTS_PER_DAY - (c?.replaced ?? 0)), frees }];
+  }));
+  const limit = each * Math.max(1, order.length);
+  const all = [...units.values()];
+  const left = Math.min(all.reduce((a, u) => a + u.left, 0), Math.max(0, limit - accountMade));
+  const replacementsLeft = all.reduce((a, u) => a + u.replacementsLeft, 0);
+  return { account: { per: plan.shorts.per, limit, made: accountMade, left, replacementsLeft, frees, units: order.length }, units, order };
+}
+
+/**
+ * The unit with the most room left for a day's Shorts, or for a
+ * swiped-away one's replacement, ties going to the first in order: who a
+ * Short is made for when nobody says. Only units `accept` takes count.
+ * Null when there are none.
+ */
+export function pickUnit(a: Allowances, accept: (channelId: string | null) => boolean = () => true, origin: MakeOpts["origin"] = "daily"): { channelId: string | null } | null {
+  const room = (id: string | null) => (origin === "daily" ? a.units.get(id)!.left : a.units.get(id)!.replacementsLeft);
+  const best = a.order.filter(accept).reduce<string | null | undefined>((b, id) => (b === undefined || room(id) > room(b) ? id : b), undefined);
+  return best === undefined ? null : { channelId: best };
+}
+
+/** The channel a unit's Shorts are for, as the database has it. */
+export type UnitChannel = { id: string; title: string | null; status: ChannelRow["status"]; shortsOn: boolean };
+
+/** A unit's channel, read once wherever its Shorts are made: null for the account's own, or when it isn't one of theirs. */
+export async function unitChannel(tx: Tx, unit: Unit): Promise<UnitChannel | null> {
+  if (!unit.channelId) return null;
+  const [c] = await tx<{ id: string; title: string | null; status: ChannelRow["status"]; shorts_on: boolean }[]>`
+    select id, title, status, shorts_on from public.channels where id = ${unit.channelId} and user_id = ${unit.userId} and platform = 'youtube'`;
+  return c ? { id: c.id, title: c.title, status: c.status, shortsOn: c.shorts_on } : null;
 }
 
 /**
@@ -85,7 +152,8 @@ export async function makeShortsSaying(userId: string, opts: MakeOpts): Promise<
   return withUserLock(userId, () => make(userId, opts));
 }
 
-type MakeOpts = { origin: "daily" | "replacement"; count?: number; now?: Date; like?: FormatId };
+/** `channelId` is the unit they're for; left out, the one with the most room. */
+type MakeOpts = { origin: "daily" | "replacement"; count?: number; now?: Date; like?: FormatId; channelId?: string | null };
 
 /** How long Claude gets to write a channel's new material; after that the banks fill in, so the morning's Shorts never wait long. */
 export const FRESH_MS = 60_000;
@@ -113,20 +181,30 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   const [profile] = await asUser(userId, (tx) => tx<Profile[]>`select timezone, goal, text_stories, shorts_note_at from public.profiles where id = ${userId}`);
   const tz = validTimezone(profile?.timezone);
   const { plan } = await billingFor(userId);
-  const allow = await allowanceOf(userId, plan, tz, now);
+  const allow = await allowancesOf(userId, plan, tz, now);
   const tomorrow = startOfLocalDay(now, tz, 1);
-  const want = opts.origin === "daily" ? Math.min(allow.left, opts.count ?? allow.left) : Math.min(allow.replacementsLeft, opts.count ?? 1);
+  const channels = allow.order.length;
+  // every channel switched off: nothing until one is switched on
+  if (!channels) return { made: 0, short: "stopped", note: null, retry: tomorrow, channels };
+  const unit: Unit = { userId, channelId: opts.channelId !== undefined ? opts.channelId : pickUnit(allow, undefined, opts.origin)!.channelId };
+  const room = allow.units.get(unit.channelId);
+  // a channel that doesn't get Shorts (disconnected, switched off, or past what the plan has room for) gets none
+  if (!room) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
+  const want = opts.origin === "daily" ? Math.min(room.left, opts.count ?? room.left) : Math.min(room.replacementsLeft, opts.count ?? 1);
   // used up: tried again when some come free, or tomorrow if that's sooner (a new plan might have started)
-  if (want <= 0) return { made: 0, short: "allowance", note: null, retry: new Date(Math.min(allow.frees.getTime(), tomorrow.getTime())) };
+  if (want <= 0) return { made: 0, short: "allowance", note: null, retry: new Date(Math.min(room.frees.getTime(), tomorrow.getTime())), channels };
 
-  const { history, weights, results } = await asUser(userId, async (tx) => {
+  // what this channel has had, what it's learned and when its Shorts did best: each channel's own
+  const { channel, history, weights, results } = await asUser(userId, async (tx) => {
+    const channel = await unitChannel(tx, unit);
     const history = await tx<Past[]>`
       select format, params, status, suggested_for, scheduled_for, posted_at,
         (youtube_id is not null and not exists (select 1 from public.video_stats s where s.video_id = videos.id and s.checkpoint = '24h')) as measuring
-      from public.videos where created_at > now() - interval '365 days'`;
-    const weights = await tx<Weight[]>`select kind, name, score, samples from public.weights`;
-    return { history, weights, results: await hourResults(tx, tz) };
+      from public.videos where created_at > now() - interval '365 days'
+        and ${unit.channelId ? tx`channel_id = ${unit.channelId}` : tx`channel_id is null`}`;
+    return { channel, history, weights: await weightsFor(tx, unit.channelId), results: await hourResults(tx, tz, unit.channelId) };
   });
+  if (unit.channelId && !channel) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
 
   // what the channel has had, posted or swiped away, and how often: none of it comes round again
   const times = new Map<string, number>();
@@ -134,13 +212,13 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   const rand = rng(Math.floor(Math.random() * 2 ** 31));
   const on = formatsFor({ textStories: !!profile?.text_stories });
   // "make one like this" for a format the creator has left off (text stories): not without them turning it on
-  if (opts.like && !on.includes(opts.like)) return { made: 0, short: "off", note: null, retry: tomorrow };
+  if (opts.like && !on.includes(opts.like)) return { made: 0, short: "off", note: null, retry: tomorrow, channels };
   const allowed = opts.like ? [opts.like] : on;
   const o = odds(weights, allowed);
   const formats = opts.like ? [opts.like] : chooseFormats(want, o, rand);
 
   // and what other channels have: the banks' questions, choices and stories, and the charts (a fight is checked as it's claimed)
-  const [taken, charts, look, fresh] = await Promise.all([takenOf(bankIds()), takenCharts(), lookFor(userId), freshFor(formats, history, rand)]);
+  const [taken, charts, look, fresh] = await Promise.all([takenOf(bankIds()), takenCharts(), lookFor(userId, unit.channelId), freshFor(formats, history, rand)]);
   const used = new Set([...times.keys(), ...taken, ...charts, ...(await takenWritten(fresh))]);
   const ctx: Context = { rand, used, times, fresh };
 
@@ -189,10 +267,11 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   }
   const note = made.length < formats.length ? dryNote([...dry].map((f) => FORMATS[f].plural), made.length, formats.length) : null;
   // "make one like this" asks for one format: that one running out says nothing about the rest, so the queue's note and the bell are left alone
-  if (!opts.like) await noteDry(userId, profile?.shorts_note_at ?? null, note, now);
-  if (!made.length) return { made: 0, short: "dry", note, retry: tomorrow };
+  if (!opts.like) await noteDry(unit, profile?.shorts_note_at ?? null, note, now);
+  if (!made.length) return { made: 0, short: "dry", note, retry: tomorrow, channels };
 
-  // when to post: the channel's own best hours once it has the results, a starting guess until then, and some at other hours to learn from
+  // when to post: the channel's own best hours once it has the results, a starting guess until then, and some at other hours to learn from,
+  // two hours apart from the rest of this channel's (another channel's times are its own)
   const booked = history
     .filter((h) => ["review", "approved", "rendering", "ready", "scheduled"].includes(h.status))
     .map((h) => h.scheduled_for ?? h.suggested_for)
@@ -201,7 +280,7 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   const unmeasured = history
     .filter((h) => h.status === "posted" && h.measuring && h.posted_at && h.posted_at.getTime() > now.getTime() - 72 * 3600_000)
     .map((h) => h.posted_at!);
-  const slots = planSlots(made.length, now, tz, results, booked, rand, EXPLORE, unmeasured);
+  const slots = planSlots(made.length, now, tz, results, booked, rand, EXPLORE, unmeasured, postsPerDay(plan));
 
   const copies = await Promise.all(made.map(({ c }) => writeCopy(c, FORMATS[c.format].name)));
 
@@ -213,12 +292,12 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
       const why = [...formatWhy, ...c.why, ...(slot ? [whenLine(slot, tz, plan.scheduling)] : [])];
       const copy = copies[i];
       await tx`
-        insert into public.videos (user_id, format, params, key, title, description, why, status, origin, suggested_for)
-        values (${userId}, ${c.format}, ${tx.json(c.params as never)}, ${c.key}, ${copy?.title ?? c.title}, ${copy?.description ?? plainDescription(c)},
+        insert into public.videos (user_id, channel_id, format, params, key, title, description, why, status, origin, suggested_for)
+        values (${userId}, ${channel?.id ?? null}, ${c.format}, ${tx.json(c.params as never)}, ${c.key}, ${copy?.title ?? c.title}, ${copy?.description ?? plainDescription(c)},
           ${tx.json(why)}, 'review', ${opts.origin}, ${at})`;
     }
   });
-  return { made: made.length, short: note ? "dry" : null, note, retry: tomorrow };
+  return { made: made.length, short: note ? "dry" : null, note, retry: tomorrow, channels };
 }
 
 /**
@@ -239,9 +318,11 @@ async function takenWritten(fresh: NonNullable<Context["fresh"]>): Promise<Set<s
 /**
  * Why the last Shorts couldn't all be made, kept for the queue to show,
  * with a notification the first time it happens; cleared once they can
- * be again.
+ * be again. Kept for the account: running dry comes from the content
+ * every channel shares, so it's nearly always the same for each of them.
  */
-export async function noteDry(userId: string, since: Date | null, note: string | null, now: Date): Promise<void> {
+export async function noteDry(unit: Unit, since: Date | null, note: string | null, now: Date): Promise<void> {
+  const { userId } = unit;
   await admin(async (tx) => {
     if (!note) {
       if (since) await tx`update public.profiles set shorts_note = null, shorts_note_at = null where id = ${userId}`;
@@ -254,23 +335,33 @@ export async function noteDry(userId: string, since: Date | null, note: string |
   });
 }
 
-/** Why Hookline couldn't make all the Shorts it should have, last time it tried, if it couldn't. */
-export async function shortsNoteOf(userId: string): Promise<string | null> {
+/**
+ * Why Hookline couldn't make all the Shorts it should have for a unit, last time it tried, if it couldn't. Kept for
+ * the account, like `noteDry`, so each of its channels gives the account's.
+ */
+export async function shortsNoteOf(unit: Unit): Promise<string | null> {
+  const { userId } = unit;
   const [p] = await asUser(userId, (tx) => tx<{ shorts_note: string | null }[]>`select shorts_note from public.profiles where id = ${userId}`);
   return p?.shorts_note ?? null;
 }
 
-/** Someone's Shorts for the day, made by the worker or a scheduler, and a note that they're waiting. */
-export async function makeDailyShorts(userId: string, now = new Date()): Promise<Made> {
-  const r = await withUserLock(userId, () => make(userId, { origin: "daily", now }));
+/**
+ * A unit's Shorts for the day, made by the worker or a scheduler, and a
+ * note that they're waiting: once a day for the account, after its first
+ * channel's, so with several channels it doesn't say how many or that all
+ * of them are in.
+ */
+export async function makeDailyShorts(unit: Unit, now = new Date()): Promise<Made> {
+  const r = await withUserLock(unit.userId, () => make(unit.userId, { origin: "daily", now, channelId: unit.channelId }));
   const n = r.made;
   if (n > 0) {
-    const [p] = await admin((tx) => tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`);
+    const [p] = await admin((tx) => tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${unit.userId}`);
     const day = localParts(now, validTimezone(p?.timezone));
-    await notify(userId, {
+    const several = r.channels > 1;
+    await notify(unit.userId, {
       kind: "ready",
-      title: `${n} new Short${n === 1 ? "" : "s"} to swipe`,
-      body: "Swipe right on the ones you want, left for something else.",
+      title: several ? "New Shorts to swipe" : `${n} new Short${n === 1 ? "" : "s"} to swipe`,
+      body: `${several ? "Each of your channels gets its own today. " : ""}Swipe right on the ones you want, left for something else.`,
       href: "/app/shorts",
       key: `daily:${day.y}-${day.m}-${day.d}`,
     });
@@ -279,75 +370,95 @@ export async function makeDailyShorts(userId: string, now = new Date()): Promise
 }
 
 /**
- * Everyone whose morning it is (6am or later where they are), who hasn't
- * had today's Shorts, and whose next try has come, longest waiting first:
- * the worker's daily run. Each try says when the next one is (see
- * `tryDaily`), so an account that can't get Shorts today waits instead of
- * coming back first every time. Timezones the database doesn't know
- * count as UTC, as they do everywhere else.
+ * Every channel whose morning it is (6am or later where its owner is),
+ * that hasn't had today's Shorts and whose next try has come, longest
+ * waiting first: the worker's daily run. The channels are the ones that
+ * get Shorts, in the same order the app counts them (`unitsOf`), and an
+ * account with no channel that isn't disconnected is one unit itself.
+ * Each try says when the next one is (see `tryDaily`), so one that can't
+ * get Shorts today waits instead of coming back first every time.
+ * Timezones the database doesn't know count as UTC, as they do everywhere else.
  */
-export async function dueForShorts(now = new Date(), limit = 25): Promise<string[]> {
-  const rows = await admin((tx) => tx<{ id: string }[]>`
+export async function dueForShorts(now = new Date(), limit = 25): Promise<Unit[]> {
+  const room = Object.values(PLANS).map((p) => ({ plan: p.id, channels: p.channels }));
+  const rows = await admin((tx) => tx<{ user_id: string; channel_id: string | null }[]>`
     with p as (
-      select p.id, p.created_at, p.onboarded_at, coalesce(z.name, 'UTC') as tz
+      select p.id, p.created_at, p.onboarded_at, coalesce(z.name, 'UTC') as tz, coalesce(s.plan, 'free') as plan
       from public.profiles p
       left join pg_catalog.pg_timezone_names z on z.name = p.timezone
+      left join public.subscriptions s on s.user_id = p.id
       where p.onboarded_at is not null and coalesce(p.goal, 'both') in ('shorts', 'both')
+    ), room as (
+      select * from jsonb_to_recordset(${tx.json(room)}::jsonb) as r (plan text, channels int)
+    ), yt as (
+      select user_id, id, added_at, shorts_on from public.channels where platform = 'youtube' and status <> 'revoked'
+    ), getting as (
+      select user_id, id, added_at, row_number() over (partition by user_id order by added_at, id) as n from yt where shorts_on
+    ), units as (
+      select p.*, g.id as channel_id, g.added_at as since
+      from p join room r on r.plan = p.plan join getting g on g.user_id = p.id and g.n <= r.channels
+      union all
+      select p.*, null::uuid, null::timestamptz from p where not exists (select 1 from yt where yt.user_id = p.id)
     ), d as (
-      select p.*, (date_trunc('day', ${now}::timestamptz at time zone p.tz) at time zone p.tz) as today,
-        extract(hour from ${now}::timestamptz at time zone p.tz) as hour
-      from p
+      select u.*, (date_trunc('day', ${now}::timestamptz at time zone u.tz) at time zone u.tz) as today,
+        extract(hour from ${now}::timestamptz at time zone u.tz) as hour
+      from units u
     )
-    select d.id
-    from d left join public.shorts_runs r on r.user_id = d.id
+    select d.id as user_id, d.channel_id
+    from d left join public.shorts_runs r on r.user_id = d.id and r.channel_id is not distinct from d.channel_id
     where d.hour >= 6
       and (r.next_try_at is null or r.next_try_at < ${now}::timestamptz)
-      and not exists (select 1 from public.videos v where v.user_id = d.id and v.origin = 'daily' and v.created_at >= d.today)
-    order by coalesce(r.tried_at, d.onboarded_at), d.created_at, d.id
+      and not exists (select 1 from public.videos v where v.user_id = d.id and v.channel_id is not distinct from d.channel_id
+        and v.origin = 'daily' and v.created_at >= d.today)
+    order by coalesce(r.tried_at, d.since, d.onboarded_at), d.created_at, d.id, d.channel_id nulls first
     limit ${limit}`);
-  return rows.map((r) => r.id);
+  return rows.map((r) => ({ userId: r.user_id, channelId: r.channel_id }));
 }
 
 /**
- * One account's morning try, written down with when to try again:
- * tomorrow once it's had its Shorts or there's nothing new to make; when
- * Free's week frees up (or tomorrow, if sooner) when it's used up; and in
- * an hour when it went wrong.
+ * One unit's morning try, written down with when to try again: tomorrow
+ * once it's had its Shorts or there's nothing new to make; when Free's
+ * week frees up (or tomorrow, if sooner) when it's used up; and in an hour
+ * when it went wrong.
  */
-export async function tryDaily(id: string, now = new Date()): Promise<string> {
+export async function tryDaily(unit: Unit, now = new Date()): Promise<string> {
+  const who = unit.channelId ? `${unit.userId} ${unit.channelId}` : unit.userId;
   let outcome: Outcome;
   let made = 0;
   let retry: Date;
   let line: string;
   try {
-    const r = await makeDailyShorts(id, now);
-    outcome = r.made > 0 ? "made" : r.short === "allowance" ? "allowance" : "nothing_new";
+    const r = await makeDailyShorts(unit, now);
+    // no channel getting Shorts any more is, for this one, an allowance used up until tomorrow
+    outcome = r.made > 0 ? "made" : r.short === "allowance" || r.short === "stopped" ? "allowance" : "nothing_new";
     ({ made, retry } = r);
-    line = `${id}: ${outcome === "made" ? `${made} made` : outcome === "allowance" ? "allowance used" : "nothing new left"}`;
+    line = `${who}: ${outcome === "made" ? `${made} made` : r.short === "stopped" ? "Shorts off" : outcome === "allowance" ? "allowance used" : "nothing new left"}`;
   } catch (e) {
     outcome = "failed";
     retry = new Date(now.getTime() + 3600_000);
-    line = `${id} failed: ${e instanceof Error ? e.message : e}`;
+    line = `${who} failed: ${e instanceof Error ? e.message : e}`;
   }
   await admin((tx) => tx`
-    insert into public.shorts_runs (user_id, tried_at, outcome, made, next_try_at) values (${id}, ${now}, ${outcome}, ${made}, ${retry})
-    on conflict (user_id) do update set tried_at = excluded.tried_at, outcome = excluded.outcome, made = excluded.made, next_try_at = excluded.next_try_at`);
+    insert into public.shorts_runs (user_id, channel_id, tried_at, outcome, made, next_try_at)
+    values (${unit.userId}, ${unit.channelId}, ${now}, ${outcome}, ${made}, ${retry})
+    on conflict (user_id, channel_id) do update set tried_at = excluded.tried_at, outcome = excluded.outcome, made = excluded.made, next_try_at = excluded.next_try_at`);
   return line;
 }
 
 /**
- * The worker's (or a scheduler's) morning run: up to `limit` accounts'
+ * The worker's (or a scheduler's) morning run: up to `limit` channels'
  * Shorts, each try written down, so one that fails waits its turn and the
- * rest carry on. Given a time budget (a scheduler's request can only run
- * so long), it starts nobody new once the budget is spent, and they're
- * made on the next run.
+ * rest carry on. A Creator account's channels are made one after another,
+ * each in turn under the account's lock. Given a time budget (a
+ * scheduler's request can only run so long), it starts nobody new once the
+ * budget is spent, and they're made on the next run.
  */
 export async function runDailyShorts(now = new Date(), limit = 25, budgetMs?: number): Promise<string[]> {
   const started = Date.now();
   const log: string[] = [];
-  for (const id of await dueForShorts(now, limit)) {
+  for (const unit of await dueForShorts(now, limit)) {
     if (budgetMs !== undefined && Date.now() - started > budgetMs) break;
-    log.push(await tryDaily(id, now));
+    log.push(await tryDaily(unit, now));
   }
   return log;
 }

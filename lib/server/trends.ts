@@ -138,18 +138,25 @@ export async function leaderboard(userId: string): Promise<{ rows: Leader[]; upd
   });
 }
 
-/** Their own posting times, for the heatmap. */
+/**
+ * Their own posting times, for the heatmap. Each Short is measured
+ * against the usual Short on its own channel, so a small channel's
+ * Shorts aren't made to look bad by a big one's, or a big one's good.
+ */
 export async function postingTimes(userId: string): Promise<{ map: ReturnType<typeof heatmap>; posts: number }> {
   return asUser(userId, async (tx) => {
     const [p] = await tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`;
     const tz = validTimezone(p?.timezone);
-    const rows = await tx<{ posted_at: Date; views: string }[]>`
-      select v.posted_at, s.views from public.videos v join public.video_stats s on s.video_id = v.id and s.checkpoint = '24h'
+    const rows = await tx<{ posted_at: Date; channel_id: string | null; views: string }[]>`
+      select v.posted_at, v.channel_id, s.views from public.videos v join public.video_stats s on s.video_id = v.id and s.checkpoint = '24h'
       where v.posted_at is not null order by v.posted_at desc limit 200`;
-    const typical = median(rows.map((r) => Number(r.views))) ?? 0;
+    // each channel's usual, and the usual of the Shorts made before the account had a channel
+    const by = new Map<string | null, number[]>();
+    for (const r of rows) by.set(r.channel_id, [...(by.get(r.channel_id) ?? []), Number(r.views)]);
+    const typical = new Map([...by].map(([id, views]) => [id, median(views) ?? 0]));
     const posts = rows.map((r) => {
       const l = localParts(r.posted_at, tz);
-      return { weekday: l.weekday, hour: l.hour, lift: lift(Number(r.views), typical) };
+      return { weekday: l.weekday, hour: l.hour, lift: lift(Number(r.views), typical.get(r.channel_id) ?? 0) };
     });
     return { map: heatmap(posts), posts: rows.length };
   });

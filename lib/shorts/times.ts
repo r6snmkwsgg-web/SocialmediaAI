@@ -11,6 +11,14 @@ import { median, steady } from "./learn";
 /** local hours to start with: lunch, after school or work, evening */
 export const STARTING_HOURS = [12, 16, 19];
 
+/** and for a channel that posts more than 3 a day: mid-morning, then late evening */
+export const MORE_HOURS = [10, 21];
+
+/** The starting hours for a channel posting `perDay` a day: 5 a day gives 10am, noon, 4pm, 7pm and 9pm, all two hours apart. */
+export function startingHours(perDay: number): number[] {
+  return [...STARTING_HOURS, ...MORE_HOURS].slice(0, perDay).sort((a, b) => a - b);
+}
+
 /** local hours a Short can be tried at: 7am to 10pm */
 export const TRY_HOURS = Array.from({ length: 16 }, (_, i) => i + 7);
 
@@ -132,12 +140,13 @@ export type Slot = { at: Date; why: "guess" | "best" | "try"; results: number };
  * of one of the usual times on that same day, and only where it fits
  * around everything else, so trying never pushes the rest later. `taken`
  * is what's already booked; `unmeasured` is what's posted and still
- * waiting for its 24-hour reading. Null where there's no free time in the
- * next 30 days. In time order.
+ * waiting for its 24-hour reading. `perDay` is how many a day the channel
+ * posts, so it has that many hours a day. Null where there's no free time
+ * in the next 30 days. In time order.
  */
-export function planSlots(n: number, now: Date, tz: string, results: HourResult[], taken: Date[], rand: () => number, explore = EXPLORE, unmeasured: Date[] = []): (Slot | null)[] {
-  const best = bestHours(results);
-  const hours = best ?? STARTING_HOURS;
+export function planSlots(n: number, now: Date, tz: string, results: HourResult[], taken: Date[], rand: () => number, explore = EXPLORE, unmeasured: Date[] = [], perDay = 3): (Slot | null)[] {
+  const best = bestHours(results, perDay);
+  const hours = best ?? startingHours(perDay);
   const measured = countHours(results.map((r) => r.hour));
   // Shorts booked at an hour, or posted there and not measured yet, count toward trying it, so a start gets finished
   const tried = countHours([...results.map((r) => r.hour), ...[...taken, ...unmeasured].map((t) => localParts(t, tz).hour)]);

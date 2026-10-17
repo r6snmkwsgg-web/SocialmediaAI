@@ -4,12 +4,14 @@ import { useId, useState, useTransition } from "react";
 import { toast } from "@/components/app/toast";
 import { button } from "@/components/app/ui";
 
-type Result = { ok: true; checked: boolean } | { ok: false; message: string };
+/** `moved` names the channel the Short went to, when its link was on another of theirs than the one it was made for. */
+type Result = { ok: true; checked: boolean; moved?: string } | { ok: false; message: string };
 
 /**
  * "I posted it", for a Short someone posts themselves. The YouTube link is
  * optional; with one, Hookline checks the video is on their own channel
- * before it counts, and says plainly when it isn't.
+ * before it counts, and says plainly when it isn't. On another of their
+ * channels, the Short moves there, and the toast says so.
  */
 export function PostedForm({ id, posted, size = "small" }: { id: string; posted: (id: string, link: string) => Promise<Result>; size?: "small" | "big" }) {
   const router = useRouter();
@@ -29,7 +31,14 @@ export function PostedForm({ id, posted, size = "small" }: { id: string; posted:
             setProblem(r.message);
             return;
           }
-          toast(link.trim() && !r.checked ? "Marked as posted. The link couldn't be checked, so its views won't count." : "Marked as posted.", "good");
+          toast(
+            r.moved
+              ? `Marked as posted. It's on ${r.moved}, so its views count there.`
+              : link.trim() && !r.checked
+                ? "Marked as posted. The link couldn't be checked, so its views won't count."
+                : "Marked as posted.",
+            "good",
+          );
           router.refresh();
         });
       }}

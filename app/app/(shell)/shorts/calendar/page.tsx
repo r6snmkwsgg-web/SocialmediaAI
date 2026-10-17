@@ -1,14 +1,16 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ChannelFilter } from "@/components/app/channel-filter";
 import { Icons } from "@/components/app/icons";
 import { button, Card, Empty, PageHead } from "@/components/app/ui";
 import { byDay, dayKey, gridBounds, monthGrid, monthParam, parseMonth, shiftMonth } from "@/lib/shorts/calendar";
+import { gettingShorts, uploadsTo } from "@/lib/shorts/channels";
 import { FORMATS } from "@/lib/shorts/formats";
 import { FORMAT_COLOR } from "@/lib/shorts/look";
 import { validTimezone } from "@/lib/shorts/times";
 import type { FormatId } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
-import { channelsOf, postingChannel } from "@/lib/server/channels";
+import { shortsChannelsOf } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
 import { calendarOf, type CalendarItem } from "@/lib/server/shorts/library";
 
@@ -18,20 +20,33 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
-/** `auto` is whether Hookline uploads to their YouTube itself; when it doesn't, a kept Short's time is the best time to post it. */
-function Item({ it, tz, auto }: { it: CalendarItem; tz: string; auto: boolean }) {
+/**
+ * `auto` is whether Hookline uploads to its channel itself; when it doesn't, a kept Short's time is the best time to post it.
+ * `channel` is its channel's name, for a month showing several channels' Shorts: first on its line, or on a line of its
+ * own above it where there's little room (`stacked`, in the month's grid).
+ */
+function Item({ it, tz, auto, channel, stacked = false }: { it: CalendarItem; tz: string; auto: boolean; channel?: string; stacked?: boolean }) {
   const time = it.at.toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
   const state = it.status === "posted" ? "Posted" : it.status === "failed" ? "Failed" : !auto && !it.youtubeId ? "Best time" : "Posts";
+  // what it is in words, for hovering and for screen readers: "Ball Clash · Posts 4:00 PM: Spike vs Sword"
+  const said = `${channel ? `${channel} · ` : ""}${state} ${time}: ${it.title}`;
+  const tag = channel && (
+    <span className={`truncate font-mono text-[10px] uppercase tracking-[0.06em] text-muted ${stacked ? "pl-3.5" : "max-w-[40%] shrink-0"}`} aria-hidden="true">{channel}</span>
+  );
   return (
     <Link
       href={`/app/shorts/${it.id}`}
-      title={`${state} ${time}: ${it.title}`}
-      className={`flex min-w-0 items-center gap-1.5 px-1.5 py-1 text-[12px] leading-tight transition hover:bg-card-2 ${it.status === "failed" ? "text-signal" : ""}`}
+      title={said}
+      className={`flex min-w-0 flex-col px-1.5 py-1 text-[12px] leading-tight transition hover:bg-card-2 ${it.status === "failed" ? "text-signal" : ""}`}
     >
-      <span className="h-2 w-2 shrink-0" style={{ background: FORMAT_COLOR[it.format] }} aria-hidden="true" />
-      <span className="shrink-0 font-mono text-[10px] text-muted">{time.replace(":00", "").replace(" ", "").toLowerCase()}</span>
-      <span className={`truncate ${it.status === "posted" ? "text-muted" : "font-medium"}`}>{it.title}</span>
-      <span className="sr-only">, {state.toLowerCase()}{it.tiktok ? ", TikTok too" : ""}</span>
+      {stacked && tag}
+      <span className="flex min-w-0 items-center gap-1.5">
+        <span className="h-2 w-2 shrink-0" style={{ background: FORMAT_COLOR[it.format] }} aria-hidden="true" />
+        {!stacked && tag}
+        <span className="shrink-0 font-mono text-[10px] text-muted" aria-hidden="true">{time.replace(":00", "").replace(" ", "").toLowerCase()}</span>
+        <span className={`truncate ${it.status === "posted" ? "text-muted" : "font-medium"}`} aria-hidden="true">{it.title}</span>
+      </span>
+      <span className="sr-only">{said}{it.tiktok ? ", TikTok too" : ""}</span>
     </Link>
   );
 }
@@ -43,7 +58,10 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
   const now = new Date();
   const month = parseMonth(typeof q.m === "string" ? q.m : undefined, now, tz);
   const { from, to } = gridBounds(month, tz);
-  const items = await calendarOf(me.id, from, to);
+  // the YouTube channels Shorts are for, and the one picked to see (anything else means all of them)
+  const shown = await shortsChannelsOf(me.id);
+  const picked = shown.find((c) => c.id === q.channel) ?? null;
+  const items = await calendarOf(me.id, from, to, picked?.id);
   const days = byDay(items, tz);
   const weeks = monthGrid(month);
   const today = dayKey(now, tz);
@@ -52,26 +70,48 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
   const thisMonth = [...days.entries()].filter(([k]) => k.startsWith(here));
   const count = thisMonth.reduce((s, [, list]) => s + list.length, 0);
   const posts = me.plan.scheduling;
-  const auto = posts && !!postingChannel(await channelsOf(me.id))?.api;
+  // each Short posts or has a best time by its own channel: Hookline uploads only to channels it may
+  const byId = new Map(shown.map((c) => [c.id, c]));
+  const autoOf = (it: CalendarItem) => uploadsTo(it.channelId ? byId.get(it.channelId) : undefined, posts);
+  // "posting" only when every one this month is going where Hookline posts; with none yet, when every channel shown that gets Shorts is
+  const getting = picked ? [picked] : gettingShorts(shown, me.plan.channels);
+  const auto = thisMonth.length ? thisMonth.every(([, list]) => list.every(autoOf)) : getting.length > 0 && getting.every((c) => uploadsTo(c, posts));
+  // with several channels' Shorts in the month, each says which channel it's for
+  const several = shown.length > 1;
+  const tagOf = (it: CalendarItem) => (several && !picked && it.channelId ? byId.get(it.channelId)?.name : undefined);
+  // the month links keep the channel picked
+  const monthHref = (m: string | null) => {
+    const p = new URLSearchParams();
+    if (m) p.set("m", m);
+    if (picked) p.set("channel", picked.id);
+    const s = p.toString();
+    return s ? `/app/shorts/calendar?${s}` : "/app/shorts/calendar";
+  };
+  const whose = picked ? (auto ? ` on ${picked.name}` : ` for ${picked.name}`) : "";
 
   return (
     <>
       <PageHead
         eyebrow="Calendar"
         title={name}
-        line={count ? `${count} Short${count === 1 ? "" : "s"} ${auto ? "posting or posted" : "kept"} this month, at your times (${tz.replace(/_/g, " ")}).` : `Nothing in ${name.split(" ")[0]} yet.`}
+        line={
+          count
+            ? `${count} Short${count === 1 ? "" : "s"} ${auto ? "posting or posted" : "kept"}${whose} this month, at your times (${tz.replace(/_/g, " ")}).`
+            : `Nothing${picked ? ` for ${picked.name}` : ""} in ${name.split(" ")[0]} yet.`
+        }
         action={
           <nav aria-label="Months" className="flex items-center gap-2">
-            <Link href={`?m=${monthParam(shiftMonth(month, -1))}`} className={button.secondary} aria-label="Previous month">
+            <Link href={monthHref(monthParam(shiftMonth(month, -1)))} className={button.secondary} aria-label="Previous month">
               <Icons.arrow className="h-4 w-4 rotate-180" />
             </Link>
-            <Link href="/app/shorts/calendar" className={button.secondary}>Today</Link>
-            <Link href={`?m=${monthParam(shiftMonth(month, 1))}`} className={button.secondary} aria-label="Next month">
+            <Link href={monthHref(null)} className={button.secondary}>Today</Link>
+            <Link href={monthHref(monthParam(shiftMonth(month, 1)))} className={button.secondary} aria-label="Next month">
               <Icons.arrow className="h-4 w-4" />
             </Link>
           </nav>
         }
       />
+      {several && <ChannelFilter channels={shown} picked={picked?.id ?? null} path="/app/shorts/calendar" keep={{ m: typeof q.m === "string" ? here : null }} />}
 
       {!items.length ? (
         <Empty
@@ -83,7 +123,7 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
                 ? "Swipe right on Shorts in your queue and each one lands here on its best day and hour to post."
                 : `Swipe right on Shorts in your queue and they land here once you post them.${configured().youtubeAudited ? " Pro posts them for you at your best times." : ""}`
           }
-          action={{ href: "/app/shorts", label: "Go to your queue" }}
+          action={{ href: picked ? `/app/shorts?channel=${picked.id}` : "/app/shorts", label: "Go to your queue" }}
         />
       ) : (
         <>
@@ -105,7 +145,7 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
                         {d.d}
                       </p>
                       <div className="flex flex-col">
-                        {list.slice(0, 3).map((it) => <Item key={it.id} it={it} tz={tz} auto={auto} />)}
+                        {list.slice(0, 3).map((it) => <Item key={it.id} it={it} tz={tz} auto={autoOf(it)} channel={tagOf(it)} stacked />)}
                         {list.length > 3 && <p className="px-1.5 font-mono text-[10px] text-muted">+{list.length - 3} more</p>}
                       </div>
                     </div>
@@ -126,7 +166,7 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
                   <h2 className={`mb-2 font-mono text-[11px] uppercase tracking-[0.18em] ${k === today ? "text-signal" : "text-muted"}`}>{k === today ? `Today · ${label}` : label}</h2>
                   <Card>
                     <div className="flex flex-col divide-y divide-edge py-1">
-                      {list.map((it) => <Item key={it.id} it={it} tz={tz} auto={auto} />)}
+                      {list.map((it) => <Item key={it.id} it={it} tz={tz} auto={autoOf(it)} channel={tagOf(it)} />)}
                     </div>
                   </Card>
                 </section>

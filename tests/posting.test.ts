@@ -178,7 +178,7 @@ describe("TikTok", () => {
     const cap = new TikTokError("TikTok: full", 403, "reached_active_user_cap");
     expect(cap.tomorrow).toBe(true);
     expect(cap.retry).toBe(false);
-    expect(new TikTokError("TikTok: no", 403, "spam_risk_too_many_posts").tomorrow).toBe(false);
+    expect(new TikTokError("TikTok: no", 403, "spam_risk_user_banned_from_posting").tomorrow).toBe(false);
   });
 });
 

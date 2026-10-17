@@ -512,7 +512,7 @@ describe("TikTok's questions", () => {
   });
 
   it("says why TikTok turned a post down in words a creator can act on", () => {
-    expect(tiktokReason("spam_risk_too_many_posts", "TikTok: x")).toMatch(/more posts from this account today/);
+    expect(tiktokReason("spam_risk_too_many_posts", "TikTok: x")).toMatch(/daily limit for this account is full/);
     expect(tiktokReason("something_new", "TikTok: something new")).toBe("TikTok: something new");
     expect(tiktokReason(null, "TikTok: 500")).toBe("TikTok: 500");
   });

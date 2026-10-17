@@ -11,6 +11,7 @@ import { EditCopyToggle } from "@/components/shorts/edit-copy";
 import { ShortPlayer } from "@/components/shorts/player";
 import { PostedForm } from "@/components/shorts/posted";
 import { TikTokLater } from "@/components/shorts/tiktok";
+import { uploadsTo } from "@/lib/shorts/channels";
 import { FORMATS } from "@/lib/shorts/formats";
 import { historyOf } from "@/lib/shorts/history";
 import { readAfter, times } from "@/lib/shorts/insights";
@@ -18,7 +19,7 @@ import { againstUsual } from "@/lib/shorts/learn";
 import { seconds } from "@/lib/shorts/timing";
 import { markable, STUDIO_UPLOAD, whyFor } from "@/lib/shorts/youtube";
 import { account } from "@/lib/server/account";
-import { channelsOf, postingChannel } from "@/lib/server/channels";
+import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
 import { shortOf, type ShortDetail } from "@/lib/server/shorts/library";
 import { editCopy, posted, postToTikTok, sendToTikTok, tiktokAccount, tryAgain } from "../actions";
@@ -42,6 +43,8 @@ function stateOf(d: ShortDetail, byHand: boolean, now: Date): { label: string; t
 
 const MARK = { done: "border-signal bg-signal text-ink", next: "border-edge-strong text-muted", bad: "border-signal text-signal" } as const;
 
+const linked = "underline decoration-signal decoration-2 underline-offset-4";
+
 export default async function ShortPage({ params }: { params: Promise<{ id: string }> }) {
   const me = await account();
   const { id } = await params;
@@ -49,11 +52,16 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
   const d = await shortOf(me.id, id);
   if (!d) notFound();
 
-  const channels = await channelsOf(me.id);
+  const [channels, shown] = await Promise.all([channelsOf(me.id), shortsChannelsOf(me.id)]);
   const tiktok = channels.find((c) => c.platform === "tiktok" && c.status === "connected");
   const tiktokDirect = me.plan.scheduling && !!tiktok && configured().tiktokDirect;
-  // Hookline uploads to their YouTube itself; otherwise the creator posts it there, and its time is the best time to
-  const auto = me.plan.scheduling && !!postingChannel(channels)?.api;
+  // the YouTube channel it's for, with what to call it, even once that channel is disconnected
+  const mine = shown.find((c) => c.id === d.channelId);
+  // Hookline uploads to the channel it's for itself; otherwise the creator posts it there, and its time is the best time to
+  const auto = uploadsTo(mine, me.plan.scheduling);
+  // while it's still to go up, a channel Hookline can't reach says so, and what reaching it again would do
+  const away = mine && mine.status !== "connected" && !d.youtubeId && ["review", "approved", "rendering", "ready"].includes(d.status) ? mine : undefined;
+  const wouldPost = me.plan.scheduling && !!mine?.api;
   const self = !d.youtubeId && !auto;
   // ready, and waiting for them to post it
   const byHand = self && d.hasFile && d.status === "ready";
@@ -80,8 +88,9 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
     heldBack: d.heldBack,
   });
   const day = d.views["24h"];
-  // a first day read late is scaled back to 24 hours, and says it's an estimate
+  // a first day read late is scaled back to 24 hours, and says it's an estimate; with several channels, it says whose usual
   const vs = day !== undefined && d.typical !== null ? againstUsual(day, d.readAt["24h"] ?? 24, d.typical) : null;
+  const against = shown.length > 1 && mine ? `, against ${mine.name}'s usual` : "";
   const editable = ["review", "approved", "rendering", "ready"].includes(d.status);
   const chosen = d.status !== "review" && d.status !== "rejected";
 
@@ -101,6 +110,7 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
         <div className="flex min-w-0 flex-col gap-6">
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
+              {mine && <Pill>{mine.name}</Pill>}
               <Pill>{FORMATS[d.spec.format].name}</Pill>
               <Pill tone={s.tone}>{s.label}</Pill>
               {d.tiktokPublishId && <Pill>{d.tiktok ? "On TikTok" : "In TikTok drafts"}</Pill>}
@@ -137,6 +147,23 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
             </div>
           )}
 
+          {away && (
+            <p role="status" className="border-2 border-signal px-4 py-3 text-[14px] leading-relaxed">
+              {away.status === "revoked" ? (
+                wouldPost ? (
+                  <>{away.name} is disconnected. Connect it again in <Link href="/app/settings" className={linked}>Settings</Link> and this posts there, or download it and post it yourself.</>
+                ) : (
+                  <>{away.name} is disconnected. Download it and post it there yourself, or connect it again in <Link href="/app/settings" className={linked}>Settings</Link> so Hookline can check it and read its views.</>
+                )
+              ) : (
+                <>
+                  Hookline lost access to {away.name}. Reconnect it in <Link href={`/app/settings#audience-${away.id}`} className={linked}>Settings</Link>{" "}
+                  {wouldPost ? "so this can post." : "so Hookline can check it and read its views."}
+                </>
+              )}
+            </p>
+          )}
+
           {d.heldBack && (
             <p role="status" className="border-2 border-edge-strong bg-card-2 px-4 py-3 text-[14px] leading-relaxed">
               <b className="font-semibold">Waiting for YouTube upload quota.</b> YouTube caps how many videos Hookline can upload a day, and today&rsquo;s are used up.
@@ -165,7 +192,7 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
                 <Stat
                   label="Vs your usual"
                   value={vs === null ? "—" : times(vs.vs)}
-                  sub={vs !== null ? (vs.estimated ? "Its first day, estimated from a late reading" : "Its first day") : d.typical === null ? "Needs 3 Shorts' first days" : "After its first day"}
+                  sub={vs !== null ? (vs.estimated ? `Its first day${against}, estimated from a late reading` : `Its first day${against}`) : d.typical === null ? "Needs 3 Shorts' first days" : "After its first day"}
                 />
               </div>
               {!d.youtubeId && <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">Views are read from YouTube at 1 hour, 1 day and 3 days after it posts there.</p>}
