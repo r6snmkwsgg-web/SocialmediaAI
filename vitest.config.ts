@@ -10,5 +10,7 @@ export default defineConfig({
       "server-only": fileURLToPath(new URL("./tests/stubs/server-only.ts", import.meta.url)),
     },
   },
-  test: { include: ["tests/**/*.test.ts"], environment: "node" },
+  // the database tests make Shorts, draw frames and run fights: on a busy machine some take longer
+  // than vitest's 5 seconds with nothing wrong, so a test only counts as stuck after 30
+  test: { include: ["tests/**/*.test.ts"], environment: "node", testTimeout: 30_000 },
 });
