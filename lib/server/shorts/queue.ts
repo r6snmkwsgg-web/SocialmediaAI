@@ -4,10 +4,12 @@ import { channelNames, isActive } from "../../shorts/channels";
 import type { HeldBack } from "../../shorts/history";
 import { isWhenLine, planSlots, validTimezone, whenLine } from "../../shorts/times";
 import { tiktokTime, type TikTokChoices } from "../../shorts/tiktok";
-import type { FormatId, Spec } from "../../shorts/types";
+import type { ShortFormat, Spec } from "../../shorts/types";
 import { brokenOf, commentsOn, postsThroughApi, YT_PRIVACY, type VideoState, type YouTubePrivacy } from "../../shorts/youtube";
 import { billingFor } from "../billing";
 import { admin, asUser, type Tx } from "../db";
+import { forgetNames } from "../clips";
+import { canTryAgain } from "../../live/clip-rules";
 import { configured, youtubeApi } from "../env";
 import { YouTubeError, youtubeAccess, youtubeIdFrom, youtubeVideoStates } from "../youtube";
 import { QuotaWait, takeLinkCheck } from "../quota";
@@ -54,7 +56,7 @@ export type Posted = {
   id: string;
   channelId: string | null;
   title: string;
-  format: FormatId;
+  format: ShortFormat;
   postedAt: Date | null;
   youtubeId: string | null;
   /** the link was checked to be on their own channel (or Hookline uploaded it); only these count */
@@ -71,11 +73,11 @@ const privacyOf = (p: string | null): YouTubePrivacy | null => ((YT_PRIVACY as r
 export async function queueOf(userId: string, channelId?: string): Promise<{ waiting: Waiting[]; coming: Coming[]; posted: Posted[] }> {
   return asUser(userId, async (tx) => {
     const only = channelId ? tx`and v.channel_id = ${channelId}` : tx``;
-    const waiting = await tx<{ id: string; channel_id: string | null; format: FormatId; params: Spec["params"]; key: string; title: string; description: string; why: string[]; suggested_for: Date | null; origin: string }[]>`
+    const waiting = await tx<{ id: string; channel_id: string | null; format: ShortFormat; params: Spec["params"]; key: string; title: string; description: string; why: string[]; suggested_for: Date | null; origin: string }[]>`
       select v.id, v.channel_id, v.format, v.params, v.key, v.title, v.description, v.why, v.suggested_for, v.origin from public.videos v
       where v.status = 'review' ${only} order by v.suggested_for nulls last, v.created_at`;
     const coming = await tx<{
-      id: string; channel_id: string | null; format: FormatId; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null;
+      id: string; channel_id: string | null; format: ShortFormat; params: Spec["params"]; title: string; description: string; status: Coming["status"]; scheduled_for: Date | null; progress: number | null; job: string | null;
       error: string | null; youtube_id: string | null; tiktok_publish_id: string | null; tiktok_chosen: boolean; tiktok_at: Date | null; tiktok_error: string | null; file_path: string | null;
       tiktok_file: boolean; cleaning: boolean; made_for_kids: boolean | null; youtube_kids: boolean | null; channel_kids: boolean | null;
       waiting_on: HeldBack["on"] | null; waiting_until: Date | null;
@@ -93,7 +95,7 @@ export async function queueOf(userId: string, channelId?: string): Promise<{ wai
       where v.status in ('approved', 'rendering', 'ready', 'scheduled', 'failed') and v.decided_at > now() - interval '30 days' ${only}
       order by v.scheduled_for nulls last, v.decided_at`;
     const posted = await tx<{
-      id: string; channel_id: string | null; title: string; format: FormatId; posted_at: Date | null; youtube_id: string | null; youtube_verified: boolean; youtube_privacy: string | null;
+      id: string; channel_id: string | null; title: string; format: ShortFormat; posted_at: Date | null; youtube_id: string | null; youtube_verified: boolean; youtube_privacy: string | null;
       youtube_kids: boolean | null; stats: { checkpoint: "1h" | "24h" | "72h"; views: string }[] | null;
     }[]>`
       select v.id, v.channel_id, v.title, v.format, v.posted_at, v.youtube_id, v.youtube_verified, v.youtube_privacy, v.youtube_kids,
@@ -199,8 +201,14 @@ async function bookedTikTok(tx: Tx, userId: string, now: Date, except: string[] 
  * differently for this Short (`kids`). One made for kids, or going to a
  * channel YouTube has set as made for kids, gets an ending that doesn't
  * ask for comments, since YouTube turns them off.
+ *
+ * A round from the creator's LIVE shows the names of the people who sent
+ * gifts only when they chose to (`names`). Otherwise it lets go of them
+ * before it's made, so they're never in its video.
  */
-export async function approve(userId: string, id: string, plan: Plan, now = new Date(), tiktok: TikTokChoices | null = null, kids: boolean | null = null): Promise<boolean> {
+export async function approve(
+  userId: string, id: string, plan: Plan, now = new Date(), tiktok: TikTokChoices | null = null, kids: boolean | null = null, names = false,
+): Promise<boolean> {
   const done = await asUser(userId, async (tx) => {
     // a plan that posts books its time, and maybe TikTok's
     if (plan.scheduling) await lockTimes(tx, userId);
@@ -230,10 +238,12 @@ export async function approve(userId: string, id: string, plan: Plan, now = new 
       update public.videos set status = 'approved', decided_at = now(), scheduled_for = ${at}, why = ${tx.json(why)}, error = null,
         tiktok_post = ${post ? tx.json(post) : null}, tiktok_at = ${tiktokAt}, tiktok_error = null,
         made_for_kids = ${audience},
-        params = case when ${!comments} then params || '{"allowComments": false}'::jsonb else params - 'allowComments' end
+        params = ((case when ${!comments} then params || '{"allowComments": false}'::jsonb else params - 'allowComments' end) - 'names')
+          || (case when ${names} and format = 'clip' then '{"names": true}'::jsonb else '{}'::jsonb end)
       where id = ${id}`;
     return true;
   });
+  if (done && !names) await forgetNames(userId, id);
   if (done) await admin((tx) => tx`insert into public.render_jobs (video_id, priority) values (${id}, ${plan.priority}) on conflict do nothing`);
   return done;
 }
@@ -344,8 +354,10 @@ export async function retimeLate(userId: string, channelId: string, now = new Da
   return within ? run(within.tx) : asUser(userId, run);
 }
 
+/** A no. A round from the creator's LIVE swiped away lets go of its gifters' names. */
 export async function reject(userId: string, id: string): Promise<boolean> {
   const rows = await asUser(userId, (tx) => tx`update public.videos set status = 'rejected', decided_at = now() where id = ${id} and status = 'review' returning id`);
+  if (rows.length) await forgetNames(userId, id);
   return rows.length > 0;
 }
 
@@ -485,9 +497,13 @@ export async function markPosted(userId: string, id: string, link: string | null
 /**
  * Try a failed one again: made again if it never rendered; checked with
  * YouTube again if it's up there but wasn't public (the creator may have
- * fixed that in YouTube Studio); otherwise uploaded again.
+ * fixed that in YouTube Studio); otherwise uploaded again. A round from a
+ * LIVE that can never be made stays as it is, saying why.
  */
 export async function retry(userId: string, id: string, plan: Plan): Promise<void> {
+  const [f] = await asUser(userId, (tx) => tx<{ format: ShortFormat; params: Spec["params"] | null; file_path: string | null }[]>`
+    select format, case when format = 'clip' then params end as params, file_path from public.videos where id = ${id} and status = 'failed'`);
+  if (!f || !canTryAgain({ format: f.format, params: f.params } as Spec, !!f.file_path)) return;
   const [v] = await admin((tx) => tx<{ file_path: string | null }[]>`
     update public.videos set
       status = case when file_path is null then 'approved' when youtube_id is not null and youtube_status in ('processed', 'uploaded') then 'scheduled' else 'ready' end,

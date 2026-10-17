@@ -2,6 +2,7 @@ import type { Show } from "@/lib/live/show";
 import { LETTERS } from "@/lib/live/show";
 import { INTRO, KO_HOLD, WELCOME_FOR } from "@/lib/live/show";
 import { welcomeLine } from "@/lib/live/supporters";
+import { giftLevel as blastLevel } from "@/lib/live/menu";
 import { battleDraw } from "./battle";
 import {
   AX, AY, coin, crown, DIM, ease, face, GOLD, H, icon, INK, M, measure, MENU_Y, nameOf, outline, PAPER, pop, roundRect, SIDE, SIGNAL, text, TOP3, W,
@@ -96,10 +97,8 @@ function drawMenu(ctx: Ctx, show: Show, view: View, d: GameDraw) {
 
 const BLAST = 2;
 
-/** how big a gift's moment is: 0 for most, 1 for a Galaxy's worth, 2 for ten times that and more */
-export function blastLevel(coins: number): number {
-  return coins >= 10_000 ? 2 : coins >= 999 ? 1 : 0;
-}
+/** how big a gift's moment is: 0 for most, 1 for a Galaxy's worth, 2 for ten times that and more, the same level a clip keeps */
+export { blastLevel };
 
 /** how long a gift's moment stays up: the bigger the gift, the longer */
 const blastFor = (coins: number) => BLAST + blastLevel(coins);

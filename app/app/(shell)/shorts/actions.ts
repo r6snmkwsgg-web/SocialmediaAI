@@ -20,13 +20,13 @@ const id = z.uuid();
  * Right or left on a Short. Left makes a new one in its place, on the
  * same channel, while that channel's replacements for the day last (and
  * none for a channel that doesn't get Shorts any more). A right can carry
- * the creator's TikTok choices. A right says when it posts only when
- * something will post it (its own channel, or TikTok), at the time that
- * one posts it; otherwise its time is the best time for the creator to
- * post it.
+ * the creator's TikTok choices, and on a round from their LIVE, whether it
+ * shows gifters' names. A right says when it posts only when something
+ * will post it (its own channel, or TikTok), at the time that one posts
+ * it; otherwise its time is the best time for the creator to post it.
  */
 export async function decide(
-  videoId: string, yes: boolean, tiktok?: unknown, kids?: unknown,
+  videoId: string, yes: boolean, tiktok?: unknown, kids?: unknown, names?: unknown,
 ): Promise<{ ok: boolean; replaced?: boolean; at?: string | null; how?: Keeping; channel?: string }> {
   const me = await requireUser();
   if (!id.safeParse(videoId).success) return { ok: false };
@@ -36,7 +36,7 @@ export async function decide(
     // made for kids or not, when the creator chose differently from the channel's answer for this one
     const audience = typeof kids === "boolean" ? kids : null;
     const { plan } = await billingFor(me.id);
-    const ok = await approve(me.id, videoId, plan, new Date(), choices?.data ?? null, audience);
+    const ok = await approve(me.id, videoId, plan, new Date(), choices?.data ?? null, audience, names === true);
     // its times, its channel and who posts it, for the toast that says so
     const [v] = ok ? await asUser(me.id, (tx) => tx<{ scheduled_for: Date | null; tiktok_at: Date | null; tiktok: boolean; channel_id: string | null }[]>`
       select scheduled_for, tiktok_at, tiktok_post is not null as tiktok, channel_id from public.videos where id = ${videoId}`) : [];

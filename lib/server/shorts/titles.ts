@@ -48,6 +48,14 @@ export function takesEffort(model: string): boolean {
   return !noEffort.has(model);
 }
 
+/**
+ * Words a written title and description can't have for a Short of this
+ * kind, or it gets the plain ones: a round from a LIVE never talks about
+ * gifts, coins or sending anything, so it can never read as asking for a
+ * gift, whatever the writer was told.
+ */
+const UNSAID: Partial<Record<Candidate["format"], RegExp>> = { clip: /\b(gift\w*|coins?|send\w*|sent|donat\w*)\b/i };
+
 /** A video's title and description from Claude, or null to use the plain one, saying why in the log. */
 export async function writeCopy(c: Candidate, formatName: string): Promise<Copy | null> {
   const e = env();
@@ -85,7 +93,10 @@ export async function writeCopy(c: Candidate, formatName: string): Promise<Copy 
     });
     if (res.stop_reason !== "end_turn") return plain(`Claude stopped early (${res.stop_reason})`);
     if (!res.parsed_output) return plain("the answer wasn't in the expected shape");
-    return tidy(res.parsed_output) ?? plain("the title came back empty");
+    const copy = tidy(res.parsed_output);
+    if (!copy) return plain("the title came back empty");
+    if (UNSAID[c.format]?.test(`${copy.title} ${copy.description}`)) return plain("it talked about gifts, which a round from a LIVE never does");
+    return copy;
   } catch (err) {
     return plain(err instanceof Anthropic.APIError ? `${err.status} ${err.message}` : err instanceof Error ? err.message : String(err));
   }
@@ -101,7 +112,7 @@ export function tidy(c: Copy): Copy | null {
   };
 }
 
-/** The description to use when nothing wrote one. It only asks for comments where comments are on. */
+/** The description to use when nothing wrote one. It only asks for comments where comments are on. A round from a LIVE says so. */
 export function plainDescription(c: Candidate): string {
   const comments = c.params.allowComments !== false;
   const ask: Record<Candidate["format"], string> = comments
@@ -112,6 +123,7 @@ export function plainDescription(c: Candidate): string {
         texts: "What would you reply? A made-up story.",
         ranking: "Did any surprise you? Figures from the World Bank.",
         race: "Who surprised you most? Figures from the World Bank.",
+        clip: "Who would you have backed? Comment before the end. From my LIVE.",
       }
     : {
         battle: "Pick a side before the end.",
@@ -120,6 +132,7 @@ export function plainDescription(c: Candidate): string {
         texts: "A made-up story.",
         ranking: "Figures from the World Bank.",
         race: "Figures from the World Bank.",
+        clip: "Who would you have backed? From my LIVE.",
       };
   const tags: Record<Candidate["format"], string> = {
     battle: "#shorts #ballbattle #satisfying",
@@ -128,6 +141,7 @@ export function plainDescription(c: Candidate): string {
     texts: "#shorts #textstory #story",
     ranking: "#shorts #ranking #data",
     race: "#shorts #barchartrace #data",
+    clip: "#shorts #ballbattle #live",
   };
   return `${ask[c.format]}\n\n${tags[c.format]}`;
 }

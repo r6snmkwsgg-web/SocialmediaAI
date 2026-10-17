@@ -5,10 +5,10 @@ import { Icons } from "@/components/app/icons";
 import { button, Card, Empty, PageHead } from "@/components/app/ui";
 import { byDay, dayKey, gridBounds, monthGrid, monthParam, parseMonth, shiftMonth } from "@/lib/shorts/calendar";
 import { gettingShorts, uploadsTo } from "@/lib/shorts/channels";
-import { FORMATS } from "@/lib/shorts/formats";
+import { formatName } from "@/lib/shorts/formats";
 import { FORMAT_COLOR } from "@/lib/shorts/look";
 import { validTimezone } from "@/lib/shorts/times";
-import type { FormatId } from "@/lib/shorts/types";
+import { SHORT_FORMATS } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
 import { shortsChannelsOf } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
@@ -175,10 +175,10 @@ export default async function Calendar({ searchParams }: { searchParams: Search 
           </div>
 
           <ul className="mt-5 flex flex-wrap gap-x-5 gap-y-2" aria-label="Colours">
-            {(Object.keys(FORMATS) as FormatId[]).map((f) => (
+            {SHORT_FORMATS.map((f) => (
               <li key={f} className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
                 <span className="h-2 w-2" style={{ background: FORMAT_COLOR[f] }} aria-hidden="true" />
-                {FORMATS[f].name}
+                {formatName({ format: f })}
               </li>
             ))}
           </ul>

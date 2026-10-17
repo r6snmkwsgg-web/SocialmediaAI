@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { rng } from "@/lib/battle/sim";
 import type { BridgeStatus } from "@/lib/live/bridge";
+import type { ClipLog } from "@/lib/live/clip";
 import { connectionView, sinceAfter, type SocketState } from "@/lib/live/connection";
 import { demoTick, demoViewer } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
@@ -35,6 +36,8 @@ type Props = {
   supporters?: string[];
   /** reports the session's numbers now and then, for the streamer's stats, with the TikTok LIVEs it heard */
   onStats?: (show: Show, final: boolean, heard: Heard) => void;
+  /** hands over each round kept for a Short, once, as it's decided; it names nobody while names are hidden */
+  onClip?: (log: ClipLog) => void;
 };
 
 /** Where the game is listening, kept outside React so the drawing loop reads it fresh every frame. */
@@ -68,7 +71,7 @@ function useImages() {
  * runs the game in real time, listens to TikFinity or the bridge, and has
  * a test panel (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, hideNames, supporters, onStats }: Props) {
+export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, hideNames, supporters, onStats, onClip }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -85,6 +88,8 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const heard = useRef(new HeardLog());
   const stats = useRef(onStats);
   stats.current = onStats;
+  const clip = useRef(onClip);
+  clip.current = onClip;
   // whether names are hidden, which the drawing loop reads fresh every frame
   const names = useRef(false);
   names.current = hideNames ?? settings?.hideNames ?? false;
@@ -182,6 +187,8 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
       last = now;
       if (demo.current) for (const e of demoTick(dt, rand, s.game.teams, s.phase === "win" && !!s.vote, sides)) s.handle(e);
       s.update(dt);
+      // a round kept for a Short goes out once, as it's decided: with names hidden, it names nobody
+      for (const c of s.takeClips({ hideNames: names.current })) clip.current?.(c);
       // sounds for whatever happened since the last frame
       if (s.round !== round) {
         round = s.round;

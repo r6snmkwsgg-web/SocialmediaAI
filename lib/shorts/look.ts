@@ -1,7 +1,7 @@
-import type { FormatId } from "./types";
+import type { ShortFormat } from "./types";
 
-/** Each format's colour, the same one its video leads with: for dots, keys and covers. */
-export const FORMAT_COLOR: Record<FormatId, string> = { battle: "#ff4a1c", quiz: "#ffd60a", wyr: "#ff3b30", texts: "#34c759", ranking: "#0a84ff", race: "#bf5af2" };
+/** Each format's colour, the same one its video leads with: for dots, keys and covers. A round from a LIVE gets the LIVE's heart pink. */
+export const FORMAT_COLOR: Record<ShortFormat, string> = { battle: "#ff4a1c", quiz: "#ffd60a", wyr: "#ff3b30", texts: "#34c759", ranking: "#0a84ff", race: "#bf5af2", clip: "#ff6fb5" };
 
 /**
  * A channel's own look: its colours, its type and what's behind

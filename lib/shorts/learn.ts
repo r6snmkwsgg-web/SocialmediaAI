@@ -151,14 +151,16 @@ export function chooseFormats(n: number, o: Record<FormatId, number>, rand: () =
 
 /**
  * The kinds of thing within a format that can do better or worse: the
- * powers in a battle, a quiz's subject, a story's tone, a chart's figure.
- * Each video adds a result to its format and to these.
+ * powers in a battle, a quiz's subject, a story's tone, a chart's figure,
+ * and for a round from a LIVE, its game. Each video adds a result to its
+ * format and to these.
  */
 export function keyGroups(key: string): string[] {
   const [format, a, b] = key.split(":");
   if (format === "battle" && a && b) return [`battle:${a}`, `battle:${b}`];
   if ((format === "quiz" || format === "texts") && a) return [`${format}:${a}`];
   if ((format === "ranking" || format === "race") && a) return [`${format}:${a}`];
+  if (format === "clip" && (a === "battle" || a === "rivals")) return [`clip:${a}`];
   return [];
 }
 

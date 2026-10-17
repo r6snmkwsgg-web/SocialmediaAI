@@ -1,6 +1,6 @@
 import { words } from "../checks";
 import type { Look } from "../look";
-import type { Candidate, Context, Ending, FormatId, Spec } from "../types";
+import type { Candidate, Context, Ending, FormatId, ShortFormat, Spec } from "../types";
 import { fightId, matchupId, proposeBattle } from "./battle";
 import { bankQuestionIds, proposeQuiz } from "./quiz";
 import { proposeRace, raceDecadeId, raceOutcomeId } from "./race";
@@ -18,10 +18,22 @@ export const FORMATS: Record<FormatId, { name: string; plural: string; propose: 
   race: { name: "Bar chart race", plural: "bar chart races", propose: (ctx) => proposeRace(ctx) },
 };
 
+/** What the app calls a stored Short's kind: its format's name, or for a round from the creator's own LIVE, where it's from. */
+export function formatName(spec: { format: ShortFormat }): string {
+  return spec.format === "clip" ? "From your LIVE" : FORMATS[spec.format].name;
+}
+
+/** The same, for more than one. */
+export function formatPlural(spec: { format: ShortFormat }): string {
+  return spec.format === "clip" ? "rounds from your LIVEs" : FORMATS[spec.format].plural;
+}
+
 /**
  * What a Short used up on its channel, so the channel doesn't repeat
  * itself: questions, choices, stories, matchups, and a chart's figure and
  * region for that decade. Shorts saved with odd parameters give nothing.
+ * A round from a LIVE uses up nothing here: it stops waiting the moment
+ * it becomes a Short, so it can't come round again.
  */
 export function contentIds(spec: Spec): string[] {
   if (!spec.params) return [];
@@ -38,6 +50,8 @@ export function contentIds(spec: Spec): string[] {
       return spec.params.year ? [rankingDecadeId(spec.params)] : [];
     case "race":
       return spec.params.years?.length ? [raceDecadeId(spec.params)] : [];
+    case "clip":
+      return [];
   }
 }
 
@@ -48,7 +62,8 @@ export function contentIds(spec: Spec): string[] {
  * how it comes out: a countdown's countries in order, a race's top
  * countries at the start and the finish. Questions, choices and stories
  * come with the words that carry their meaning, so they're caught in
- * other words too.
+ * other words too. A round from a LIVE claims nothing: it was the
+ * creator's own, and no other channel could ever make it.
  */
 export function ledgerClaims(spec: Spec): { item: string; words?: string[] }[] {
   if (!spec.params) return [];
@@ -66,6 +81,8 @@ export function ledgerClaims(spec: Spec): { item: string; words?: string[] }[] {
       return (spec.params.pairs ?? []).map((x) => ({ item: x.id, ...said(x.a && x.b ? `${x.a} or ${x.b}` : undefined) }));
     case "texts":
       return spec.params.story?.id ? [{ item: spec.params.story.id, ...said(spec.params.story.messages?.map((m) => m.text).join(" ")) }] : [];
+    case "clip":
+      return [];
   }
 }
 
@@ -78,13 +95,14 @@ export function bankIds(): string[] {
 }
 
 /** What each ending asks of viewers, in words for whoever writes the title. */
-const ENDING_FACT: Record<FormatId, Record<Ending, string>> = {
+const ENDING_FACT: Record<ShortFormat, Record<Ending, string>> = {
   battle: { comment: "During the fight it asks viewers to comment who they picked.", loop: "It loops: the end runs straight back into the start of the fight.", quiet: "It doesn't ask viewers to comment." },
   quiz: { comment: "It ends asking viewers to comment their score.", loop: "It loops: the end runs straight back into the first question.", quiet: "It doesn't ask viewers to comment." },
   wyr: { comment: "It ends asking viewers to comment their picks.", loop: "It loops: the end runs straight back into the first choice.", quiet: "It doesn't ask viewers to comment." },
   texts: { comment: "It ends asking viewers to comment what they'd reply.", loop: "It loops: the end runs straight back into the first message.", quiet: "It doesn't ask viewers to comment." },
   ranking: { comment: "It ends asking viewers to comment if any surprised them.", loop: "It loops: the end runs straight back into the start of the countdown.", quiet: "It doesn't ask viewers to comment." },
   race: { comment: "It ends asking viewers to comment who surprised them most.", loop: "It loops: the end runs straight back into the first year.", quiet: "It doesn't ask viewers to comment." },
+  clip: { comment: "During the round it asks viewers to comment who they'd back.", loop: "It loops: the end runs straight back into the start of the round.", quiet: "It doesn't ask viewers to comment." },
 };
 
 /**

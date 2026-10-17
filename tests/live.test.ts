@@ -18,6 +18,9 @@ import { meteorSize } from "@/components/live/draw/kit";
 import { allowedBy, DEFAULT_SETTINGS, parseSettings } from "@/lib/live/settings";
 import { INTRO, joinFromChat, KO_HOLD, LIKES_FREE, LIKES_PER_HP, likesToHp, SESSION_IDLE, Show, sideFromChat, VOTE, voteFromChat } from "@/lib/live/show";
 import { METEOR_HIT, rng, World } from "@/lib/battle/sim";
+import type { ClipLog } from "@/lib/live/clip";
+import { giftLevel } from "@/lib/live/menu";
+import { fingerprint } from "@/lib/live/tape";
 
 const v2Gift = (repeatCount: number, repeatEnd: number, giftType = 1, diamondCount = 1) => ({
   giftId: 5655,
@@ -485,6 +488,24 @@ describe("a battle show", () => {
     // and one side's likes can't out-heal the other side's Galaxy
     expect(seeds.filter((i) => fight(i, [0, 150], true).result?.team === 0).length).toBeGreaterThanOrEqual(19);
   });
+
+  it("plays the same with its rounds written down for clips as without", () => {
+    const play = (clips: boolean) => {
+      const s = new Show({ seed: 13, settings: { clips, vote: false } });
+      const r = rng(2);
+      for (let i = 0; i < 60 * 200; i++) {
+        if (r() < 0.05) s.handle({ kind: "gift", viewer: viewer(`v${Math.floor(r() * 6)}`), gift: r() < 0.9 ? "Perfume" : "Galaxy", coins: 20, count: 1 });
+        if (r() < 0.2) s.handle({ kind: "like", viewer: viewer("liker"), count: 10 });
+        s.update(1 / 60);
+      }
+      return s;
+    };
+    const on = play(true), off = play(false);
+    const world = (s: Show) => (s.game as unknown as { world: World }).world;
+    expect(on.round).toBeGreaterThan(2);
+    expect([on.round, on.series]).toEqual([off.round, off.series]);
+    expect(fingerprint(world(on))).toBe(fingerprint(world(off)));
+  });
 });
 
 describe("big gifts get the biggest moments", () => {
@@ -615,6 +636,39 @@ describe("big gifts get the biggest moments", () => {
     const corgi = hits("Corgi", 299), galaxy = hits("Galaxy", 1000), universe = hits("Universe", 44999);
     expect(galaxy).toBeGreaterThan(corgi * 3);
     expect(universe).toBeGreaterThan(galaxy * 40);
+  });
+
+  it("keeps each big gift in a round as a moment for a clip: its side, power, how many and how big, never its coins", () => {
+    expect(blastLevel).toBe(giftLevel);
+    const s = new Show({ seed: 6, settings: { vote: false, roundSeconds: 30 } });
+    toPlay(s);
+    s.join(viewer("red-fan"), 0);
+    s.join(viewer("blue-fan"), 1);
+    s.handle({ kind: "gift", viewer: viewer("blue-fan"), gift: "Corgi", coins: 299, count: 5 });
+    s.handle({ kind: "gift", viewer: viewer("red-fan"), gift: "Galaxy", coins: 1000, count: 1 });
+    s.handle({ kind: "gift", viewer: viewer("red-fan"), gift: "Hand Hearts", coins: 100, count: 1 });
+    // and late in the round, a Universe: blue hangs on, then goes down
+    let sent = false;
+    for (let i = 0; i < 60 * 400 && s.phase === "play"; i++) {
+      if (!sent && s.game.clock >= 18) {
+        s.handle({ kind: "gift", viewer: viewer("red-fan"), gift: "Universe", coins: 44_999, count: 1 });
+        sent = true;
+      }
+      s.update(1 / 60);
+    }
+    const [log] = s.takeClips({ hideNames: false });
+    expect(log.people).toEqual(["blue-fan", "red-fan"]);
+    // five Corgis are a Galaxy's worth, so their moment is as big as one
+    expect(log.moments.map((m) => m.slice(1))).toEqual([
+      ["shield", 1, 0, 1, 1],
+      ["meteor", 0, 1, meteorShower(worth(1000) / 2).n, 1],
+      ["rage", 0, 1, 1, 0],
+      ["meteor", 0, 1, METEORS_MAX, 2],
+    ]);
+    // on the step each landed on: the first three together, the Universe 18 seconds in
+    expect(log.moments.slice(0, 3).every((m) => m[0] === log.moments[0][0])).toBe(true);
+    expect(log.moments[3][0]).toBeGreaterThan(18 * 60);
+    for (const coins of [299, 1495, 1000, 100, 44_999]) expect(log.moments.flat()).not.toContain(coins);
   });
 
   it("stacks rage and a shield only so far; past that, a gift is its coins in HP", () => {
@@ -1138,6 +1192,35 @@ describe("a new session after a quiet spell", () => {
     const p = sessionPayload(s, "k".repeat(32))!;
     expect(p.id).toBe(s.stats.id);
     expect(plausible(p)).toBe(true);
+  });
+
+  it("numbers each kept round as its own session counts rounds, not as a game left open across LIVEs does", () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-16T18:00:00Z"));
+    const s = new Show({ seed: 52, settings: { vote: false, roundSeconds: 30 } });
+    const kept: ClipLog[] = [];
+    // a round the streamer's viewers keep going: both sides gifted plenty of health
+    const round = () => {
+      while (s.phase === "intro") s.update(0.1);
+      s.join(viewer("red-fan"), 0);
+      s.join(viewer("blue-fan"), 1);
+      s.handle({ kind: "gift", viewer: viewer("red-fan"), gift: "Corgi", coins: 299, count: 2 });
+      s.handle({ kind: "gift", viewer: viewer("blue-fan"), gift: "Corgi", coins: 299, count: 2 });
+      const at = s.round;
+      while (s.round === at) s.update(1 / 30);
+      kept.push(...s.takeClips({ hideNames: false }));
+    };
+    round();
+    round();
+    // the next day's LIVE, with the same browser source still open
+    vi.setSystemTime(Date.now() + 22 * 3600_000);
+    round();
+    round();
+    expect(s.round).toBe(5);
+    expect(kept.map((l) => l.round)).toEqual([1, 2, 1, 2]);
+    expect(kept[1].session).toBe(kept[0].session);
+    expect(kept[2].session).not.toBe(kept[0].session);
+    expect(kept[3].session).toBe(s.stats.id);
   });
 
   it("never starts one for pretend viewers", () => {

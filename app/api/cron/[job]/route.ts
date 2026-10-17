@@ -1,5 +1,6 @@
 import { env } from "@/lib/server/env";
 import { recapLives } from "@/lib/server/live";
+import { tidyClips } from "@/lib/server/clips";
 import { runDailyShorts } from "@/lib/server/shorts/generate";
 import { postDue } from "@/lib/server/shorts/post";
 import { collectStats } from "@/lib/server/shorts/stats";
@@ -26,7 +27,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ job: str
   // a few at a time, and nobody new after two and a half minutes, so the request always finishes: the rest are picked up on the next run
   else if (job === "shorts") log = await runDailyShorts(new Date(), 5, 150_000);
   else if (job === "trends") log = await refreshTrends();
-  else if (job === "live") log = await recapLives();
+  else if (job === "live") log = [...(await recapLives()), ...(await tidyClips())];
   else if (job === "earnings") log = await syncEarnings();
   else return new Response("No such job", { status: 404 });
   return Response.json({ job, log });

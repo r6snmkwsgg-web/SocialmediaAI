@@ -3,15 +3,16 @@ import { rng } from "../../battle/sim";
 import { postsPerDay, PLANS, type Plan } from "../../billing/plans";
 import { roomLeft, unitsOf, type ChannelRow } from "../../shorts/channels";
 import { words } from "../../shorts/checks";
-import { bankIds, contentIds, finish, FORMATS, ledgerClaims } from "../../shorts/formats";
+import { bankIds, contentIds, finish, FORMATS, formatName, formatPlural, ledgerClaims } from "../../shorts/formats";
 import { bankQuestions } from "../../shorts/formats/quiz";
 import { STORIES } from "../../shorts/formats/texts";
 import { bankPairs } from "../../shorts/formats/wyr";
 import { kindName, times as timesUsual } from "../../shorts/insights";
 import { chooseFormats, dryNote, formatReason, formatsFor, kindScore, odds, standout } from "../../shorts/learn";
 import { atLocal, EXPLORE, localParts, planSlots, validTimezone, whenLine } from "../../shorts/times";
-import type { Candidate, Context, Ending, FormatId, Spec } from "../../shorts/types";
+import type { Candidate, Context, Ending, FormatId, ShortFormat, Spec } from "../../shorts/types";
 import { billingFor } from "../billing";
+import { stopWaiting, takeClip, type TakenClip } from "../clips";
 import { admin, asUser, withUserLock, type Tx } from "../db";
 import { notify } from "../notify";
 import { hourResults } from "./hours";
@@ -36,6 +37,10 @@ import { weightsFor } from "./weights";
  * Every YouTube channel that gets Shorts is made for on its own (a unit),
  * with its own share of the plan, history, look, times and learning; an
  * account with no channel is one unit by itself, as it always was.
+ *
+ * A round from the creator's own LIVE can be one of a morning's Shorts,
+ * at most one a day, for the account's first channel, in its place among
+ * the plan's: the day's Shorts are one fewer made ones, never one more.
  */
 
 /** replacements for swiped-away Shorts, a day */
@@ -43,7 +48,7 @@ export const REPLACEMENTS_PER_DAY = 10;
 
 type Profile = { timezone: string; goal: string | null; text_stories: boolean; shorts_note_at: Date | null };
 
-type Past = { format: FormatId; params: Spec["params"]; status: string; suggested_for: Date | null; scheduled_for: Date | null; posted_at: Date | null; measuring: boolean };
+type Past = { format: ShortFormat; params: Spec["params"]; status: string; suggested_for: Date | null; scheduled_for: Date | null; posted_at: Date | null; measuring: boolean };
 
 /** Who a run of Shorts is for: one of the account's YouTube channels, or the account itself (null) while it has none. */
 export type Unit = { userId: string; channelId: string | null };
@@ -128,6 +133,20 @@ export function pickUnit(a: Allowances, accept: (channelId: string | null) => bo
   return best === undefined ? null : { channelId: best };
 }
 
+/**
+ * What a unit has had this past year: its channel's Shorts, or for an
+ * account without one, its Shorts with no channel. None of it comes round
+ * again, and new times keep clear of it. A round from a LIVE comes without
+ * its record, which none of this needs and can be 128 KB.
+ */
+export async function pastOf(tx: Tx, unit: Unit): Promise<Past[]> {
+  return tx<Past[]>`
+    select format, case when format = 'clip' then params - 'log' else params end as params, status, suggested_for, scheduled_for, posted_at,
+      (youtube_id is not null and not exists (select 1 from public.video_stats s where s.video_id = videos.id and s.checkpoint = '24h')) as measuring
+    from public.videos where user_id = ${unit.userId} and created_at > now() - interval '365 days'
+      and ${unit.channelId ? tx`channel_id = ${unit.channelId}` : tx`channel_id is null`}`;
+}
+
 /** The channel a unit's Shorts are for, as the database has it. */
 export type UnitChannel = { id: string; title: string | null; status: ChannelRow["status"]; shortsOn: boolean };
 
@@ -176,7 +195,21 @@ async function freshFor(formats: FormatId[], history: Past[], rand: () => number
   return { questions, pairs, stories };
 }
 
+/** The LIVE round a morning took stopped waiting before its day was saved: it waited three days, or rounds were turned off meanwhile. */
+class RoundGone extends Error {}
+
 async function make(userId: string, opts: MakeOpts): Promise<Made> {
+  try {
+    return await makeDay(userId, opts, true);
+  } catch (err) {
+    // nothing of the day was saved, so it's made again without a round: all made Shorts, as many as ever
+    if (err instanceof RoundGone) return makeDay(userId, opts, false);
+    throw err;
+  }
+}
+
+/** A unit's Shorts for now, and with `rounds`, maybe one of them a waiting round from the creator's LIVE. */
+async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise<Made> {
   const now = opts.now ?? new Date();
   const [profile] = await asUser(userId, (tx) => tx<Profile[]>`select timezone, goal, text_stories, shorts_note_at from public.profiles where id = ${userId}`);
   const tz = validTimezone(profile?.timezone);
@@ -197,12 +230,7 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   // what this channel has had, what it's learned and when its Shorts did best: each channel's own
   const { channel, history, weights, results } = await asUser(userId, async (tx) => {
     const channel = await unitChannel(tx, unit);
-    const history = await tx<Past[]>`
-      select format, params, status, suggested_for, scheduled_for, posted_at,
-        (youtube_id is not null and not exists (select 1 from public.video_stats s where s.video_id = videos.id and s.checkpoint = '24h')) as measuring
-      from public.videos where created_at > now() - interval '365 days'
-        and ${unit.channelId ? tx`channel_id = ${unit.channelId}` : tx`channel_id is null`}`;
-    return { channel, history, weights: await weightsFor(tx, unit.channelId), results: await hourResults(tx, tz, unit.channelId) };
+    return { channel, history: await pastOf(tx, unit), weights: await weightsFor(tx, unit.channelId), results: await hourResults(tx, tz, unit.channelId) };
   });
   if (unit.channelId && !channel) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
 
@@ -215,12 +243,17 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   if (opts.like && !on.includes(opts.like)) return { made: 0, short: "off", note: null, retry: tomorrow, channels };
   const allowed = opts.like ? [opts.like] : on;
   const o = odds(weights, allowed);
-  const formats = opts.like ? [opts.like] : chooseFormats(want, o, rand);
+  // a round from their LIVE first, on a day's own run for the account's first channel (never a replacement or "make one like
+  // this"): with one in hand, one fewer is made. Anything going wrong here only means no round today
+  const round = rounds && opts.origin === "daily" && !opts.like && unit.channelId === allow.order[0] ? await roundFor(userId, now, tz, plan, rand) : null;
+  const formats = opts.like ? [opts.like] : chooseFormats(want - (round ? 1 : 0), o, rand);
 
   // and what other channels have: the banks' questions, choices and stories, and the charts (a fight is checked as it's claimed)
   const [taken, charts, look, fresh] = await Promise.all([takenOf(bankIds()), takenCharts(), lookFor(userId, unit.channelId), freshFor(formats, history, rand)]);
   const used = new Set([...times.keys(), ...taken, ...charts, ...(await takenWritten(fresh))]);
   const ctx: Context = { rand, used, times, fresh };
+  // the round in the channel's look, ending the way a made one does
+  const clip = round && { c: finish(round.c, { look, ending: rand() < 0.5 ? "comment" : "loop" }), formatWhy: [], round };
 
   const made: { c: Candidate; formatWhy: string[] }[] = [];
   const dry = new Set<FormatId>();
@@ -263,12 +296,14 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
     const s = standout(c.key, weights);
     const name = s && kindName(s.name);
     const kindWhy = s && name ? [`${name} have averaged ${timesUsual(s.score)} your usual views (${s.samples} posted)`] : [];
-    made.push({ c, formatWhy: [formatReason(FORMATS[c.format].plural, weights.find((w) => w.kind === "format" && w.name === c.format)), ...kindWhy] });
+    made.push({ c, formatWhy: [formatReason(formatPlural(c), weights.find((w) => w.kind === "format" && w.name === c.format)), ...kindWhy] });
   }
-  const note = made.length < formats.length ? dryNote([...dry].map((f) => FORMATS[f].plural), made.length, formats.length) : null;
+  // the day's Shorts: the LIVE round first, so it goes out soonest after its LIVE, then the made ones
+  const day: { c: Candidate; formatWhy: string[]; round?: TakenClip }[] = [...(clip ? [clip] : []), ...made];
+  const note = made.length < formats.length ? dryNote([...dry].map((f) => FORMATS[f].plural), day.length, formats.length + (clip ? 1 : 0)) : null;
   // "make one like this" asks for one format: that one running out says nothing about the rest, so the queue's note and the bell are left alone
   if (!opts.like) await noteDry(unit, profile?.shorts_note_at ?? null, note, now);
-  if (!made.length) return { made: 0, short: "dry", note, retry: tomorrow, channels };
+  if (!day.length) return { made: 0, short: "dry", note, retry: tomorrow, channels };
 
   // when to post: the channel's own best hours once it has the results, a starting guess until then, and some at other hours to learn from,
   // two hours apart from the rest of this channel's (another channel's times are its own)
@@ -280,13 +315,16 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
   const unmeasured = history
     .filter((h) => h.status === "posted" && h.measuring && h.posted_at && h.posted_at.getTime() > now.getTime() - 72 * 3600_000)
     .map((h) => h.posted_at!);
-  const slots = planSlots(made.length, now, tz, results, booked, rand, EXPLORE, unmeasured, postsPerDay(plan));
+  const slots = planSlots(day.length, now, tz, results, booked, rand, EXPLORE, unmeasured, postsPerDay(plan));
 
-  const copies = await Promise.all(made.map(({ c }) => writeCopy(c, FORMATS[c.format].name)));
+  const copies = await Promise.all(day.map(({ c }) => writeCopy(c, formatName(c))));
 
-  await asUser(userId, async (tx) => {
-    for (let i = 0; i < made.length; i++) {
-      const { c, formatWhy } = made[i];
+  // the whole day at once, as the server, since only the server makes a Short from a LIVE round: all of it, or if anything goes
+  // wrong none of it, so the morning run tries this channel again in an hour. A round that stopped waiting meanwhile saves
+  // nothing either, and the day is made again without it
+  await admin(async (tx) => {
+    for (const [i, { c, formatWhy, round }] of day.entries()) {
+      if (round && !(await stopWaiting(tx, userId, round))) throw new RoundGone("the LIVE round stopped waiting");
       const slot = slots[i] ?? null;
       const at = slot?.at ?? null;
       const why = [...formatWhy, ...c.why, ...(slot ? [whenLine(slot, tz, plan.scheduling)] : [])];
@@ -297,7 +335,21 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
           ${tx.json(why)}, 'review', ${opts.origin}, ${at})`;
     }
   });
-  return { made: made.length, short: note ? "dry" : null, note, retry: tomorrow, channels };
+  return { made: day.length, short: note ? "dry" : null, note, retry: tomorrow, channels };
+}
+
+/**
+ * A waiting round from the creator's own LIVE for today's Shorts, or null
+ * when there's none to take. A try that goes wrong goes in the log, and
+ * the day is all made Shorts, as many as ever.
+ */
+async function roundFor(userId: string, now: Date, tz: string, plan: Plan, rand: () => number): Promise<TakenClip | null> {
+  try {
+    return await takeClip(userId, { now, today: startOfLocalDay(now, tz), tz, per: plan.shorts, rand });
+  } catch (err) {
+    console.error("shorts: couldn't take a LIVE round:", err instanceof Error ? err.message : err);
+    return null;
+  }
 }
 
 /**

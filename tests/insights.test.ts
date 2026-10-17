@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { fill, fillReported, fillSince, fromMinor, fromTotals, goalProgress, lastDays, lastReported, sum } from "@/lib/earnings/series";
 import { heatmap, isoSeconds, middle, NICHES, perHour } from "@/lib/trends/niches";
+import { insights, kindName } from "@/lib/shorts/insights";
+import { keyGroups, kindScore, type Weight } from "@/lib/shorts/learn";
 import { FORMAT_IDS } from "@/lib/shorts/types";
 
 describe("trends", () => {
@@ -89,5 +91,32 @@ describe("earnings", () => {
   it("reads Stripe's amounts in each currency's own units", () => {
     expect(fromMinor(1999, "usd")).toBe(19.99);
     expect(fromMinor(1999, "JPY")).toBe(1999);
+  });
+});
+
+describe("what's working, with rounds from a LIVE", () => {
+  const w = (kind: Weight["kind"], name: string, score: number, samples: number): Weight => ({ kind, name, score, samples });
+
+  it("learns a clip's results under its game", () => {
+    expect(keyGroups("clip:battle")).toEqual(["clip:battle"]);
+    expect(keyGroups("clip:rivals")).toEqual(["clip:rivals"]);
+    expect(keyGroups("clip:race")).toEqual([]);
+    expect(keyGroups("clip")).toEqual([]);
+    expect(kindName("clip:battle")).toBe("Ball Battle clips");
+    expect(kindName("clip:rivals")).toBe("Rivals clips");
+    expect(kindName("clip:royale")).toBeNull();
+    expect(kindScore("clip:rivals", [w("key", "clip:rivals", 2, 30)])).toBeGreaterThan(1.3);
+  });
+
+  it("shows them once they have results, with no share of tomorrow's queue, since they're never drawn", () => {
+    const before = insights([w("format", "quiz", 1.5, 4)]);
+    expect(before.formats.map((f) => f.format)).not.toContain("clip");
+    expect(before.formats).toHaveLength(FORMAT_IDS.length);
+    const got = insights([w("format", "clip", 2.4, 5), w("key", "clip:rivals", 2.6, 4), w("format", "quiz", 1.2, 6)]);
+    expect(got.formats[0]).toEqual({ format: "clip", name: "From your LIVE", plural: "rounds from your LIVEs", score: 2.4, samples: 5, share: 0 });
+    // the six formats Hookline makes still share all of it
+    expect(got.formats.reduce((s, f) => s + f.share, 0)).toBeCloseTo(1);
+    expect(got.kinds.map((k) => k.name)).toEqual(["Rivals clips"]);
+    expect(got.measured).toBe(11);
   });
 });

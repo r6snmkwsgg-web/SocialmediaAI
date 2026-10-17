@@ -1,14 +1,16 @@
 import { soundtrack } from "../battle/sound";
 import { simulate } from "../battle/sim";
 import { timeline } from "../battle/timeline";
+import { playsFrom, replay } from "../live/clip";
 import { BACK, endFrom, endingOf, FPS, frames, QUIZ, quizStep, RACE, RANKING, storyTimes, WYR } from "./timing";
-import type { Spec } from "./types";
+import type { ClipParams, Spec } from "./types";
 
 /**
  * Each Short's soundtrack, made from nothing but maths like the battles'
  * (so every sound is ours to use): ticks while you think, a ding for an
  * answer, a pop for a message, a chord at the end, and a rush back to
- * the start for a Short that loops. Battles play their channel's tune.
+ * the start for a Short that loops. Battles play their channel's tune,
+ * and so does a round from a LIVE, played back from its record.
  */
 
 export const RATE = 22050;
@@ -62,9 +64,28 @@ function chord(buf: Float32Array, at: number) {
 
 const sec = (f: number) => f / FPS;
 
+/**
+ * A LIVE round's own soundtrack, from where its clip starts, so its tune
+ * starts with it: every clash a note, as in a battle. Silence for a round
+ * that no longer plays back exactly, which is never rendered.
+ */
+function clipTune(p: ClipParams, length: number): Float32Array {
+  const r = replay(p.log);
+  const buf = new Float32Array(length);
+  if (!playsFrom(r, p.from)) return buf;
+  const shown = { ...r.battle, events: r.battle.events.filter((e) => e.f >= p.from) };
+  buf.set(soundtrack(shown, timeline(r.battle, { from: p.from }), p.melody ?? "ode").subarray(0, length));
+  return buf;
+}
+
 export function soundFor(spec: Spec): Float32Array {
   const end = frames(spec);
   const loops = endingOf(spec.params) === "loop";
+  if (spec.format === "clip") {
+    const buf = clipTune(spec.params, Math.ceil(sec(end) * RATE));
+    if (loops) whoosh(buf, sec(end - BACK), 0.14);
+    return buf;
+  }
   if (spec.format === "battle") {
     const b = simulate(spec.params.a, spec.params.b, spec.params.seed);
     const tune = soundtrack(b, timeline(b), spec.params.melody ?? "ode");

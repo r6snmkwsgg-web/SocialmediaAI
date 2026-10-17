@@ -1,4 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { rng } from "@/lib/battle/sim";
+import { PLANS } from "@/lib/billing/plans";
+import { replay } from "@/lib/live/clip";
+import { demoClip } from "@/lib/live/clip-demo";
+import { DEFAULT_GIFTS } from "@/lib/live/menu";
+import { finish } from "@/lib/shorts/formats";
+import { clipCandidate } from "@/lib/shorts/formats/clip";
 import type { Candidate } from "@/lib/shorts/types";
 
 /**
@@ -97,5 +104,72 @@ describe("titles", () => {
     parse.mockRejectedValueOnce(new Error("socket hang up"));
     expect(await t.writeCopy(candidate, "Quiz")).toBeNull();
     expect(warn.mock.calls.at(-1)?.[0]).toMatch(/socket hang up/);
+  });
+
+  it("gives a round from a LIVE its plain title and description when what's written talks about gifts", async () => {
+    const t = await titlesWith("model-g");
+    const clip = { format: "clip", title: "Real Madrid vs Barcelona: a ball battle round from my LIVE", facts: ["A round from a LIVE"] } as unknown as Candidate;
+    const written = (title: string, description: string) => parse.mockResolvedValueOnce({ stop_reason: "end_turn", parsed_output: { title, description } });
+    for (const [title, description] of [
+      ["Barcelona's last-second comeback", "Would you have sent Barcelona a meteor? Catch my next LIVE and back your side! #shorts #live"],
+      ["Viewers' gifts flipped this round", "Who would you have backed? #shorts #live"],
+      ["One meteor changed everything", "Coins well spent! Who would you have backed? #shorts"],
+      ["Barcelona hung on", "Send a shield next time! #shorts #gifting"],
+    ]) {
+      written(title, description);
+      expect(await t.writeCopy(clip, "From your LIVE"), title).toBeNull();
+      expect(warn.mock.calls.at(-1)?.[0]).toMatch(/it talked about gifts/);
+    }
+    // one that only says what happened in the round is kept
+    written("Barcelona hung on with 1 HP", "Who would you have backed? Comment before the end. #shorts #ballbattle");
+    expect(await t.writeCopy(clip, "From your LIVE")).toEqual({ title: "Barcelona hung on with 1 HP", description: "Who would you have backed? Comment before the end. #shorts #ballbattle" });
+    // and any other kind of Short can say it
+    written("Five gift ideas, ranked", "Which would you pick? #shorts");
+    expect(await t.writeCopy(candidate, "Quiz")).toMatchObject({ title: "Five gift ideas, ranked" });
+  });
+});
+
+describe("a round from a LIVE", () => {
+  const rounds = (["battle", "rivals"] as const).map((game) => {
+    const log = demoClip(game);
+    return { log, c: clipCandidate({ log, played_at: new Date(log.at) }, replay(log), { tz: "UTC", per: PLANS.pro.shorts, rand: rng(1) })! };
+  });
+
+  it("is titled plainly as a ball battle round from the LIVE, with the sides the LIVE had", () => {
+    for (const { log, c } of rounds) {
+      expect(c.title).toBe(`${log.teams[0].name} vs ${log.teams[1].name}: a ball battle round from my LIVE`);
+      expect(c.title.length).toBeLessThanOrEqual(70);
+    }
+    // a Rivals round says its names only stand for the sides viewers picked
+    expect(rounds[1].c.facts.join(" ")).toMatch(/only stand for the sides viewers picked/);
+  });
+
+  it("asks for a comment in its description only where comments are on, and credits the LIVE", async () => {
+    const { plainDescription } = await import("@/lib/server/shorts/titles");
+    const { c } = rounds[0];
+    const on = plainDescription(finish(c, { ending: "comment" }));
+    expect(on).toMatch(/^Who would you have backed\? Comment before the end\. From my LIVE\./);
+    expect(on).toMatch(/#shorts #ballbattle #live$/);
+    const off = plainDescription(finish(c, { ending: "comment", allowComments: false }));
+    expect(off).not.toMatch(/comment/i);
+    expect(off).toMatch(/From my LIVE/);
+  });
+
+  it("never gives the title writer a viewer's name, coins, a gift or who won", () => {
+    for (const { log, c } of rounds) {
+      const facts = finish(c, { ending: "comment" }).facts.join(" ");
+      for (const p of log.people) expect(facts, p).not.toMatch(new RegExp(`\\b${p.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\b`));
+      for (const g of [...DEFAULT_GIFTS.map((x) => x.name), "Universe"]) expect(facts).not.toContain(g);
+      // it's told not to mention coins, and is never given any
+      expect(facts).not.toMatch(/\d[\d,]*\s*coins?/i);
+      // nor gifts, and it's told never to ask anyone to send one
+      expect(facts).toMatch(/Don't mention gifts, coins, money or what anything costs, and never ask anyone to send anything\. Don't name any viewer\./);
+      expect(facts).not.toMatch(/big gifts? went off/);
+      expect(facts).toMatch(/Don't say who wins\./);
+      expect(facts).not.toMatch(/\bwon\b|\bbeat\b/i);
+      const winner = log.teams[log.result.team ?? 0].name;
+      // the winner is only ever named as one of the two sides
+      expect(facts.split(winner).length - 1).toBe(1);
+    }
   });
 });

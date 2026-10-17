@@ -129,6 +129,7 @@ An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the 
 - reads views 1 hour, 1 day and 3 days after posting, for the learning loop
 - refreshes Trends (each niche once a day) and syncs Earnings every 6 hours
 - sends each LIVE's recap once it's been quiet for 20 minutes
+- every hour, lets LIVE rounds go three days after they came, and empties gifters' names from clip Shorts that don't show them (`/api/cron/live` does this too)
 - checks in every 30 seconds, so the app can say when rendering has stopped and `/admin` can show the workers
 
 Run more workers for more renders at once; each one claims its own job. A failed render is tried 3 times. The worker finds Chrome by itself, or uses `CHROME_PATH` (Chrome or Chrome Headless Shell).
@@ -147,6 +148,8 @@ The LIVE games hear a stream through something on the streamer's computer: **Tik
 
 The game itself is `/live/play`, an OBS browser source at 1080 × 1920. Its address carries the streamer's private key from `/app/live`, so it plays with their settings. `?demo=1` adds pretend viewers and `?clean=1` hides the hints. On the game, T opens a test panel, D switches the demo, M mutes and F goes full screen. Every game keeps the LIVE's top 3 gifters on screen, and each LIVE has its own page under `/app/live`, with a recap card to share once it's verified as the streamer's own.
 
+With "Best rounds become Shorts" on, the game sends each Ball Battle or Rivals round worth a Short to `POST /api/live/clips` with its key, and the best round of a LIVE that counts as the streamer's own can become one of the next morning's Shorts.
+
 ## Scripts
 
 ```bash
@@ -158,6 +161,7 @@ pnpm live:bridge              # the LIVE bridge from source
 pnpm bridge:build             # the bridge as one program
 pnpm render fibonacci spike   # one battle Short as an MP4 in out/, the best of 60 runs
 pnpm stills                   # every Short format at five moments, as pictures in out/stills
+pnpm replay-check             # plays LIVE rounds back in headless Chromium (CHROME_PATH) and checks they match Node
 pnpm og                       # the share images in public/og
 pnpm icons                    # the home-screen icons, from app/icon.svg
 pnpm data                     # fetches the World Bank figures in data/ again

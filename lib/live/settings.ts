@@ -41,6 +41,8 @@ export const liveSettingsSchema = z.object({
   }),
   /** show viewers' initials instead of their names and pictures, everywhere on screen; off when it's missing, as from a page loaded before there was a switch */
   hideNames: z.boolean().default(false),
+  /** the best Ball Battle and Rivals rounds can become Shorts; on when it's missing, as from settings saved before there was a switch */
+  clips: z.boolean().default(true),
 });
 
 export type LiveSettings = z.infer<typeof liveSettingsSchema>;
@@ -61,6 +63,7 @@ export const DEFAULT_SETTINGS: LiveSettings = {
   vote: true,
   rivals: { groups: RIVAL_GROUPS.filter((g) => g.on).map((g) => g.id), own: [], gifts: null },
   hideNames: false,
+  clips: true,
 };
 
 /** Settings from anywhere (the database, a URL): whatever's valid, defaults for the rest. */

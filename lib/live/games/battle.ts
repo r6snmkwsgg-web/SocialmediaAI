@@ -4,6 +4,8 @@ import type { Viewer } from "../events";
 import { DEFAULT_GIFTS, DEFAULT_PRICES, RAGE_SECONDS, tierIn, withGifts, worth, type Tier } from "../menu";
 import type { GameId, LiveSettings } from "../settings";
 import type { Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
+import type { WorldOptions } from "../../battle/sim";
+import { fingerprint, RecordedWorld, type RoundTape } from "../tape";
 
 /**
  * Ball Battle: RED against BLUE. Each team has a champion ball with an
@@ -47,6 +49,42 @@ export const WALL_SHARE = 0.04;
  * moment apart still come out even.
  */
 export const HANG_ON = 4;
+
+/** the arena's rules for a LIVE round: when the walls close in, how many balls a side can have, what the walls take, and how long a side hangs on */
+export type LiveOptions = Required<WorldOptions>;
+
+/** The arena's rules for a LIVE round this long: the walls start closing in a little past halfway, so every fight ends. */
+export function liveOptions(roundSeconds: number): LiveOptions {
+  return { suddenDeath: Math.max(20, Math.round(roundSeconds * 0.55)), maxTeam: MAX_SIDE, wallShare: WALL_SHARE, hangOn: HANG_ON };
+}
+
+/** Each champion's health on a LIVE: tougher than in a video, so gifts have time to matter. */
+export function liveHp(a: AbilityId, b: AbilityId): [number, number] {
+  return [Math.round(ABILITIES[a].hp * LIVE_HP), Math.round(ABILITIES[b].hp * LIVE_HP)];
+}
+
+/**
+ * A fresh arena with each team's champion in it, where the battle has
+ * always put them. A recorded one also writes down everything viewers do
+ * to it, so the round can be played again exactly; it plays the same.
+ */
+export function liveWorld(a: AbilityId, b: AbilityId, seed: number, options: LiveOptions, hp: [number, number], record = false): World {
+  const w = record ? new RecordedWorld(seed, options) : new World(seed, options);
+  w.add(0, a, ARENA * 0.27, ARENA * (0.42 + w.rand() * 0.16), { hp: hp[0], maxHp: hp[0] });
+  w.add(1, b, ARENA * 0.73, ARENA * (0.42 + w.rand() * 0.16), { hp: hp[1], maxHp: hp[1] });
+  return w;
+}
+
+/** Who won, once it's decided: a knockout, or when time's up, whoever has more health less what a side hanging on owes. */
+export function liveResult(w: World, fightMax: number): { byTime: boolean; team: Team | null } | null {
+  const c0 = w.count(0), c1 = w.count(1);
+  if (c0 === 0 || c1 === 0) return { byTime: false, team: c0 === 0 && c1 === 0 ? null : c0 === 0 ? 1 : 0 };
+  if (w.clock >= fightMax) {
+    const h0 = w.hp(0) - w.owed[0], h1 = w.hp(1) - w.owed[1];
+    return { byTime: true, team: h0 === h1 ? null : h0 > h1 ? 0 : 1 };
+  }
+  return null;
+}
 
 export const BATTLE_MENU: Tier[] = ([
   { effect: "heal", min: 1, name: "+1 HP", gift: "Rose", line: "Heals your team 1 HP for every coin", color: "#FF6FB5", icon: "heart" },
@@ -108,17 +146,23 @@ export class BattleGame implements Game {
   world!: World;
   a: AbilityId = "spike";
   b: AbilityId = "sword";
+  /** this round's World seed, and each champion's health */
+  seed = 0;
+  hp: [number, number] = [0, 0];
   protected readonly pool: AbilityId[];
   protected readonly fightMax: number;
-  protected readonly sudden: number;
+  /** the arena's rules for this game's rounds */
+  protected readonly rules: LiveOptions;
+  /** each round is written down as it reaches the arena, so the best can become a clip */
+  private readonly record: boolean;
   protected teamNames: [string, string];
 
   constructor(s: LiveSettings) {
     this.menu = withGifts(BATTLE_MENU, s.gifts);
     this.pool = s.abilities.length >= 2 ? s.abilities : ["spike", "sword"];
     this.fightMax = s.roundSeconds;
-    // the walls start closing in a little past halfway, so every fight ends
-    this.sudden = Math.max(20, Math.round(s.roundSeconds * 0.55));
+    this.rules = liveOptions(s.roundSeconds);
+    this.record = s.clips;
     this.teamNames = [s.teams[0].name, s.teams[1].name];
   }
 
@@ -128,6 +172,11 @@ export class BattleGame implements Game {
 
   get clock(): number {
     return this.world.clock;
+  }
+
+  /** physics steps run this round */
+  get step(): number {
+    return this.world.sub;
   }
 
   kind(side: Team): AbilityId {
@@ -157,11 +206,9 @@ export class BattleGame implements Game {
   protected arena(a: AbilityId, b: AbilityId, rand: () => number) {
     this.a = a;
     this.b = b;
-    const w = new World(Math.floor(rand() * 2 ** 31), { suddenDeath: this.sudden, maxTeam: MAX_SIDE, wallShare: WALL_SHARE, hangOn: HANG_ON });
-    const hpA = Math.round(ABILITIES[a].hp * LIVE_HP), hpB = Math.round(ABILITIES[b].hp * LIVE_HP);
-    w.add(0, a, ARENA * 0.27, ARENA * (0.42 + w.rand() * 0.16), { hp: hpA, maxHp: hpA });
-    w.add(1, b, ARENA * 0.73, ARENA * (0.42 + w.rand() * 0.16), { hp: hpB, maxHp: hpB });
-    this.world = w;
+    this.seed = Math.floor(rand() * 2 ** 31);
+    this.hp = liveHp(a, b);
+    this.world = liveWorld(a, b, this.seed, this.rules, this.hp, this.record);
   }
 
   tick() {
@@ -169,14 +216,14 @@ export class BattleGame implements Game {
   }
 
   result(): Result | null {
+    return liveResult(this.world, this.fightMax);
+  }
+
+  /** This round as it reached the arena, for a clip: null when rounds aren't being written down. */
+  tape(): RoundTape | null {
     const w = this.world;
-    const c0 = w.count(0), c1 = w.count(1);
-    if (c0 === 0 || c1 === 0) return { byTime: false, team: c0 === 0 && c1 === 0 ? null : c0 === 0 ? 1 : 0 };
-    if (w.clock >= this.fightMax) {
-      const h0 = this.teamHp(0), h1 = this.teamHp(1);
-      return { byTime: true, team: h0 === h1 ? null : h0 > h1 ? 0 : 1 };
-    }
-    return null;
+    if (!(w instanceof RecordedWorld)) return null;
+    return { seed: this.seed, a: this.a, b: this.b, hp: this.hp, world: this.rules, fightMax: this.fightMax, inputs: w.inputs, end: w.sub, check: fingerprint(w) };
   }
 
   tension(): number {

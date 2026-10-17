@@ -4,6 +4,7 @@ import { DEFAULT_SIDE_GIFTS, RIVAL_HEAL, rivalryLabel, rotation, routeGift, side
 import type { GameId, LiveSettings } from "../settings";
 import { BattleGame } from "./battle";
 import type { RoundStart, VoteOption } from "./types";
+import type { RoundTape } from "../tape";
 
 /**
  * Rivals: the ball battle, red against blue, with a rivalry on it. Each
@@ -48,6 +49,12 @@ export class RivalsGame extends BattleGame {
 
   names(): [string, string] {
     return [this.rivalry.red, this.rivalry.blue];
+  }
+
+  /** This round as it reached the arena, with its rivalry, so a clip of it names the same two sides. */
+  tape(): RoundTape | null {
+    const t = super.tape();
+    return t && { ...t, rivalry: { id: this.rivalry.id, group: this.rivalry.group } };
   }
 
   route(gift: string): { side: Team; tier: Tier } | null {

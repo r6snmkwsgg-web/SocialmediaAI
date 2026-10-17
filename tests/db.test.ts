@@ -93,6 +93,7 @@ describe.skipIf(!safe)("the database", () => {
     process.env.YOUTUBE_API_KEY = "test-key";
     process.env.YOUTUBE_TEST_CHANNELS = TEST_CHANNEL;
     process.env.TIKTOK_DIRECT_POST = "1";
+    process.env.TIKTOK_PROFILE = "1";
     db = await import("@/lib/server/db");
     live = await import("@/lib/server/live");
     gen = await import("@/lib/server/shorts/generate");
@@ -3365,6 +3366,675 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: clipper
+  describe("clipper: rounds a streamer's game sends for Shorts", () => {
+    type ClipLog = import("@/lib/live/clip").ClipLog;
+    /** the one moment every round and job here is at */
+    const now = new Date();
+    const MIN = 60_000, HOUR = 3600_000, DAY = 86400_000;
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+    let clips: typeof import("@/lib/server/clips");
+    let clip: typeof import("@/lib/live/clip");
+    /** S streams and sends rounds, T is someone else, F turns rounds for Shorts off, G uses Hookline for LIVE games only */
+    let S = "", T = "", F = "", G = "";
+    const keys = { S: "", T: "", F: "", G: "" };
+    const emails = ["w2-clipper-1@test.local", "w2-clipper-2@test.local", "w2-clipper-3@test.local", "w2-clipper-4@test.local"];
+    /** S's LIVEs: two that count as theirs, and one that doesn't */
+    const lives = { theirs: "", best: "", not: "" };
+    /** Rivals rounds a scripted show kept: four worth a Short, best first, each scoring differently, and one with too little in it */
+    let good: { log: ClipLog; score: number }[] = [];
+    let dull: { log: ClipLog; score: number };
+
+    /** A kept round as a game would send it: from one of S's LIVEs, numbered as that LIVE counts its rounds, decided a minute ago. */
+    const sent = (log: ClipLog, round: number, o: { session?: string; at?: number } = {}): ClipLog =>
+      ({ ...JSON.parse(JSON.stringify(log)), session: o.session ?? lives.theirs, round, at: o.at ?? now.getTime() - MIN });
+
+    /** what's kept of one LIVE's rounds, by round */
+    const stored = (session: string, user = S) => db.admin((tx) => tx<{ round: number; state: string; reason: string | null; score: number | null; log: ClipLog | null; played_at: Date; created_at: Date }[]>`
+      select round, state, reason, score, log, played_at, created_at from public.live_clips where user_id = ${user} and session_id = ${session} order by round`);
+
+    /** A clip Short of S's, as a morning would make one (only the server can), naming these gifters; one swiped was swiped as it was made, unless it says when. */
+    const clipShort = async (o: { session: string; people: string[]; status?: string; names?: boolean; made?: Date; decided?: Date }) => {
+      const status = o.status ?? "review";
+      const [v] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, format, params, key, title, status, created_at, decided_at)
+        values (${S}, 'clip', ${tx.json({ log: { session: o.session, people: o.people }, from: 0, ...(o.names ? { names: true } : {}) })}, 'clip:rivals', 'Messi vs Ronaldo: a ball battle round from my LIVE',
+          ${status}, ${o.made ?? now}, ${status === "review" ? null : (o.decided ?? o.made ?? now)})
+        returning id`);
+      return v.id;
+    };
+    const peopleOf = async (id: string) => (await db.admin((tx) => tx<{ people: string[] }[]>`select params -> 'log' -> 'people' as people from public.videos where id = ${id}`))[0].people;
+
+    /** An account's rounds lock, held until it's let go, as while one of its rounds is being played back; `inside` runs while it's held. */
+    const holdRounds = (user: string, inside: (tx: import("@/lib/server/db").Tx) => Promise<unknown> = async () => {}) => {
+      let release = () => {};
+      const go = new Promise<void>((r) => (release = r));
+      let held = () => {};
+      const taken = new Promise<void>((r) => (held = r));
+      const done = db.admin(async (tx) => {
+        await tx`select pg_advisory_xact_lock(hashtext(${`clips:${user}`}))`;
+        await inside(tx);
+        held();
+        await go;
+      });
+      return { taken, release, done };
+    };
+    const pause = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+    /** Whether something comes to wait for a lock someone holds, within two seconds. */
+    const waitsForLock = async () => {
+      for (let i = 0; i < 40; i++) {
+        const [r] = await db.admin((tx) => tx<{ waiting: boolean }[]>`
+          select exists (select 1 from pg_locks where locktype = 'advisory' and not granted and database = (select oid from pg_database where datname = current_database())) as waiting`);
+        if (r.waiting) return true;
+        await pause(50);
+      }
+      return false;
+    };
+
+    beforeAll(async () => {
+      if (!safe) return;
+      clips = await import("@/lib/server/clips");
+      clip = await import("@/lib/live/clip");
+      const { scriptedShow } = await import("@/lib/live/clip-demo");
+      // rounds from made-up viewers playing the way real ones do, scored as the server scores them
+      const scored: { log: ClipLog; score: number }[] = [];
+      for (let seed = 1; seed <= 8 && (!scored.some((r) => r.score < clip.CLIP_MIN_SCORE) || new Set(scored.filter((r) => r.score >= clip.CLIP_MIN_SCORE).map((r) => r.score)).size < 4); seed++) {
+        for (const { log } of scriptedShow("rivals", seed).kept) scored.push({ log, score: clip.clipWindow(clip.replay(log), log)!.drama.score });
+      }
+      dull = scored.find((r) => r.score < clip.CLIP_MIN_SCORE)!;
+      good = [...new Map(scored.filter((r) => r.score >= clip.CLIP_MIN_SCORE).map((r) => [r.score, r])).values()].sort((a, b) => b.score - a.score).slice(0, 4);
+      [{ id: S }, { id: T }, { id: F }, { id: G }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into auth.users (email) values (${emails[0]}), (${emails[1]}), (${emails[2]}), (${emails[3]}) returning id`);
+      await db.admin((tx) => tx`update public.profiles set goal = case when id = ${G} then 'live' else 'both' end where id in (${S}, ${T}, ${F}, ${G})`);
+      [keys.S, keys.T, keys.F, keys.G] = await Promise.all([S, T, F, G].map((u) => live.overlayKeyOf(u)));
+      [{ id: lives.theirs }, { id: lives.best }, { id: lives.not }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, heard, verified)
+        values (gen_random_uuid(), ${S}, 'rivals', ${ago(2 * HOUR)}, ${ago(MIN)}, 12, '{s.streams}', true),
+               (gen_random_uuid(), ${S}, 'rivals', ${ago(5 * HOUR)}, ${ago(4 * HOUR)}, 30, '{s.streams}', true),
+               (gen_random_uuid(), ${S}, 'rivals', ${ago(9 * HOUR)}, ${ago(8 * HOUR)}, 6, '{famous.one}', false)
+        returning id`);
+    });
+
+    afterAll(async () => {
+      if (!safe) return;
+      await db.admin((tx) => tx`delete from auth.users where email in ${tx(emails)}`);
+    });
+
+    it("takes a LIVE round only through the streamer's key, and only once, keeping one worth a Short to play back exactly", async () => {
+      expect(dull.score).toBeLessThan(clip.CLIP_MIN_SCORE);
+      expect(good.map((g) => g.score)).toEqual([...good.map((g) => g.score)].sort((a, b) => b - a));
+      expect(new Set(good.map((g) => g.score)).size).toBe(4);
+      const first = sent(good[1].log, 1);
+      expect(await clips.saveClip("z".repeat(32), first, now)).toEqual({ status: 404 });
+      expect(await clips.saveClip(keys.S, first, now)).toEqual({ status: 200, kept: true });
+      expect(await clips.saveClip(keys.S, sent(good[1].log, 1), now)).toEqual({ status: 409 });
+      const [row] = await stored(lives.theirs);
+      expect(row).toMatchObject({ round: 1, state: "ready", reason: null, score: good[1].score, played_at: new Date(first.at), created_at: now });
+      // kept as the game sent it, and it still plays back exactly after jsonb
+      expect(row.log).toEqual(first);
+      expect(clip.replaysExactly(row.log!)).toBe(true);
+    });
+
+    it("turns away a round that breaks a rule, doesn't play back the way it went or has too little in it, keeping only why", async () => {
+      // a Politics round never becomes a Short, even one that plays back exactly
+      const politics = { ...sent(good[0].log, 2), rivalry: { id: "republicans-democrats", group: "politics" }, teams: [{ name: "Republicans", color: "#FF3B30" }, { name: "Democrats", color: "#0A84FF" }] } as ClipLog;
+      expect(clip.replaysExactly(politics)).toBe(true);
+      expect(await clips.saveClip(keys.S, politics, now)).toEqual({ status: 422, why: "Politics rounds never become Shorts." });
+      // nor one from more than a day ago
+      expect(await clips.saveClip(keys.S, sent(good[0].log, 3, { at: now.getTime() - 25 * HOUR }), now)).toEqual({ status: 422, why: "It wasn't played in the last day." });
+      // one heal a point bigger than the game said, and the round doesn't play back the same
+      const off = sent(good[0].log, 4);
+      const heal = off.inputs.findIndex((x) => x[1] === "h");
+      expect(heal).toBeGreaterThanOrEqual(0);
+      off.inputs[heal] = [off.inputs[heal][0], "h", off.inputs[heal][2], (off.inputs[heal][3] as number) + 1];
+      expect(await clips.saveClip(keys.S, off, now)).toMatchObject({ status: 422 });
+      expect(await clips.saveClip(keys.S, sent(dull.log, 5), now)).toEqual({ status: 200, kept: false });
+      expect((await stored(lives.theirs)).map((r) => [r.round, r.state, r.reason, r.score, r.log])).toEqual([
+        [1, "ready", null, good[1].score, expect.anything()],
+        [2, "refused", "rules", null, null],
+        [3, "refused", "rules", null, null],
+        [4, "refused", "replay", null, null],
+        [5, "refused", "dull", dull.score, null],
+      ]);
+      // a round turned away can't be sent again, as it was or any other way
+      expect(await clips.saveClip(keys.S, sent(good[0].log, 4), now)).toEqual({ status: 409 });
+    });
+
+    it("keeps only each LIVE's best three, and lets go of the rest, names and all", async () => {
+      const [g0, g1, g2, g3] = good;
+      for (const [round, g] of [[1, g2], [2, g3], [3, g1]] as const) expect(await clips.saveClip(keys.S, sent(g.log, round, { session: lives.best }), now)).toEqual({ status: 200, kept: true });
+      // a better one: the weakest of the three goes
+      expect(await clips.saveClip(keys.S, sent(g0.log, 4, { session: lives.best }), now)).toEqual({ status: 200, kept: true });
+      // and one no better than the three kept isn't kept
+      expect(await clips.saveClip(keys.S, sent(g3.log, 5, { session: lives.best }), now)).toEqual({ status: 200, kept: false });
+      expect((await stored(lives.best)).map((r) => [r.round, r.state, r.reason, r.score, r.log === null])).toEqual([
+        [1, "ready", null, g2.score, false],
+        [2, "refused", "dropped", g3.score, true],
+        [3, "ready", null, g1.score, false],
+        [4, "ready", null, g0.score, false],
+        [5, "refused", "dropped", g3.score, true],
+      ]);
+      // each LIVE keeps its own best three
+      expect((await stored(lives.theirs)).filter((r) => r.state === "ready").map((r) => r.round)).toEqual([1]);
+    });
+
+    it("takes 120 rounds an hour from a game, then asks it to wait", async () => {
+      const mine = "5f0c6a2e-8d4b-4c1e-9a7f-3b2d1e0c9f8a";
+      const seed = (n: number, made: Date) => db.admin((tx) => tx`
+        insert into public.live_clips (user_id, session_id, round, game, state, reason, played_at, created_at)
+        select ${T}, ${mine}, r, 'rivals', 'refused', 'dull', ${made}, ${made} from generate_series(1, ${n}) r`);
+      // 119 in the last hour, and plenty before it
+      await db.admin((tx) => tx`insert into public.live_clips (user_id, session_id, round, game, state, reason, played_at, created_at)
+        select ${T}, gen_random_uuid(), 1, 'rivals', 'refused', 'dull', ${ago(2 * HOUR)}, ${ago(2 * HOUR)} from generate_series(1, 300)`);
+      await seed(119, ago(30 * MIN));
+      expect(await clips.saveClip(keys.T, sent(good[0].log, 200, { session: mine }), now)).toEqual({ status: 200, kept: true });
+      expect(await clips.saveClip(keys.T, sent(good[1].log, 201, { session: mine }), now)).toEqual({ status: 429 });
+      // nothing is kept of a round it was asked to hold back
+      expect((await stored(mine, T)).some((r) => r.round === 201)).toBe(false);
+      // an hour on, it can send again
+      expect(await clips.saveClip(keys.T, sent(good[1].log, 201, { session: mine }), new Date(now.getTime() + 31 * MIN))).toEqual({ status: 200, kept: true });
+    });
+
+    it("plays back one of a game's rounds at a time, and asks one sent meanwhile to wait without playing it back", async () => {
+      const theirs = "3c9e1a7b-2d4f-4a6e-9b8c-7d1e0f2a3b4c";
+      // one of S's rounds is being played back
+      const judging = holdRounds(S);
+      await judging.taken;
+      const got = await Promise.race([clips.saveClip(keys.S, sent(good[2].log, 1, { session: theirs }), now), pause(3000).then(() => "waited its turn")]);
+      judging.release();
+      await judging.done;
+      expect(got).toEqual({ status: 429 });
+      expect(await stored(theirs)).toEqual([]);
+      // with that one in, the next is played back and kept
+      expect(await clips.saveClip(keys.S, sent(good[2].log, 1, { session: theirs }), now)).toEqual({ status: 200, kept: true });
+    });
+
+    it("lets go of a round still being played back when rounds are turned off", async () => {
+      const theirs = "6d2f8b1e-9a3c-4e5d-8f7a-2b1c0d9e8f7a";
+      // a round of F's is going in as F turns rounds off
+      const judging = holdRounds(F, (tx) => tx`
+        insert into public.live_clips (user_id, session_id, round, game, state, score, log, played_at, created_at)
+        values (${F}, ${theirs}, 1, 'rivals', 'ready', 9, ${tx.json(sent(good[0].log, 1, { session: theirs }))}, ${ago(MIN)}, ${now})`);
+      await judging.taken;
+      const forgetting = clips.forgetClips(F);
+      // turning them off waits for it, then lets it go with the rest
+      expect(await waitsForLock()).toBe(true);
+      judging.release();
+      await judging.done;
+      await forgetting;
+      expect(await stored(theirs, F)).toEqual([]);
+    });
+
+    it("refuses a body over 128,000 bytes and anything that isn't a round, through the game's own route", async () => {
+      const { POST } = await import("@/app/api/live/clips/route");
+      const post = (body: string, headers: Record<string, string> = {}) => POST(new Request("http://localhost/api/live/clips", { method: "POST", headers: { "content-type": "application/json", ...headers }, body }));
+      const theirs = "8e1d2c3b-4a5f-4e6d-8c7b-9a0f1e2d3c4b";
+      const round = sent(good[2].log, 1, { session: theirs, at: Date.now() - MIN });
+      expect((await post("x".repeat(128_001))).status).toBe(413);
+      expect((await post("{}", { "content-length": "128001" })).status).toBe(413);
+      expect((await post("not a round")).status).toBe(400);
+      expect((await post(JSON.stringify({ key: keys.S, clip: { ...round, inputs: "lots" } }))).status).toBe(400);
+      // a round can't claim to end past its own time limit, so playing it back always stops by then
+      expect((await post(JSON.stringify({ key: keys.S, clip: { ...round, end: clip.lastStep(round.fightMax) + 1 } }))).status).toBe(400);
+      // nor be played at a time no date holds; the latest one a date can be is turned away by the rules, and kept as turned away
+      expect((await post(JSON.stringify({ key: keys.S, clip: { ...round, at: 9e15 } }))).status).toBe(400);
+      const far = await post(JSON.stringify({ key: keys.S, clip: { ...round, round: 2, at: 253_402_300_799_999 } }));
+      expect([far.status, await far.text()]).toEqual([422, "It wasn't played in the last day."]);
+      expect((await stored(theirs)).map((r) => [r.round, r.reason, r.played_at])).toEqual([[2, "rules", new Date(253_402_300_799_999)]]);
+      // a ball can't be someone the round doesn't name
+      expect(round.inputs.some((x) => x[1] === "s")).toBe(true);
+      expect((await post(JSON.stringify({ key: keys.S, clip: { ...round, people: [], inputs: round.inputs.map((x) => (x[1] === "s" ? [...x.slice(0, 6), 0] : x)) } }))).status).toBe(400);
+      expect((await post(JSON.stringify({ key: "y".repeat(32), clip: round }))).status).toBe(404);
+      const ok = await post(JSON.stringify({ key: keys.S, clip: round }));
+      expect([ok.status, await ok.json()]).toEqual([200, { kept: true }]);
+      expect((await post(JSON.stringify({ key: keys.S, clip: round }))).status).toBe(409);
+    });
+
+    it("keeps rounds the server's to write, and each streamer reads only their own", async () => {
+      const mine = await db.asUser(S, (tx) => tx<{ user_id: string }[]>`select user_id from public.live_clips`);
+      expect(mine.length).toBeGreaterThan(0);
+      expect(mine.every((r) => r.user_id === S)).toBe(true);
+      expect((await db.asUser(T, (tx) => tx<{ user_id: string }[]>`select user_id from public.live_clips`)).every((r) => r.user_id === T)).toBe(true);
+      await expect(db.asUser(S, (tx) => tx`insert into public.live_clips (user_id, session_id, round, game, state, score, log, played_at)
+        values (${S}, gen_random_uuid(), 1, 'battle', 'ready', 99, '{}', now())`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(S, (tx) => tx`update public.live_clips set score = 99`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(S, (tx) => tx`delete from public.live_clips`)).rejects.toThrow(/permission denied/);
+    });
+
+    it("keeps no rounds with them turned off or Shorts off for LIVE games only, and turning them off lets go of those waiting", async () => {
+      const { DEFAULT_SETTINGS } = await import("@/lib/live/settings");
+      // what decides it: the streamer's choice, Hookline asking TikTok for usernames, and Shorts not being off
+      expect(clips.clipsAllowed({ clips: true }, "both", true)).toBe(true);
+      expect(clips.clipsAllowed({ clips: true }, null, true)).toBe(true);
+      expect(clips.clipsAllowed({ clips: true }, "shorts", true)).toBe(true);
+      expect(clips.clipsAllowed({ clips: false }, "both", true)).toBe(false);
+      expect(clips.clipsAllowed({ clips: true }, "both", false)).toBe(false);
+      expect(clips.clipsAllowed({ clips: true }, "live", true)).toBe(false);
+      expect((await live.overlayFor(keys.S, now))?.settings.clips).toBe(true);
+      // LIVE games only: the game keeps none, and none is taken
+      expect((await live.overlayFor(keys.G, now))?.settings.clips).toBe(false);
+      expect(await clips.saveClip(keys.G, sent(good[0].log, 1), now)).toEqual({ status: 403 });
+      // F keeps a round, then turns rounds off, as saving the settings form does
+      const theirs = "2b7e9a1c-6d5f-4b3a-8e2d-1c0f9e8d7c6b";
+      expect(await clips.saveClip(keys.F, sent(good[0].log, 1, { session: theirs }), now)).toEqual({ status: 200, kept: true });
+      await live.saveLiveSettings(F, { ...DEFAULT_SETTINGS, clips: false });
+      await clips.forgetClips(F);
+      expect(await stored(theirs, F)).toEqual([]);
+      expect((await live.liveSettingsOf(F)).settings.clips).toBe(false);
+      expect((await live.overlayFor(keys.F, now))?.settings.clips).toBe(false);
+      // an open game still sending until it's reloaded is turned away
+      expect(await clips.saveClip(keys.F, sent(good[1].log, 2, { session: theirs }), now)).toEqual({ status: 403 });
+      // nobody else's rounds went with them
+      expect((await stored(lives.best)).length).toBe(5);
+    });
+
+    it("shows each LIVE's waiting rounds, only on LIVEs that count as theirs, and the Short made from one", async () => {
+      // a round from the LIVE that wasn't theirs is kept, but can't become a Short, so it isn't shown as waiting
+      expect(await clips.saveClip(keys.S, sent(good[0].log, 1, { session: lives.not }), now)).toEqual({ status: 200, kept: true });
+      // and one that's waited three days no longer counts
+      await db.admin((tx) => tx`insert into public.live_clips (user_id, session_id, round, game, state, score, log, played_at, created_at)
+        values (${S}, ${lives.best}, 99, 'rivals', 'ready', 50, '{}', ${ago(3 * DAY + 2 * MIN)}, ${ago(3 * DAY + MIN)})`);
+      const none = "0d9c8b7a-6f5e-4d3c-8b2a-1f0e9d8c7b6a";
+      let got = await clips.clipsOf(S, [lives.theirs, lives.best, lives.not, none], now);
+      expect(Object.fromEntries(got)).toEqual({
+        [lives.theirs]: { waiting: 1, shortId: null },
+        [lives.best]: { waiting: 3, shortId: null },
+        [lives.not]: { waiting: 0, shortId: null },
+        [none]: { waiting: 0, shortId: null },
+      });
+      // a Short is made from a round after its LIVE began, so one made before is never read as from it
+      await clipShort({ session: lives.theirs, people: [], made: ago(DAY) });
+      expect((await clips.clipsOf(S, [lives.theirs], now)).get(lives.theirs)).toEqual({ waiting: 1, shortId: null });
+      // the newest Short made from one of a LIVE's rounds
+      await clipShort({ session: lives.theirs, people: [], made: ago(HOUR) });
+      const newest = await clipShort({ session: lives.theirs, people: [] });
+      got = await clips.clipsOf(S, [lives.theirs], now);
+      expect(got.get(lives.theirs)).toEqual({ waiting: 1, shortId: newest });
+      // nobody else sees any of it
+      expect(await clips.clipsOf(T, [lives.theirs], now)).toEqual(new Map([[lives.theirs, { waiting: 0, shortId: null }]]));
+    });
+
+    it("lets rounds go after three days, and empties gifters' names from clip Shorts once swiped, or left unswiped for three days", async () => {
+      await db.admin((tx) => tx`insert into public.live_clips (user_id, session_id, round, game, state, reason, played_at, created_at)
+        values (${S}, ${lives.best}, 98, 'rivals', 'refused', 'dull', ${ago(2 * DAY)}, ${ago(2 * DAY)})`);
+      const shorts = {
+        waited: await clipShort({ session: lives.best, people: ["Kai", "mia.plays"], made: ago(3 * DAY + HOUR) }),
+        waiting: await clipShort({ session: lives.best, people: ["Kai"], made: ago(DAY) }),
+        shown: await clipShort({ session: lives.best, people: ["Kai"], status: "approved", names: true, made: ago(4 * DAY) }),
+        skipped: await clipShort({ session: lives.best, people: ["Kai"], status: "rejected", made: ago(HOUR) }),
+        unnamed: await clipShort({ session: lives.best, people: ["Kai"], status: "approved", made: ago(HOUR) }),
+        // a swipe lets go of names itself: these two are as if that had gone wrong more than a week ago, which an hourly
+        // tidy caught then, so it doesn't read them again
+        longSkipped: await clipShort({ session: lives.best, people: ["Kai"], status: "rejected", made: ago(9 * DAY), decided: ago(8 * DAY) }),
+        longWaited: await clipShort({ session: lives.best, people: ["Kai"], made: ago(11 * DAY) }),
+      };
+      await clips.tidyClips(now);
+      // the round that waited three days is gone; the rest stay
+      expect((await stored(lives.best)).map((r) => r.round)).toEqual([1, 2, 3, 4, 5, 98]);
+      expect(await peopleOf(shorts.waited)).toEqual([]);
+      expect(await peopleOf(shorts.waiting)).toEqual(["Kai"]);
+      expect(await peopleOf(shorts.shown)).toEqual(["Kai"]);
+      expect(await peopleOf(shorts.skipped)).toEqual([]);
+      expect(await peopleOf(shorts.unnamed)).toEqual([]);
+      expect([await peopleOf(shorts.longSkipped), await peopleOf(shorts.longWaited)]).toEqual([["Kai"], ["Kai"]]);
+      // as the hourly tidy back then did
+      await clips.tidyClips(ago(8 * DAY - HOUR));
+      expect([await peopleOf(shorts.longSkipped), await peopleOf(shorts.longWaited)]).toEqual([[], []]);
+    });
+
+    it("lets nobody signed in make a clip Short or change the round it shows, and every YouTube and channel fact stays the server's", async () => {
+      const id = await clipShort({ session: lives.theirs, people: ["Kai"] });
+      const refused = /only the server records what happened on a LIVE/;
+      await expect(db.asUser(S, (tx) => tx`insert into public.videos (user_id, format, params, key, title) values (${S}, 'clip', '{"from": 0}', 'clip:battle', 'Mine')`)).rejects.toThrow(refused);
+      // where its video starts, the round and that it's a clip are the server's
+      await expect(db.asUser(S, (tx) => tx`update public.videos set params = jsonb_set(params, '{from}', '900') where id = ${id}`)).rejects.toThrow(refused);
+      await expect(db.asUser(S, (tx) => tx`update public.videos set params = jsonb_set(params, '{log,people}', '["Someone"]') where id = ${id}`)).rejects.toThrow(refused);
+      await expect(db.asUser(S, (tx) => tx`update public.videos set format = 'battle' where id = ${id}`)).rejects.toThrow(refused);
+      const [plain] = await db.admin((tx) => tx<{ id: string }[]>`insert into public.videos (user_id, format, params, key, title) values (${S}, 'battle', '{}', 'battle:spike:sword', 'Spike vs Sword') returning id`);
+      await expect(db.asUser(S, (tx) => tx`update public.videos set format = 'clip' where id = ${plain.id}`)).rejects.toThrow(refused);
+      // its title, whether names show and whether it asks for comments are still theirs to choose
+      await db.asUser(S, (tx) => tx`update public.videos set title = 'Round 14 of my LIVE', params = params || '{"names": true, "allowComments": false}'::jsonb where id = ${id}`);
+      const [v] = await db.admin((tx) => tx<{ title: string; params: { names?: boolean; allowComments?: boolean } }[]>`select title, params from public.videos where id = ${id}`);
+      expect([v.title, v.params.names, v.params.allowComments]).toEqual(["Round 14 of my LIVE", true, false]);
+      // wave 1's and channels' guarded columns are all still the server's
+      const facts: Record<string, string> = {
+        youtube_id: "'dQw4w9WgXcQ'", youtube_verified: "true", youtube_status: "'processed'", youtube_privacy: "'public'", youtube_kids: "true",
+        youtube_checked_at: "now()", youtube_wanted: "'public'", youtube_publish_at: "now()", clean_path: "'x/clean.mp4'",
+      };
+      for (const [col, value] of Object.entries(facts)) {
+        await expect(db.asUser(S, (tx) => tx.unsafe(`insert into public.videos (user_id, format, params, key, title, ${col}) values ('${S}', 'battle', '{}', 'k', 't', ${value})`)), col).rejects.toThrow(/only the server records what YouTube said/);
+        for (const v of [id, plain.id]) await expect(db.asUser(S, (tx) => tx.unsafe(`update public.videos set ${col} = ${value} where id = '${v}'`)), col).rejects.toThrow(/only the server records what YouTube said/);
+      }
+      for (const v of [id, plain.id]) await expect(db.asUser(S, (tx) => tx`update public.videos set channel_id = gen_random_uuid() where id = ${v}`)).rejects.toThrow(/only the server moves a Short to another channel/);
+      // the server can still record what happened
+      await db.admin((tx) => tx`update public.videos set params = jsonb_set(params, '{log,people}', '[]'::jsonb) where id = ${id}`);
+      expect(await peopleOf(id)).toEqual([]);
+    });
+
+    // a morning's Shorts
+
+    /**
+     * Someone new who streams and gets Shorts, on a plan, onboarded for both
+     * in UTC, with YouTube channels connected a day apart, each answered as
+     * not made for kids. The first is Hookline's test channel unless `test`
+     * is false. Deleted at the end with everyone else here.
+     */
+    const streamer = async (plan: "free" | "pro" | "creator", o: { channels?: number; test?: boolean } = {}) => {
+      const email = `w2-clipper-${emails.length + 1}@test.local`;
+      emails.push(email);
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      const channels = await db.admin(async (tx) => {
+        await tx`update public.profiles set timezone = 'UTC', goal = 'both', onboarded_at = now() - interval '30 days' where id = ${user}`;
+        if (plan !== "free") await tx`insert into public.subscriptions (user_id, plan, status) values (${user}, ${plan}, 'active')`;
+        const ids: string[] = [];
+        for (let i = 0; i < (o.channels ?? 1); i++) {
+          const added = new Date(Date.UTC(2026, 0, 1 + i));
+          const external = i === 0 && o.test !== false ? TEST_CHANNEL : `UCw2clip${emails.length}n${i}`;
+          const [c] = await tx<{ id: string }[]>`
+            insert into public.channels (user_id, platform, external_id, title, made_for_kids, connected_at, added_at)
+            values (${user}, 'youtube', ${external}, ${`Channel ${i + 1}`}, false, ${added}, ${added}) returning id`;
+          ids.push(c.id);
+        }
+        return ids;
+      });
+      return { user, key: await live.overlayKeyOf(user), channels };
+    };
+
+    /** One of their LIVEs: verified as theirs unless it says otherwise, of Rivals, from two hours ago until an hour ago. */
+    const aLive = async (user: string, o: { verified?: boolean; game?: string; from?: number; to?: number } = {}) => (await db.admin((tx) => tx<{ id: string }[]>`
+      insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, heard, verified)
+      values (gen_random_uuid(), ${user}, ${o.game ?? "rivals"}, ${ago(o.from ?? 2 * HOUR)}, ${ago(o.to ?? HOUR)}, 20, '{w2.clipper}', ${o.verified ?? true})
+      returning id`))[0].id;
+
+    /** A round kept from one of their LIVEs, played 90 minutes ago unless it says otherwise, and sent as it was decided. */
+    const keep = async (key: string, g: { log: ClipLog }, session: string, round: number, played = ago(90 * MIN)) => {
+      expect(await clips.saveClip(key, sent(g.log, round, { session, at: played.getTime() }), new Date(played.getTime() + MIN))).toEqual({ status: 200, kept: true });
+    };
+
+    type Short = {
+      id: string; format: string; channel_id: string | null; origin: string; status: string; key: string; title: string; why: string[]; suggested_for: Date | null;
+      params: { log?: ClipLog; from?: number; look?: unknown; ending?: string };
+    };
+    /** Their Shorts, soonest first. */
+    const shortsOf = (user: string) => db.admin((tx) => tx<Short[]>`
+      select id, format, channel_id, origin, status, key, title, why, params, suggested_for from public.videos where user_id = ${user} order by suggested_for nulls last, created_at`);
+    const roundsIn = async (user: string) => (await shortsOf(user)).filter((v) => v.format === "clip");
+    const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+
+    it("makes a waiting round one of the morning's Shorts: on Pro, the round and two made ones, the round going out first", async () => {
+      const p = await streamer("pro");
+      const theirs = await aLive(p.user);
+      await keep(p.key, good[1], theirs, 7);
+      expect(await gen.tryDaily({ userId: p.user, channelId: p.channels[0] }, now)).toBe(`${p.user} ${p.channels[0]}: 3 made`);
+      const [round, ...made] = await shortsOf(p.user);
+      const { log } = good[1];
+      const cut = clip.clipWindow(clip.replay(log), log)!;
+      expect(round).toMatchObject({ format: "clip", channel_id: p.channels[0], origin: "daily", status: "review", key: "clip:rivals" });
+      expect(round.params.log).toMatchObject({ session: theirs, round: 7, inputs: log.inputs, check: log.check });
+      expect(round.params.from).toBe(cut.from);
+      // for the same channel as the made ones, in its look, ending the way they do
+      expect(made).toHaveLength(2);
+      expect(made.every((m) => m.format !== "clip" && m.channel_id === p.channels[0])).toBe(true);
+      expect(round.params.look).toEqual(made[0].params.look);
+      expect(["comment", "loop"]).toContain(round.params.ending);
+      expect(round.suggested_for!.getTime()).toBeLessThan(made[0].suggested_for!.getTime());
+      // why it's this one, and what it counts as
+      expect(round.why[0]).toBe(`Round 7 of your LIVE on ${DAYS[ago(90 * MIN).getUTCDay()]}`);
+      expect(round.why.slice(2)).toEqual(["It counts as one of today's Shorts", expect.stringMatching(/^Posts at /)]);
+      expect(round.title).toBe(`${log.teams[0].name} vs ${log.teams[1].name}: a ball battle round from my LIVE`);
+      // the round stopped waiting as its Short was made, so it can't come round again
+      expect(await stored(theirs, p.user)).toEqual([]);
+      // the morning's note counts it
+      expect(await db.admin((tx) => tx`select title from public.notifications where user_id = ${p.user} and kind = 'ready'`)).toEqual([{ title: "3 new Shorts to swipe" }]);
+      // and what a morning reads of the channel's past leaves the round's record out
+      const past = await db.asUser(p.user, (tx) => gen.pastOf(tx, { userId: p.user, channelId: p.channels[0] }));
+      const had = past.find((h) => h.format === "clip")!;
+      expect(had.params).not.toHaveProperty("log");
+      expect(had.params).toMatchObject({ from: cut.from });
+    }, 60_000);
+
+    it("takes a round only from a finished LIVE of the same game that counts as theirs, played while it was going, the last day and a half's best first", async () => {
+      const q = await streamer("pro");
+      const lives = {
+        notTheirs: await aLive(q.user, { verified: false }),
+        going: await aLive(q.user, { to: 5 * MIN }),
+        otherGame: await aLive(q.user, { game: "battle" }),
+        older: await aLive(q.user, { from: 50 * HOUR, to: 48 * HOUR }),
+        theirs: await aLive(q.user),
+      };
+      // the best rounds, from LIVEs none can come from: someone else's, one still going, another game's
+      for (const s of [lives.notTheirs, lives.going, lives.otherGame]) await keep(q.key, good[0], s, 1);
+      // a good one played an hour before its LIVE began, and a better one from two days ago
+      await keep(q.key, good[0], lives.theirs, 1, ago(3 * HOUR));
+      await keep(q.key, good[1], lives.older, 1, ago(49 * HOUR));
+      // and the weakest, from today's LIVE that counts as theirs
+      await keep(q.key, good[3], lives.theirs, 2);
+      expect(await gen.makeShorts(q.user, { origin: "daily", now })).toBe(3);
+      expect((await roundsIn(q.user)).map((v) => [v.params.log?.session, v.params.log?.round])).toEqual([[lives.theirs, 2]]);
+      // the rest still wait
+      for (const s of [lives.notTheirs, lives.going, lives.otherGame, lives.older, lives.theirs]) expect((await stored(s, q.user)).map((r) => [r.round, r.state]), s).toEqual([[1, "ready"]]);
+    }, 60_000);
+
+    it("makes one a day at most, only on a day's own run for the first channel, as one of the plan's Shorts", async () => {
+      const c = await streamer("creator", { channels: 2 });
+      const theirs = await aLive(c.user);
+      await keep(c.key, good[0], theirs, 1);
+      await keep(c.key, good[1], theirs, 2);
+      const [first, second] = c.channels;
+      // another channel's morning, "make one like this" and a swiped-away one's replacement never take one
+      expect(await gen.makeShorts(c.user, { origin: "daily", channelId: second, now })).toBe(5);
+      expect(await gen.makeShorts(c.user, { origin: "daily", channelId: first, like: "battle", count: 1, now })).toBe(1);
+      expect(await gen.makeShorts(c.user, { origin: "replacement", channelId: first, now })).toBe(1);
+      expect(await roundsIn(c.user)).toEqual([]);
+      // the first channel's own: the best round, as one of its two
+      expect(await gen.makeShorts(c.user, { origin: "daily", channelId: first, count: 2, now })).toBe(2);
+      expect((await roundsIn(c.user)).map((v) => [v.channel_id, v.params.log?.round])).toEqual([[first, 1]]);
+      // a second go the same day takes none, though another round waits
+      expect(await gen.makeShorts(c.user, { origin: "daily", channelId: first, now })).toBe(2);
+      expect(await roundsIn(c.user)).toHaveLength(1);
+      expect((await stored(theirs, c.user)).map((r) => [r.round, r.state])).toEqual([[2, "ready"]]);
+      const allow = await gen.allowancesOf(c.user, (await import("@/lib/billing/plans")).PLANS.creator, "UTC", now);
+      expect(allow.units.get(first)).toMatchObject({ made: 5, left: 0 });
+
+      // on Free it's one of the week's 3
+      const f = await streamer("free");
+      await keep(f.key, good[2], await aLive(f.user), 1);
+      expect(await gen.makeShorts(f.user, { origin: "daily", now })).toBe(3);
+      const [round] = await roundsIn(f.user);
+      expect(round.why[2]).toBe("It counts as one of this week's 3 Shorts");
+      expect(await gen.makeShorts(f.user, { origin: "daily", now })).toBe(0);
+
+      // and an account set to LIVE games only gets none, its Shorts being off
+      const l = await streamer("pro");
+      await keep(l.key, good[2], await aLive(l.user), 1);
+      await db.admin((tx) => tx`update public.profiles set goal = 'live' where id = ${l.user}`);
+      expect(await gen.makeShorts(l.user, { origin: "daily", now })).toBe(3);
+      expect(await roundsIn(l.user)).toEqual([]);
+    }, 120_000);
+
+    it("saves the whole day or none of it, and a round that can't be taken costs the day nothing", async () => {
+      const a = await streamer("pro");
+      const theirs = await aLive(a.user);
+      await keep(a.key, good[0], theirs, 1);
+      const unit = { userId: a.user, channelId: a.channels[0] };
+      // the made Shorts can't be saved, so neither is the round's: it still waits, and the morning run tries again in an hour
+      const refuse = "drop trigger if exists w2_clipper_refuse on public.videos; drop function if exists public.w2_clipper_refuse();";
+      onTestFinished(() => db.admin((tx) => tx.unsafe(refuse)).then(() => undefined));
+      await db.admin((tx) => tx.unsafe(`
+        create function public.w2_clipper_refuse() returns trigger language plpgsql as $$
+        begin
+          if new.user_id = '${a.user}' and new.format <> 'clip' then raise exception 'no room for it'; end if;
+          return new;
+        end $$;
+        create trigger w2_clipper_refuse before insert on public.videos for each row execute function public.w2_clipper_refuse();`));
+      expect(await gen.tryDaily(unit, now)).toBe(`${a.user} ${a.channels[0]} failed: no room for it`);
+      expect(await shortsOf(a.user)).toEqual([]);
+      expect((await stored(theirs, a.user)).map((r) => r.state)).toEqual(["ready"]);
+      expect(await db.admin((tx) => tx`select outcome, next_try_at from public.shorts_runs where user_id = ${a.user}`)).toEqual([{ outcome: "failed", next_try_at: new Date(now.getTime() + HOUR) }]);
+      await db.admin((tx) => tx.unsafe(refuse));
+      // the next try makes the whole day, the round with it
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + HOUR + MIN))).toBe(`${a.user} ${a.channels[0]}: 3 made`);
+      expect(await roundsIn(a.user)).toHaveLength(1);
+      expect(await stored(theirs, a.user)).toEqual([]);
+
+      // when taking a round goes wrong, the day is all made Shorts, as many as ever, and the round waits for another morning
+      const b = await streamer("pro");
+      const hers = await aLive(b.user);
+      await keep(b.key, good[1], hers, 1);
+      const said = vi.spyOn(console, "error").mockImplementation(() => {});
+      onTestFinished(() => said.mockRestore());
+      const unlock = () => db.admin((tx) => tx`grant select on public.live_clips to authenticated`).then(() => undefined);
+      onTestFinished(unlock);
+      await db.admin((tx) => tx`revoke select on public.live_clips from authenticated`);
+      expect(await gen.makeShorts(b.user, { origin: "daily", now })).toBe(3);
+      await unlock();
+      expect(await roundsIn(b.user)).toEqual([]);
+      expect(said).toHaveBeenCalledWith("shorts: couldn't take a LIVE round:", expect.stringMatching(/permission denied/));
+      expect((await stored(hers, b.user)).map((r) => r.state)).toEqual(["ready"]);
+    }, 120_000);
+
+    it("makes the day all made Shorts, as many as ever, when the round it took stops waiting before the day is saved", async () => {
+      const g = await streamer("pro");
+      const theirs = await aLive(g.user);
+      await keep(g.key, good[1], theirs, 1);
+      // the round goes while the rest of the day is being made, as when rounds are turned off just then: the first thing the day claims takes it
+      const gone = "drop trigger if exists w2_clipper_gone on public.content_ledger; drop function if exists public.w2_clipper_gone();";
+      onTestFinished(() => db.admin((tx) => tx.unsafe(gone)).then(() => undefined));
+      await db.admin((tx) => tx.unsafe(`
+        create function public.w2_clipper_gone() returns trigger language plpgsql as $$
+        begin
+          delete from public.live_clips where user_id = new.user_id;
+          return new;
+        end $$;
+        create trigger w2_clipper_gone after insert on public.content_ledger for each row
+          when (new.user_id = '${g.user}') execute function public.w2_clipper_gone();`));
+      expect(await gen.tryDaily({ userId: g.user, channelId: g.channels[0] }, now)).toBe(`${g.user} ${g.channels[0]}: 3 made`);
+      const day = await shortsOf(g.user);
+      expect(day).toHaveLength(3);
+      expect(day.every((v) => v.format !== "clip" && v.origin === "daily")).toBe(true);
+      expect(await db.admin((tx) => tx`select title from public.notifications where user_id = ${g.user} and kind = 'ready'`)).toEqual([{ title: "3 new Shorts to swipe" }]);
+    }, 120_000);
+
+    it("lets go of gifters' names when a round is kept without them or swiped away, and keeps them in one that shows them", async () => {
+      const { PLANS } = await import("@/lib/billing/plans");
+      const n = await streamer("pro");
+      // rounds from their LIVE as mornings make them, each naming two gifters
+      const made = async (round: number) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, origin)
+        values (${n.user}, ${n.channels[0]}, 'clip', ${tx.json({ log: { ...JSON.parse(JSON.stringify(good[0].log)), round, people: ["Kai", "mia.plays"] }, from: 0 })},
+          'clip:rivals', ${`Round ${round}`}, 'review', 'daily')
+        returning id`))[0].id;
+      const [hidden, shown, skipped] = [await made(1), await made(2), await made(3)];
+      const [battle] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, origin)
+        values (${n.user}, ${n.channels[0]}, 'battle', '{"a": "spike", "b": "sword", "seed": 1}', 'battle:spike:sword', 'Spike vs Sword', 'review', 'daily') returning id`);
+      expect(await queue.approve(n.user, hidden, PLANS.pro, now)).toBe(true);
+      expect(await queue.approve(n.user, shown, PLANS.pro, now, null, null, true)).toBe(true);
+      expect(await queue.reject(n.user, skipped)).toBe(true);
+      // a Short of any other kind never takes names
+      expect(await queue.approve(n.user, battle.id, PLANS.pro, now, null, null, true)).toBe(true);
+      const names = async (id: string) => (await db.admin((tx) => tx`select params -> 'log' -> 'people' as people, params -> 'names' as names from public.videos where id = ${id}`))[0];
+      expect(await names(hidden)).toEqual({ people: [], names: null });
+      expect(await names(shown)).toEqual({ people: ["Kai", "mia.plays"], names: true });
+      expect(await names(skipped)).toEqual({ people: [], names: null });
+      expect(await names(battle.id)).toEqual({ people: null, names: null });
+    });
+
+    it("goes the usual way once kept: who it's for logged with it, into the render queue, and up only to Hookline's test channel before YouTube's audit", async () => {
+      const { PLANS } = await import("@/lib/billing/plans");
+      const onTest = await streamer("pro");
+      const own = await streamer("pro", { test: false });
+      const ids: string[] = [];
+      for (const s of [onTest, own]) {
+        await keep(s.key, good[2], await aLive(s.user), 1);
+        expect(await gen.makeShorts(s.user, { origin: "daily", now })).toBe(3);
+        const [round] = await roundsIn(s.user);
+        // kept as made for kids, though the channel isn't
+        expect(await queue.approve(s.user, round.id, PLANS.pro, now, null, true)).toBe(true);
+        ids.push(round.id);
+      }
+      expect(await db.admin((tx) => tx`select video_id, made_for_kids from public.audience_log where video_id = any(${ids}::uuid[]) and source = 'short' order by id`))
+        .toEqual(ids.map((video_id) => ({ video_id, made_for_kids: true })));
+      // made like any Short, then ready to go up
+      for (const [i, s] of [onTest, own].entries()) {
+        const [job] = await db.admin((tx) => tx<{ id: number; status: string; priority: number }[]>`select id, status, priority from public.render_jobs where video_id = ${ids[i]}`);
+        expect(job).toMatchObject({ status: "queued", priority: PLANS.pro.priority });
+        const [v] = await db.admin((tx) => tx<{ params: import("@/lib/shorts/types").ClipParams }[]>`select params from public.videos where id = ${ids[i]}`);
+        await render.finishJob({ id: job.id, videoId: ids[i], userId: s.user, spec: { format: "clip", params: v.params }, tag: false, attempts: 1, clean: false, alsoClean: false }, `${s.user}/${ids[i]}.mp4`);
+      }
+      const seen: { channel: string; madeForKids: boolean; categoryId?: string }[] = [];
+      onTestFinished(() => void upload.mockReset());
+      upload.mockImplementation(async (...a) => {
+        const [channel, , meta] = a as [string, Buffer, { madeForKids: boolean; categoryId?: string }];
+        seen.push({ channel, madeForKids: meta.madeForKids, categoryId: meta.categoryId });
+        return `w2clipup${seen.length}`;
+      });
+      // what's on YouTube already isn't these tests' to say
+      stubFetch(() => new Response("{}", { status: 500 }));
+      await post.postDue(now, 1000);
+      // as Entertainment, made for kids as it was kept, and only to the test channel
+      expect(seen.filter((u) => [onTest.channels[0], own.channels[0]].includes(u.channel))).toEqual([{ channel: onTest.channels[0], madeForKids: true, categoryId: "24" }]);
+      const where = async (id: string) => (await db.admin((tx) => tx`select status, youtube_id from public.videos where id = ${id}`))[0];
+      expect(await where(ids[0])).toEqual({ status: "scheduled", youtube_id: expect.stringMatching(/^w2clipup/) });
+      // before the audit, on a channel that isn't a test one, the creator posts it
+      expect(await where(ids[1])).toEqual({ status: "ready", youtube_id: null });
+    }, 60_000);
+
+    it("says when a round from a LIVE did well without promising more like it, since only the creator's LIVEs make them", async () => {
+      const r = await streamer("pro");
+      const ch = r.channels[0];
+      // three posted Shorts set the channel's usual first day, a hundred views each
+      const usual = await db.admin((tx) => tx<{ id: string; posted_at: Date }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, posted_at, youtube_id, youtube_verified)
+        select ${r.user}, ${ch}, 'quiz', '{"questions":[]}', 'quiz:capitals', 'Quiz ' || g, 'posted', now() - interval '4 days',
+          now() - interval '4 days' + make_interval(mins => g), ${`w2clip${r.user.slice(0, 8)}q`} || g, true
+        from generate_series(1, 3) g order by g returning id, posted_at`);
+      for (const v of usual) await db.admin((tx) => tx`insert into public.video_stats (video_id, checkpoint, views, fetched_at) values (${v.id}, '24h', 100, ${new Date(v.posted_at.getTime() + DAY)})`);
+      const posted = (format: string, key: string, title: string, params: unknown) => db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, posted_at, youtube_id, youtube_verified)
+        values (${r.user}, ${ch}, ${format}, ${tx.json(params as never)}, ${key}, ${title}, 'posted', now() - interval '1 day', now() - interval '1 day', ${`w2clip${r.user.slice(0, 8)}${format}`}, true)
+        returning id`).then(([v]) => v.id);
+      const round = await posted("clip", "clip:rivals", "Round 3 of my LIVE", { log: { session: lives.theirs, people: [] }, from: 0 });
+      const quiz = await posted("quiz", "quiz:capitals", "Quiz 4", { questions: [] });
+      await stats.learn(r.user, round, "clip", "clip:rivals", 400, 24, ch);
+      await stats.learn(r.user, quiz, "quiz", "quiz:capitals", 400, 24, ch);
+      const notes = await db.admin((tx) => tx<{ href: string; body: string }[]>`select href, body from public.notifications where user_id = ${r.user} and kind = 'results' order by created_at`);
+      expect(notes).toEqual([
+        { href: `/app/shorts/${round}`, body: "Round 3 of my LIVE beat your typical Short in its first day." },
+        { href: `/app/shorts/${quiz}`, body: "Quiz 4 beat your typical Short in its first day. Hookline will make more like it." },
+      ]);
+    });
+
+    it("fails a round the worker can't make at once, saying why, instead of trying it three times", async () => {
+      const { unmakeable } = await import("@/lib/live/clip-rules");
+      const w = await streamer("pro");
+      // kept with names off, its gifters' names still in it, as if letting go of them had gone wrong
+      const { log } = good[0];
+      const params = { log: { ...JSON.parse(JSON.stringify(log)), people: ["Kai"] } as ClipLog, from: clip.clipWindow(clip.replay(log), log)!.from };
+      const why = unmakeable(params)!;
+      expect(why).toBe("This LIVE round breaks Hookline's rules, so it can't be made.");
+      const [v] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, origin, decided_at)
+        values (${w.user}, ${w.channels[0]}, 'clip', ${tx.json(params)}, 'clip:rivals', 'Round 1', 'rendering', 'daily', now()) returning id`);
+      const [job] = await db.admin((tx) => tx<{ id: number }[]>`insert into public.render_jobs (video_id, status, attempts) values (${v.id}, 'running', 1) returning id`);
+      await render.failJob({ id: job.id, videoId: v.id, userId: w.user, spec: { format: "clip", params }, tag: false, attempts: 1, clean: false, alsoClean: false }, why, true);
+      expect(await db.admin((tx) => tx`select status, error from public.videos where id = ${v.id}`)).toEqual([{ status: "failed", error: `Rendering failed: ${why}` }]);
+      expect(await db.admin((tx) => tx`select status from public.render_jobs where id = ${job.id}`)).toEqual([{ status: "failed" }]);
+      expect(await db.admin((tx) => tx`select title, body from public.notifications where user_id = ${w.user} and kind = 'failed'`)).toEqual([{ title: "A Short couldn't be made", body: `Round 1. ${why}` }]);
+      // trying it again would only fail again, so it stays as it is, saying why, with no new try and no new note
+      const { PLANS } = await import("@/lib/billing/plans");
+      await queue.retry(w.user, v.id, PLANS.pro);
+      expect(await db.admin((tx) => tx`select status, error from public.videos where id = ${v.id}`)).toEqual([{ status: "failed", error: `Rendering failed: ${why}` }]);
+      expect(await db.admin((tx) => tx`select id from public.render_jobs where video_id = ${v.id}`)).toEqual([{ id: job.id }]);
+      // one that can still be made, which failed for some other reason, is made again
+      const [ok] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, origin, decided_at, error)
+        values (${w.user}, ${w.channels[0]}, 'clip', ${tx.json({ ...params, log: { ...params.log, people: [] } })}, 'clip:rivals', 'Round 2', 'failed', 'daily', now(), 'Rendering failed: Chrome went away')
+        returning id`);
+      await queue.retry(w.user, ok.id, PLANS.pro);
+      expect(await db.admin((tx) => tx`select status, error from public.videos where id = ${ok.id}`)).toEqual([{ status: "approved", error: null }]);
+      expect(await db.admin((tx) => tx`select status from public.render_jobs where video_id = ${ok.id}`)).toEqual([{ status: "queued" }]);
+    });
+  });
 
   // wave 2: niches
 

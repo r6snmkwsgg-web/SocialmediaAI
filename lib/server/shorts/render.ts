@@ -113,19 +113,27 @@ export async function finishJob(job: Job, filePath: string, cleanPath: string | 
   });
 }
 
-export async function failJob(job: Job, message: string): Promise<void> {
-  const final = job.attempts >= 3;
+/**
+ * A render that didn't work: back in line to try again, and given up on
+ * after three tries, saying why. `forGood` gives up at once, for one that
+ * can never be made (a LIVE round that no longer plays back exactly), and
+ * the note says why instead of asking for another try.
+ */
+export async function failJob(job: Job, message: string, forGood = false): Promise<void> {
+  const final = forGood || job.attempts >= 3;
   await admin(async (tx) => {
     await tx`update public.render_jobs set status = ${final ? "failed" : "queued"}, error = ${message}, finished_at = ${final ? new Date() : null} where id = ${job.id}`;
     if (!final) return;
     if (job.clean) {
       // the Short itself is fine; only TikTok's copy couldn't be made, and asking again tries again
       const [v] = await tx<{ title: string }[]>`select title from public.videos where id = ${job.videoId}`;
-      if (v) await notify(job.userId, { kind: "failed", title: "A Short couldn't be made for TikTok", body: `${v.title}. Its copy without the Hookline tag failed three times; try TikTok again from its page.`, href: `/app/shorts/${job.videoId}`, key: `render-failed:${job.id}` }, tx);
+      const next = forGood ? message : "Its copy without the Hookline tag failed three times; try TikTok again from its page.";
+      if (v) await notify(job.userId, { kind: "failed", title: "A Short couldn't be made for TikTok", body: `${v.title}. ${next}`, href: `/app/shorts/${job.videoId}`, key: `render-failed:${job.id}` }, tx);
       return;
     }
     const [v] = await tx<{ title: string }[]>`update public.videos set status = 'failed', error = ${`Rendering failed: ${message}`} where id = ${job.videoId} returning title`;
-    if (v) await notify(job.userId, { kind: "failed", title: "A Short couldn't be made", body: `${v.title}. It failed three times; try it again from its page.`, href: `/app/shorts/${job.videoId}`, key: `render-failed:${job.id}` }, tx);
+    const next = forGood ? message : "It failed three times; try it again from its page.";
+    if (v) await notify(job.userId, { kind: "failed", title: "A Short couldn't be made", body: `${v.title}. ${next}`, href: `/app/shorts/${job.videoId}`, key: `render-failed:${job.id}` }, tx);
   });
 }
 

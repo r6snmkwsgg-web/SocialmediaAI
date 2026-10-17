@@ -6,6 +6,7 @@ import { validGifts } from "@/lib/live/menu";
 import { ownRivalryProblem, sidesProblem, validSideGifts } from "@/lib/live/rivals";
 import { liveSettingsSchema } from "@/lib/live/settings";
 import { requireUser } from "@/lib/server/auth";
+import { forgetClips } from "@/lib/server/clips";
 import { asUser } from "@/lib/server/db";
 import { rotateOverlayKey, saveLiveSettings, setHideNames } from "@/lib/server/live";
 
@@ -46,6 +47,8 @@ export async function saveLive(_: SaveState, form: FormData): Promise<SaveState>
     return { ok: false, message: "Each side needs three different gifts, each costing more than the one before, and no gift on both sides.", at: Date.now() };
   }
   await saveLiveSettings(me.id, p.data);
+  // with rounds no longer becoming Shorts, the ones waiting go, gifters' names and all
+  if (!p.data.clips) await forgetClips(me.id);
   revalidatePath("/app/live");
   revalidatePath("/app");
   return { ok: true, message: "Saved. A game that's already open picks it up when you reload it.", at: Date.now() };

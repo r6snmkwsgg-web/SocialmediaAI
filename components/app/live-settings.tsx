@@ -1,7 +1,8 @@
 "use client";
 import Link from "next/link";
-import { useActionState, useState } from "react";
+import { startTransition, useActionState, useState } from "react";
 import type { saveLive, SaveState } from "@/app/app/(shell)/live/actions";
+import type { Plan } from "@/lib/billing/plans";
 import { DEFAULT_GIFTS, type MenuGift } from "@/lib/live/menu";
 import { DEFAULT_SIDE_GIFTS, NAME_MAX, ownRivalryProblem, priceGaps, RIVAL_GROUPS, RIVAL_POWERS, RIVALRIES, rivalryLabel, sidesProblem, validSideGifts, type SideGifts } from "@/lib/live/rivals";
 import type { GameId, LiveSettings } from "@/lib/live/settings";
@@ -18,6 +19,8 @@ type Props = {
   allowed: { games: GameId[]; customMenus: boolean; planName: string };
   /** point them at the plans for more games; not for someone who can't earn gifts on a LIVE yet */
   upsell?: boolean;
+  /** rounds becoming Shorts: the plan's Shorts, which a round counts as one of, and why none can right now, when none can */
+  clips: { shorts: Plan["shorts"]; note: React.ReactNode };
   action: typeof saveLive;
 };
 
@@ -30,12 +33,12 @@ const andList = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, 
 
 /**
  * A streamer's settings for their LIVE game: which game, how long rounds
- * run, team names and colours, which champions can come up, their own
- * gifts on the menu, Rivals' rivalries and each side's gifts, and the
- * sound. Saved to their account; the game reads them through its private
- * address.
+ * run, whether the best become Shorts, team names and colours, which
+ * champions can come up, their own gifts on the menu, Rivals' rivalries
+ * and each side's gifts, and the sound. Saved to their account; the game
+ * reads them through its private address.
  */
-export function LiveSettingsForm({ initial, games, menus, abilities, allowed, upsell = true, action }: Props) {
+export function LiveSettingsForm({ initial, games, menus, abilities, allowed, upsell = true, clips, action }: Props) {
   const [s, setS] = useState<LiveSettings>(initial);
   const [own, setOwn] = useState(!!initial.gifts);
   const [gifts, setGifts] = useState<MenuGift[]>(initial.gifts ?? DEFAULT_GIFTS.map((g) => ({ ...g })));
@@ -52,9 +55,20 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, up
   const locked = games.filter((g) => !allowed.games.includes(g.id)).map((g) => g.name);
   const champions = s.game === "battle" || s.game === "rivals";
   const teamsProblem = sidesProblem(s.teams[0].name, s.teams[1].name);
+  // why no round can become a Short right now: what the page knows first, then the game picked here
+  const noClips = clips.note ?? (champions ? null : "Ball Race and Last One Standing rounds can't become Shorts yet.");
 
   return (
-    <form action={save} className="flex flex-col divide-y-2 divide-edge">
+    <form
+      action={save}
+      // saved in a transition: a form's own submit puts every box back as it was first drawn once it's saved, so a box just unticked would show ticked
+      onSubmit={(e) => {
+        e.preventDefault();
+        const data = new FormData(e.currentTarget);
+        startTransition(() => save(data));
+      }}
+      className="flex flex-col divide-y-2 divide-edge"
+    >
       <input type="hidden" name="settings" value={JSON.stringify(value)} />
 
       <fieldset className="px-5 py-5">
@@ -85,7 +99,7 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, up
 
       <fieldset className="grid gap-6 px-5 py-5 sm:grid-cols-2">
         <legend className={`${legend} float-left w-full sm:col-span-2`}>Rounds</legend>
-        <label className="flex flex-col gap-2">
+        <label className="flex flex-col gap-2 sm:row-span-2">
           <span className="flex items-baseline justify-between text-[14px]">
             Longest a round can run
             <span className="font-mono text-[13px] tabular-nums">{s.roundSeconds < 60 ? `${s.roundSeconds}s` : `${Math.floor(s.roundSeconds / 60)}m${s.roundSeconds % 60 ? ` ${s.roundSeconds % 60}s` : ""}`}</span>
@@ -94,12 +108,29 @@ export function LiveSettingsForm({ initial, games, menus, abilities, allowed, up
           <span className="text-[12px] text-muted">Most rounds end sooner. When time&rsquo;s up, whoever&rsquo;s ahead wins. A race tops out at 75 seconds.</span>
         </label>
         <label className="flex items-start gap-3">
-          <input type="checkbox" checked={s.vote} onChange={(e) => set("vote", e.target.checked)} className="mt-1 h-5 w-5 accent-[var(--color-signal)]" />
+          <input type="checkbox" checked={s.vote} onChange={(e) => set("vote", e.target.checked)} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
           <span className="flex flex-col gap-1">
             <span className="text-[14px]">Chat votes for the next round</span>
             <span className="text-[12px] text-muted">Three choices on the win screen. Viewers type A, B or C, and every coin they gift is a vote.</span>
           </span>
         </label>
+        <div className="flex flex-col gap-2">
+          <label className="flex items-start gap-3">
+            <input type="checkbox" checked={s.clips} onChange={(e) => set("clips", e.target.checked)} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
+            <span className="flex flex-col gap-1">
+              <span className="text-[14px]">Best rounds become Shorts</span>
+              <span className="text-[12px] leading-relaxed text-muted">
+                When a Ball Battle or Rivals round is worth watching again, the game keeps how it played. The best one waits in your Shorts the next morning, redrawn in your channel&rsquo;s look.{" "}
+                {clips.shorts.per === "day" ? "It counts as one of that day's Shorts." : `It counts as one of that week's ${clips.shorts.count} Shorts.`}
+              </span>
+              <span className="text-[12px] leading-relaxed text-muted">
+                Nobody&rsquo;s name is in it unless you choose to show the names of people who sent gifts. Pictures never are. Only LIVEs that count as yours: your connected TikTok, heard through Hookline Bridge.
+              </span>
+              <span className="text-[12px] leading-relaxed text-muted">Turn it off and the rounds waiting are deleted.</span>
+            </span>
+          </label>
+          {noClips && <p className="ml-8 text-[12px] leading-relaxed text-fg">{noClips}</p>}
+        </div>
       </fieldset>
 
       {s.game === "battle" && (

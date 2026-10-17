@@ -5,6 +5,7 @@ import { Phone } from "@/components/phone";
 import { Icons } from "@/components/app/icons";
 import { LocalTime } from "@/components/app/local-time";
 import { button, Pill } from "@/components/app/ui";
+import { withNames } from "@/lib/shorts/formats/clip";
 import type { TikTokChoices } from "@/lib/shorts/tiktok";
 import { seconds } from "@/lib/shorts/timing";
 import type { Spec } from "@/lib/shorts/types";
@@ -39,7 +40,7 @@ type Props = {
   youtubeApi?: boolean;
   /** set when approved Shorts also go straight to TikTok: asks TikTok about the account */
   creator?: () => Promise<CreatorResult>;
-  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null, kids?: boolean | null) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null; how?: Keeping; channel?: string }>;
+  decide: (id: string, yes: boolean, tiktok?: TikTokChoices | null, kids?: boolean | null, names?: boolean) => Promise<{ ok: boolean; replaced?: boolean; at?: string | null; how?: Keeping; channel?: string }>;
   edit: (id: string, title: string, description: string) => Promise<{ ok: boolean; message?: string }>;
 };
 
@@ -47,10 +48,12 @@ type Props = {
  * The swipe queue: one Short at a time in a phone, playing. Right (or →)
  * to post it, left (or ←) for a different one. The title can be changed
  * before it goes, and so can who it's for: its channel's answer to "made
- * for kids?" unless the creator says otherwise for this one. When it's
- * going to TikTok too, a yes first asks TikTok's questions for that
- * Short, next to the Short itself. Each card goes by its own channel: it
- * only says a Short posts where Hookline will post it.
+ * for kids?" unless the creator says otherwise for this one. A round from
+ * their LIVE names nobody unless they tick the box to show gifters'
+ * names, off on every card. When it's going to TikTok too, a yes first
+ * asks TikTok's questions for that Short, next to the Short itself. Each
+ * card goes by its own channel: it only says a Short posts where Hookline
+ * will post it.
  */
 export function SwipeQueue({ items, tag, tiktok = false, paid = false, several = false, hasYouTube = false, youtubeApi = false, creator, decide, edit }: Props) {
   const router = useRouter();
@@ -64,6 +67,8 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
   // made for kids, for this Short: starts as its channel's answer
   const channelKids = youtube?.kids ?? false;
   const [kids, setKids] = useState(channelKids);
+  // a round from their LIVE shows gifters' names only once they say so, on each card
+  const [names, setNames] = useState(false);
   const drag = useRef<{ x: number; moved: boolean } | null>(null);
 
   useEffect(() => setList(items), [items]);
@@ -71,6 +76,7 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
     setEditing(false);
     setAsking(false);
     setKids(channelKids);
+    setNames(false);
   }, [cur?.id, channelKids]);
 
   const finish = useCallback(
@@ -82,14 +88,14 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
       // only a choice that differs from the channel's answer goes with it
       const audience = yes && kids !== channelKids ? kids : null;
       start(async () => {
-        const r = await decide(id, yes, tiktok, audience);
+        const r = await decide(id, yes, tiktok, audience, yes && names);
         if (!r.ok) toast("That didn't save. Try again.", "bad");
         else if (!yes) toast(r.replaced ? "Skipped. A different one is on its way." : "Skipped.");
         else toast(keptNote(r.how ?? "self", r.at ? new Date(r.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : null, r.channel), "good");
         router.refresh();
       });
     },
-    [cur, decide, router, kids, channelKids],
+    [cur, decide, router, kids, channelKids, names],
   );
 
   const go = useCallback(
@@ -119,8 +125,10 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
 
   // YouTube has the whole channel as made for kids: comments are off whatever's ticked
   const channelLocked = youtube?.youtubeKids === true;
-  // the preview ends the way the video will, for who it's for
-  const preview = useMemo(() => (cur ? withAudience(cur.spec, kids || channelLocked) : null), [cur, kids, channelLocked]);
+  // the preview ends the way the video will, for who it's for, and on a round from their LIVE names whoever it will
+  const preview = useMemo(() => (cur ? withNames(withAudience(cur.spec, kids || channelLocked), names) : null), [cur, kids, channelLocked, names]);
+  // a round from their LIVE that names anyone who sent gifts, so there's a choice to make
+  const named = cur?.spec.format === "clip" && cur.spec.params.log.people.some((n) => n.trim());
   // its time is when it posts only where Hookline posts it (its channel, or TikTok for one with no channel); otherwise it's the best time to post it
   const autoPost = youtube ? youtube.auto : tiktok;
   // a yes posts it: to its channel, or to TikTok with the creator's choices
@@ -249,6 +257,18 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
                 </span>
               </span>
             </label>
+
+            {named && (
+              <label className="flex items-start gap-2.5 text-[14px] leading-snug">
+                <input type="checkbox" checked={names} onChange={(e) => setNames(e.target.checked)} className="mt-0.5 h-4 w-4 shrink-0 accent-[var(--color-signal)]" />
+                <span>
+                  Show gifters&rsquo; names
+                  <span className="block text-[13px] text-muted">
+                    Off, the video names nobody. On, it shows the names of people who sent gifts in this round, as TikTok showed them. Nobody&rsquo;s picture is ever shown.
+                  </span>
+                </span>
+              </label>
+            )}
 
             <p className="border-l-4 border-signal pl-3 text-[14px]">
               {autoPost ? (

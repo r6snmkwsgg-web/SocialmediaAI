@@ -12,7 +12,8 @@ import { ShortPlayer } from "@/components/shorts/player";
 import { PostedForm } from "@/components/shorts/posted";
 import { TikTokLater } from "@/components/shorts/tiktok";
 import { uploadsTo } from "@/lib/shorts/channels";
-import { FORMATS } from "@/lib/shorts/formats";
+import { formatName } from "@/lib/shorts/formats";
+import { canTryAgain } from "@/lib/live/clip-rules";
 import { historyOf } from "@/lib/shorts/history";
 import { readAfter, times } from "@/lib/shorts/insights";
 import { againstUsual } from "@/lib/shorts/learn";
@@ -119,13 +120,14 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
           <div className="flex flex-col gap-3">
             <div className="flex flex-wrap items-center gap-2">
               {mine && <Pill>{mine.name}</Pill>}
-              <Pill>{FORMATS[d.spec.format].name}</Pill>
+              <Pill>{formatName(d.spec)}</Pill>
               <Pill tone={s.tone}>{s.label}</Pill>
               {d.tiktokPublishId && <Pill>{d.tiktok ? "On TikTok" : "In TikTok drafts"}</Pill>}
               {d.madeForKids && <Pill>Made for kids</Pill>}
             </div>
             {d.youtubeKids && <p className="border-l-4 border-signal pl-3 text-[14px]">YouTube marked this Made for Kids: comments are off.</p>}
             <h1 className="text-[26px] font-semibold leading-snug sm:text-[30px]">{d.title}</h1>
+            {d.spec.format === "clip" && <p className="-mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Round {d.spec.params.log.round} of your LIVE, <LocalTime iso={new Date(d.spec.params.log.at).toISOString()} /></p>}
             {d.description && <p className="line-clamp-6 whitespace-pre-line text-[14px] leading-relaxed text-muted">{d.description}</p>}
             {editable && <EditCopyToggle id={d.id} title={d.title} description={d.description} edit={editCopy} />}
           </div>
@@ -151,7 +153,7 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
                   <form action={sendToTikTok}><input type="hidden" name="id" value={d.id} /><button type="submit" className={button.quiet}>{d.tiktokFile ? "Send to TikTok drafts" : "Get it ready for TikTok"}</button></form>
                 )
               )}
-              {d.status === "failed" && <form action={tryAgain}><input type="hidden" name="id" value={d.id} /><button type="submit" className={button.primary}>Try again</button></form>}
+              {d.status === "failed" && canTryAgain(d.spec, d.hasFile) && <form action={tryAgain}><input type="hidden" name="id" value={d.id} /><button type="submit" className={button.primary}>Try again</button></form>}
             </div>
           )}
 

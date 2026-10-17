@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import { ABILITY_IDS } from "@/lib/battle/abilities";
 import { rng } from "@/lib/battle/sim";
 import { MELODIES } from "@/lib/battle/sound";
+import { timeline } from "@/lib/battle/timeline";
+import { PLANS } from "@/lib/billing/plans";
+import { replay } from "@/lib/live/clip";
+import { demoClip } from "@/lib/live/clip-demo";
+import { clipCandidate } from "@/lib/shorts/formats/clip";
 import { doubleCheck, freshPairs, freshQuestions, freshStories, type Ask } from "@/lib/server/shorts/fresh";
 import { plainDescription } from "@/lib/server/shorts/titles";
 import { isSum, kidCoded, normal, pairProblem, questionProblem, sameThing, storyProblem, textId, unsafe, words, wordsId } from "@/lib/shorts/checks";
@@ -396,5 +401,53 @@ describe("what gets made", () => {
     expect(dryNote(["quizzes", "would-you-rathers"], 0, 3)).toBe("There are no new quizzes and would-you-rathers left to make for you right now. Hookline never makes the same thing twice, for your channel or anyone else's.");
     expect(dryNote(["quizzes"], 2, 3)).toMatch(/^Only 2 of 3 could be made: there are no new quizzes left/);
     for (const s of [dryNote(["a", "b", "c"], 1, 3), dryNote([], 0, 1)]) expect(s).not.toMatch(/—/);
+  });
+});
+
+describe("a round from a LIVE", () => {
+  const rounds = (["battle", "rivals"] as const).map((game) => {
+    const log = demoClip(game);
+    return { log, c: clipCandidate({ log, played_at: new Date(log.at) }, replay(log), { tz: "UTC", per: PLANS.pro.shorts, rand: rng(2) })! };
+  });
+
+  it("can end on a comment, loop back or end quietly, 18.2 to 45.2 seconds each, with a soundtrack exactly as long", () => {
+    for (const { log, c } of rounds) {
+      const lengths = ENDINGS.map((ending) => {
+        const s = spec(finish(c, { ending }));
+        const secs = frames(s) / FPS;
+        expect(secs).toBeGreaterThanOrEqual(18.2);
+        expect(secs).toBeLessThanOrEqual(45.2);
+        expect(frames(s) - endFrom(s)).toBe(ENDS.clip[ending]);
+        expect(soundFor(s).length).toBe(Math.ceil((frames(s) / FPS) * 22050));
+        // worked out from the record alone, it's where the round's own video gets to the winner
+        if (s.format !== "clip") throw new Error();
+        expect(endFrom(s)).toBe(timeline(replay(log).battle, { from: s.params.from }).outroFrom);
+        return frames(s);
+      });
+      expect(lengths[1]).toBeLessThan(lengths[0]);
+    }
+    expect(ENDS.clip).toEqual(ENDS.battle);
+  });
+
+  it("claims nothing from anyone and uses nothing up, so it can go to any channel of the creator's", () => {
+    for (const { c } of rounds) {
+      expect(ledgerClaims(spec(c))).toEqual([]);
+      expect(ledgerIds(spec(c))).toEqual([]);
+      expect(contentIds(spec(c))).toEqual([]);
+    }
+  });
+
+  it("tells the title writer how it ends, and plays a tune of its own", () => {
+    const { c } = rounds[0];
+    expect(finish(c, { ending: "loop" }).facts.at(-1)).toMatch(/loops/);
+    expect(finish(c, { ending: "comment" }).facts.at(-1)).toMatch(/comment who they'd back/);
+    expect(finish(c, { ending: "comment", allowComments: false }).facts.at(-1)).toMatch(/doesn't ask viewers to comment/);
+    if (c.format !== "clip") throw new Error();
+    expect(MELODY_IDS).toContain(c.params.melody);
+    const ode = soundFor({ format: "clip", params: { ...c.params, melody: "ode" } });
+    const king = soundFor({ format: "clip", params: { ...c.params, melody: "king" } });
+    expect(ode.length).toBe(king.length);
+    expect(ode.some((v, i) => Math.abs(v - king[i]) > 1e-3)).toBe(true);
+    expect(ode.some((v) => Math.abs(v) > 0.1)).toBe(true);
   });
 });

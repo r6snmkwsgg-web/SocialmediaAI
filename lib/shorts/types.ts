@@ -1,5 +1,6 @@
 import type { AbilityId } from "../battle/abilities";
 import type { Melody } from "../battle/sound";
+import type { ClipLog } from "../live/clip";
 import type { Look } from "./look";
 
 /**
@@ -8,8 +9,17 @@ import type { Look } from "./look";
  * someone approves in the queue is exactly what gets rendered and posted.
  */
 
+/** The formats Hookline makes: the ones the morning run draws from. */
 export const FORMAT_IDS = ["battle", "quiz", "wyr", "texts", "ranking", "race"] as const;
 export type FormatId = (typeof FORMAT_IDS)[number];
+
+/**
+ * What a stored Short can be: one of the formats Hookline makes, or a
+ * round from the creator's own LIVE (a clip). A clip is never drawn from
+ * the formats, so nothing that picks a format can ever meet one.
+ */
+export const SHORT_FORMATS = [...FORMAT_IDS, "clip"] as const;
+export type ShortFormat = (typeof SHORT_FORMATS)[number];
 
 /** How a Short ends: asking for a comment, running straight back into its start, or neither. */
 export const ENDINGS = ["comment", "loop", "quiet"] as const;
@@ -63,15 +73,31 @@ export type RaceParams = {
   step?: number;
 } & Finish;
 
+/**
+ * A round from the creator's own LIVE, redrawn from the game's record of
+ * it. The whole round travels in the Short, because the player, the
+ * soundtrack and the renderer each work from the Short alone.
+ */
+export type ClipParams = {
+  log: ClipLog;
+  /** the sim frame the video starts on: a clip always ends on the result */
+  from: number;
+  /** show the names of the people who sent gifts; nobody's named without it */
+  names?: boolean;
+  /** the tune its soundtrack plays */
+  melody?: Melody;
+} & Finish;
+
 export type Spec =
   | { format: "battle"; params: BattleParams }
   | { format: "quiz"; params: QuizParams }
   | { format: "wyr"; params: WyrParams }
   | { format: "texts"; params: TextsParams }
   | { format: "ranking"; params: RankingParams }
-  | { format: "race"; params: RaceParams };
+  | { format: "race"; params: RaceParams }
+  | { format: "clip"; params: ClipParams };
 
-export type ParamsOf<F extends FormatId> = Extract<Spec, { format: F }>["params"];
+export type ParamsOf<F extends ShortFormat> = Extract<Spec, { format: F }>["params"];
 
 /** One run of a format: a Short it could make, and what's good about it. */
 export type Candidate = Spec & {

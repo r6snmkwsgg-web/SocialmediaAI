@@ -15,8 +15,10 @@ import { NO_USERNAMES, whyNotCounted } from "@/lib/live/proof";
 import { RIVAL_POWERS } from "@/lib/live/rivals";
 import { lasted } from "@/lib/live/session";
 import { allowedBy, LIVE_ABILITIES } from "@/lib/live/settings";
-import { account } from "@/lib/server/account";
+import { unitsOf } from "@/lib/shorts/channels";
+import { account, type Goal } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
+import { clipsAllowed, clipsOf, type LiveClips } from "@/lib/server/clips";
 import { configured } from "@/lib/server/env";
 import { lastLiveOf, liveSettingsOf, overlayKeyOf, sessionsOf, tiktokUsernamesOf } from "@/lib/server/live";
 import { checkLive, newKey, recheckLive, saveLive, saveNames } from "./actions";
@@ -39,6 +41,37 @@ function welcomeNote(last: { verified: boolean } | null, checking: boolean, acco
     : "Your last LIVE wasn't verified as yours, so nobody gets a welcome next time.";
 }
 
+const link = "text-fg underline decoration-signal decoration-2 underline-offset-4";
+
+/**
+ * Why none of their rounds can become a Short right now, the first reason that applies, or null when they can: `shorts` is
+ * whether any of their channels gets Shorts. The game picked is the form's to say.
+ */
+function clipsNote(checking: boolean, accounts: string[], noUsername: boolean, goal: Goal | null, shorts: boolean): React.ReactNode {
+  if (!checking) return "Hookline can't check TikTok usernames yet, so no LIVE counts as yours and no round becomes a Short for now.";
+  if (!accounts.length && noUsername) {
+    return <><a href={`/api/connect/tiktok?next=${encodeURIComponent("/app/live")}`} className={link}>Connect TikTok again</a> and allow your profile, so Hookline can tell a LIVE is yours.</>;
+  }
+  if (!accounts.length) return <>Connect the TikTok you go LIVE on in <Link href="/app/settings" className={link}>Settings</Link>, so Hookline can tell a LIVE is yours.</>;
+  if (goal === "live") {
+    return <>Your Shorts are off while Hookline is set to LIVE games only. Set what you use Hookline for to Both in <Link href="/app/settings" className={link}>Settings</Link> to get your best rounds as Shorts.</>;
+  }
+  if (!shorts) return <>Shorts are off for every channel, so no round becomes a Short. Switch one on in <Link href="/app/settings" className={link}>Settings</Link>.</>;
+  return null;
+}
+
+/** What came of a LIVE's rounds: the Short made from one, how many wait for a morning's Shorts (only while rounds can become Shorts), or none. */
+function ShortsCell({ c, on }: { c: LiveClips | undefined; on: boolean }) {
+  const waiting = on ? (c?.waiting ?? 0) : 0;
+  if (!c?.shortId && !waiting) return <span className="text-muted">None</span>;
+  return (
+    <span className="flex flex-col gap-0.5">
+      {c?.shortId && <Link href={`/app/shorts/${c.shortId}`} className="underline decoration-edge-strong decoration-2 underline-offset-4 transition hover:decoration-signal">Made a Short</Link>}
+      {waiting > 0 && <span>{n(waiting)} {waiting === 1 ? "round" : "rounds"} waiting</span>}
+    </span>
+  );
+}
+
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function Live({ searchParams }: { searchParams: Search }) {
@@ -53,6 +86,12 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
   const game = GAMES.find((g) => g.id === running.game)!;
   const fit = liveFit(me.profile.liveCheck);
   const at = (users: string[]) => users.map((u) => `@${u}`).join(", ");
+  // what came of each LIVE's rounds: the column shows while rounds can become Shorts, and while a LIVE here has one. With every
+  // channel's Shorts off, no morning makes any, so none can
+  const clipped = await clipsOf(me.id, sessions.map((s) => s.id));
+  const shorts = unitsOf(channels, me.plan.channels).length > 0;
+  const clipsOn = clipsAllowed(settings, me.profile.goal, checking) && shorts;
+  const shortsColumn = clipsOn || [...clipped.values()].some((c) => c.shortId);
 
   return (
     <>
@@ -138,6 +177,7 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
           abilities={LIVE_ABILITIES.map((id) => ({ id, name: ABILITIES[id].name, color: ABILITIES[id].color, line: ABILITIES[id].line }))}
           allowed={{ games: me.plan.games, customMenus: me.plan.customMenus, planName: me.plan.name }}
           upsell={sellLive(me.profile.liveCheck)}
+          clips={{ shorts: me.plan.shorts, note: clipsNote(checking, accounts, noUsername, me.profile.goal, shorts) }}
           action={saveLive}
         />
       </Card>
@@ -159,6 +199,7 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
             </>
           )}
           {sessions.length > 0 && ` ${OWN_PAGE}`}
+          {clipsOn && " Your best rounds from LIVEs that count as yours wait three days for a morning's Shorts."}
         </p>
         {sessions.length === 0 ? (
           <div className="p-5">
@@ -179,6 +220,7 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
                   <th scope="col" className="px-3 py-3 text-right font-normal">Rounds</th>
                   <th scope="col" className="hidden px-3 py-3 text-right font-normal sm:table-cell">Most playing</th>
                   <th scope="col" className="px-5 py-3 text-right font-normal md:px-3">Gift coins seen</th>
+                  {shortsColumn && <th scope="col" className="hidden px-3 py-3 font-normal md:table-cell">Shorts</th>}
                   <th scope="col" className="hidden px-3 py-3 font-normal lg:table-cell">Whose LIVE</th>
                   <th scope="col" className="hidden px-5 py-3 font-normal md:table-cell">Top gifter</th>
                 </tr>
@@ -199,6 +241,11 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
                       {n(s.coins)}
                       {!s.verified && <span className="block font-mono text-[10px] uppercase tracking-[0.12em] text-signal">Not counted</span>}
                     </td>
+                    {shortsColumn && (
+                      <td className="hidden px-3 py-3 whitespace-nowrap md:table-cell">
+                        <ShortsCell c={clipped.get(s.id)} on={clipsOn} />
+                      </td>
+                    )}
                     <td className="hidden max-w-[16rem] px-3 py-3 lg:table-cell" title={whyNotCounted(s, accounts, checking) ?? undefined}>
                       <span className="flex flex-wrap items-center gap-2">
                         {s.heard.length ? <span className="truncate">{at(s.heard)}{s.unknown && <span className="text-muted"> + couldn&rsquo;t tell</span>}</span> : <span className="text-muted">Couldn&rsquo;t tell</span>}

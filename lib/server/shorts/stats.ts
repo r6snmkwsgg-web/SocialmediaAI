@@ -112,12 +112,12 @@ export async function learn(userId: string, videoId: string, format: string, key
       // with more than one channel, which one's usual it beat
       const names = channelId ? await shownChannelNames(tx, userId) : new Map<string, string>();
       const where = names.size > 1 ? names.get(channelId!) : undefined;
+      // a round from a LIVE only comes from the creator's own LIVEs, so Hookline can't make more like it
+      const more = format === "clip" ? "" : where ? " Hookline will make more like it there." : " Hookline will make more like it.";
       await notify(userId, {
         kind: "results",
         title: `${l >= 10 ? Math.round(l) : l.toFixed(1)}× your usual views`,
-        body: where
-          ? `${v?.title ?? "A Short"} beat ${where}'s usual Short in its first day. Hookline will make more like it there.`
-          : `${v?.title ?? "A Short"} beat your typical Short in its first day. Hookline will make more like it.`,
+        body: `${v?.title ?? "A Short"} beat ${where ? `${where}'s usual` : "your typical"} Short in its first day.${more}`,
         href: `/app/shorts/${videoId}`,
         key: `results:${videoId}`,
       }, tx);

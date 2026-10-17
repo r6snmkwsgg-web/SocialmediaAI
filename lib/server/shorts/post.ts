@@ -1,7 +1,7 @@
 import "server-only";
 import { tiktokCaption, tiktokChoices, tiktokReason } from "../../shorts/tiktok";
 import { seconds } from "../../shorts/timing";
-import type { FormatId, Spec } from "../../shorts/types";
+import type { FormatId, ShortFormat, Spec } from "../../shorts/types";
 import { verdictOf, YT_PRIVACY, type AskedAs, type VideoState, type YouTubePrivacy } from "../../shorts/youtube";
 import { admin } from "../db";
 import { notify } from "../notify";
@@ -34,7 +34,7 @@ import { cleanCopy } from "./render";
  */
 
 /** YouTube's category for each format */
-const CATEGORY: Record<FormatId, string> = { battle: "24", quiz: "27", wyr: "24", texts: "24", ranking: "27", race: "27" };
+const CATEGORY: Record<ShortFormat, string> = { battle: "24", quiz: "27", wyr: "24", texts: "24", ranking: "27", race: "27", clip: "24" };
 
 const privacyOf = (p: string): YouTubePrivacy => ((YT_PRIVACY as readonly string[]).includes(p) ? (p as YouTubePrivacy) : "public");
 

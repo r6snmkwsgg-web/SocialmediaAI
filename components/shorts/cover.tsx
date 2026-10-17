@@ -1,11 +1,11 @@
-import type { FormatId } from "@/lib/shorts/types";
+import type { ShortFormat } from "@/lib/shorts/types";
 
 /**
  * A Short's card picture, drawn in the page from its format's look (the
  * same ink and colours as the video), so a grid of them loads instantly.
  * The video itself plays on the Short's own page.
  */
-export function Cover({ format, label, className = "" }: { format: FormatId; label: string; className?: string }) {
+export function Cover({ format, label, className = "" }: { format: ShortFormat; label: string; className?: string }) {
   return (
     <div className={`relative overflow-hidden bg-ink ${className}`} aria-hidden="true">
       <Art format={format} />
@@ -14,7 +14,7 @@ export function Cover({ format, label, className = "" }: { format: FormatId; lab
   );
 }
 
-function Art({ format }: { format: FormatId }) {
+function Art({ format }: { format: ShortFormat }) {
   switch (format) {
     case "battle":
       return (
@@ -63,6 +63,16 @@ function Art({ format }: { format: FormatId }) {
           {[["#ffd60a", 96], ["#ff3b30", 78], ["#34c759", 70], ["#bf5af2", 54]].map(([c, w]) => (
             <span key={c} className="h-5" style={{ width: `${w}%`, background: String(c) }} />
           ))}
+        </div>
+      );
+    case "clip":
+      // the two sides, a viewer's ball dropping in, and where it's from
+      return (
+        <div className="absolute inset-0 flex items-center justify-center">
+          <span className="absolute left-3 top-3 bg-[#ff6fb5] px-1.5 py-0.5 font-mono text-[10px] font-semibold uppercase tracking-[0.16em] text-ink">LIVE</span>
+          <span className="h-14 w-14 rounded-full border-4 border-ink bg-[#ff3b30]" />
+          <span className="-ml-3 h-14 w-14 rounded-full border-4 border-ink bg-[#0a84ff]" />
+          <span className="absolute right-[30%] top-[22%] h-7 w-7 rounded-full border-[3px] border-ink bg-[#0a84ff]" />
         </div>
       );
   }

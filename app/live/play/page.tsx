@@ -37,7 +37,8 @@ export default async function LivePlay({ searchParams }: { searchParams: Search 
   const demo = one(q.demo) === "1";
   const key = one(q.key);
 
-  let settings: LiveSettings = { ...DEFAULT_SETTINGS, game };
+  // only a game playing a streamer's own settings keeps rounds for Shorts: never the free game, or the plain one while Hookline can't be reached
+  let settings: LiveSettings = { ...DEFAULT_SETTINGS, game, clips: false };
   let tag = true;
   let notice: string | undefined;
   let unsure = false;

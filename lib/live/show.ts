@@ -6,6 +6,8 @@ import { tierIn, type Tier } from "./menu";
 import { over } from "./session";
 import { DEFAULT_SETTINGS, parseSettings, type LiveSettings } from "./settings";
 import { TOP_SHOWN } from "./supporters";
+import { packClip, withoutNames, type ClipLog, type ClipPower, type RoundAround } from "./clip";
+import { giftLevel } from "./menu";
 
 /**
  * A live show: round after round of one game, steered by the chat. The
@@ -44,6 +46,10 @@ export const LETTERS = ["A", "B", "C"] as const;
 export const WELCOME_FOR = 3.5;
 /** a welcome waits this long after the newest big gift arrives: its moment can start up to 3 s late and last up to 4 s (frame.ts) */
 export const WELCOME_AFTER_BLAST = 8;
+/** kept rounds wait here until the page sends them; past this many, the oldest go */
+const OUTBOX = 3;
+/** the powers a big gift's moment in a clip can be */
+const isPower = (effect: string): effect is ClipPower => effect === "rage" || effect === "shield" || effect === "meteor";
 
 export type Member = { viewer: Viewer; side: Team | null; coins: number };
 /** one line about what just happened, shown briefly */
@@ -163,8 +169,14 @@ export class Show {
   stats: SessionStats;
   /** the last LIVE's top gifters as each is welcomed back, the last few */
   readonly welcomes: Welcome[] = [];
+  /** rounds worth keeping for a clip, waiting for the page to send them (`takeClips`) */
+  private readonly outbox: ClipLog[] = [];
   /** the real viewers taking part this round */
   private readonly roundPlayers = new Set<string>();
+  /** this round: whether something a real viewer did reached the arena, whether something a pretend one did, and its big gifts going off */
+  private roundReal = false;
+  private roundPretend = false;
+  private readonly roundMoments: RoundAround["moments"] = [];
   /** what pretend viewers gave, so the test panel and demo can show a top 3 while no LIVE is going */
   private readonly tried: SessionStats["gifters"] = new Map();
   /** the last LIVE's top gifters, by TikTok id, with where each came */
@@ -250,6 +262,9 @@ export class Show {
     this.acc = 0;
     this.roundCoins.clear();
     this.roundPlayers.clear();
+    this.roundReal = false;
+    this.roundPretend = false;
+    this.roundMoments.length = 0;
     this.crown = null;
     this.shared.clear();
     this.vote = null;
@@ -331,10 +346,52 @@ export class Show {
     const top = this.crown ? this.members.get(this.crown) : undefined;
     this.mvp = top && this.crown ? { viewer: top.viewer, coins: this.roundCoins.get(this.crown) ?? 0 } : null;
     // a round counts once a real viewer has shown up, and not while they've all been gone a while
-    if (this.liveNow()) this.stats.rounds++;
+    const counted = this.liveNow();
+    if (counted) this.stats.rounds++;
+    this.keepClip(r, counted);
     this.go("ko");
     this.cue("ko");
     return true;
+  }
+
+  /**
+   * A round worth keeping for a clip goes in the outbox: only with clips on,
+   * in a game that can be played again, for a round the session counted that
+   * real viewers played and no pretend one touched. It's numbered as the
+   * session counts its rounds, never as the show does: a game left open in
+   * OBS runs its rounds on across LIVEs.
+   */
+  private keepClip(r: Result, counted: boolean) {
+    const g = this.game;
+    if (!this.settings.clips || !counted || !this.roundReal || this.roundPretend || (g.id !== "battle" && g.id !== "rivals")) return;
+    const tape = g.tape?.();
+    if (!tape) return;
+    // the round's gifters, in the order they first gave, under the names they have now
+    const gifters = [...this.roundCoins.keys()].map((id) => ({ id, name: this.members.get(id)?.viewer.name ?? "" }));
+    const t = this.teams;
+    const log = packClip(tape, {
+      game: g.id,
+      session: this.stats.id,
+      round: this.stats.rounds,
+      at: Date.now(),
+      teams: [t[0], t[1]],
+      gifters,
+      moments: this.roundMoments,
+      result: { team: r.team ?? null, byTime: r.byTime },
+    });
+    if (!log) return;
+    this.outbox.push(log);
+    if (this.outbox.length > OUTBOX) this.outbox.splice(0, this.outbox.length - OUTBOX);
+  }
+
+  /**
+   * The rounds kept for a clip since the page last asked, each handed over
+   * once. Taken while viewers' names are hidden, as the page takes them
+   * the moment they're decided, each names nobody: no people, and every
+   * ball and big gift is just a viewer's.
+   */
+  takeClips(o: { hideNames: boolean }): ClipLog[] {
+    return this.outbox.splice(0).map((log) => (o.hideNames ? withoutNames(log) : log));
   }
 
   /** The vote's over: the most votes wins, and a tie is a coin toss. */
@@ -453,6 +510,9 @@ export class Show {
 
   private apply(p: Pending) {
     const g = this.game;
+    // whose doing reaches the arena: a round any pretend viewer touched is never kept for a clip
+    if (p.viewer.pretend) this.roundPretend = true;
+    else this.roundReal = true;
     if (p.kind === "heal") {
       g.heal(p.viewer, p.side, p.hp);
       return;
@@ -485,6 +545,8 @@ export class Show {
     if (said.blast) {
       this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, count, coins: each * count, many: said.many, extra: said.extra });
       if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
+      // and its moment for a clip: which power, which side, from whom, how many of it and how big, never its coins
+      if (g.step !== undefined && isPower(tier.effect)) this.roundMoments.push({ step: g.step, effect: tier.effect, team: side ?? 0, viewer: viewer.id, many: said.many ?? 1, level: giftLevel(each * count) });
       this.welcomeLater();
     } else if (took && top > 0) this.toast(side, viewer, `took the crown · ${gift}`);
     else if (said.toast) this.toast(side, viewer, said.toast);

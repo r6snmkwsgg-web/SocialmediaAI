@@ -1,6 +1,7 @@
 import { FPS, simulate } from "../battle/sim";
 import { OUTRO, timeline } from "../battle/timeline";
-import type { Ending, FormatId, Message, Spec } from "./types";
+import { clipOutro } from "../live/clip";
+import type { Ending, Message, ShortFormat, Spec } from "./types";
 
 /**
  * How long each format's video runs, and when each part of it happens.
@@ -34,15 +35,17 @@ export const TEXTS = { intro: s(0.3), pause: s(0.35), hold: s(1.6), outro: s(2.6
  * How each format ends, in frames. "comment" is the closing screen that
  * asks for a comment; "loop" holds the end a moment, then runs back into
  * the opening, so a replay carries straight on; "quiet" closes without
- * asking for anything, for Shorts where comments are off.
+ * asking for anything, for Shorts where comments are off. A round from a
+ * LIVE ends the way a battle does.
  */
-export const ENDS: Record<FormatId, Record<Ending, number>> = {
+export const ENDS: Record<ShortFormat, Record<Ending, number>> = {
   battle: { comment: OUTRO, loop: s(2.2), quiet: OUTRO },
   quiz: { comment: QUIZ.outro, loop: s(1.6), quiet: s(2.2) },
   wyr: { comment: WYR.outro, loop: s(1.4), quiet: s(2.2) },
   texts: { comment: TEXTS.outro, loop: s(1.6), quiet: s(2.2) },
   ranking: { comment: RANKING.outro, loop: s(2.0), quiet: s(2.8) },
   race: { comment: RACE.outro, loop: s(2.2), quiet: s(3.0) },
+  clip: { comment: OUTRO, loop: s(2.2), quiet: OUTRO },
 };
 
 /** The last frames of a loop ending, that run back into the opening. */
@@ -54,7 +57,7 @@ export function endingOf(params: { ending?: Ending; allowComments?: boolean }): 
   return params.allowComments === false && e === "comment" ? "quiet" : e;
 }
 
-export const endFrames = (format: FormatId, ending: Ending) => ENDS[format][ending];
+export const endFrames = (format: ShortFormat, ending: Ending) => ENDS[format][ending];
 
 /** Frames a year takes in a race: half a second, slower for a short stretch so it still runs about 20 seconds. */
 export function raceStep(years: number): number {
@@ -81,7 +84,7 @@ export function storyTimes(messages: Message[]): { typingFrom: number | null; at
   });
 }
 
-/** The frame each format's ending starts on. */
+/** The frame each format's ending starts on. A LIVE round's comes from its record alone, so a clip's length never needs it played back. */
 export function endFrom(spec: Spec): number {
   switch (spec.format) {
     case "battle":
@@ -96,6 +99,8 @@ export function endFrom(spec: Spec): number {
       return RANKING.intro + spec.params.items.length * RANKING.each;
     case "race":
       return RACE.intro + (spec.params.years.length - 1) * (spec.params.step ?? RACE.year);
+    case "clip":
+      return clipOutro(spec.params.log.end, spec.params.from, spec.params.log.result.byTime);
   }
 }
 

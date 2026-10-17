@@ -9,7 +9,8 @@ import { PostedForm } from "@/components/shorts/posted";
 import { SwipeQueue, type CardChannel } from "@/components/shorts/swipe";
 import { TikTokLater } from "@/components/shorts/tiktok";
 import { isActive, postsAll, uploadsTo } from "@/lib/shorts/channels";
-import { FORMATS } from "@/lib/shorts/formats";
+import { formatName } from "@/lib/shorts/formats";
+import { canTryAgain } from "@/lib/live/clip-rules";
 import { validTimezone } from "@/lib/shorts/times";
 import { seconds } from "@/lib/shorts/timing";
 import { markable, STUDIO_UPLOAD } from "@/lib/shorts/youtube";
@@ -152,7 +153,7 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
       {q.waiting.length ? (
         <SwipeQueue
           items={q.waiting.map((w) => ({
-            id: w.id, spec: w.spec, format: FORMATS[w.spec.format].name, title: w.title, description: w.description, why: w.why, suggestedFor: w.suggestedFor?.toISOString() ?? null,
+            id: w.id, spec: w.spec, format: formatName(w.spec), title: w.title, description: w.description, why: w.why, suggestedFor: w.suggestedFor?.toISOString() ?? null,
             channel: card(w.channelId),
           }))}
           tag={me.plan.tag}
@@ -232,7 +233,7 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
                         <Link href={`/app/shorts/${c.id}`} className="block truncate text-[15px] font-semibold hover:underline">{c.title}</Link>
                         <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
                           {nameTag(c.channelId)}
-                          {FORMATS[c.spec.format].name}
+                          {formatName(c.spec)}
                           {c.scheduledFor && <> · {self ? "best time" : "posts"} <LocalTime iso={c.scheduledFor.toISOString()} /></>}
                           {c.madeForKids && <> · made for kids</>}
                         </p>
@@ -281,7 +282,7 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
                           {c.tiktok ? "On TikTok · it can take a few minutes to show on your profile" : "In your TikTok drafts"}
                         </span>
                       )}
-                      {c.status === "failed" && <form action={tryAgain}><input type="hidden" name="id" value={c.id} /><button type="submit" className={button.quiet}>Try again</button></form>}
+                      {c.status === "failed" && canTryAgain(c.spec, c.hasFile) && <form action={tryAgain}><input type="hidden" name="id" value={c.id} /><button type="submit" className={button.quiet}>Try again</button></form>}
                     </div>
                     {tiktokDirect && !c.tiktokId && c.status !== "failed" && (!c.tiktok || c.tiktok.error) && (
                       <TikTokLater
@@ -316,7 +317,7 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
                     <Link href={`/app/shorts/${p.id}`} className="block truncate text-[15px] font-semibold hover:underline">{p.title}</Link>
                     <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
                       {nameTag(p.channelId)}
-                      {FORMATS[p.format].name}
+                      {formatName(p)}
                       {p.postedAt && <> · <LocalTime iso={p.postedAt.toISOString()} style="day" /></>}
                       {p.privacy && p.privacy !== "public" && <> · {p.privacy}</>}
                       {p.youtubeId && !p.verified && <> · link not checked</>}

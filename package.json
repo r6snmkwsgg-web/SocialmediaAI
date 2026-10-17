@@ -17,6 +17,7 @@
     "worker": "tsx worker/main.ts",
     "data": "tsx scripts/fetch-data.mts",
     "stills": "tsx scripts/stills.ts",
+    "replay-check": "tsx scripts/replay-check.ts",
     "og": "tsx scripts/og.ts",
     "icons": "tsx scripts/icons.ts",
     "screens": "tsx scripts/screens.ts"

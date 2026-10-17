@@ -2,7 +2,7 @@ import "server-only";
 import type { HeldBack } from "../../shorts/history";
 import { insights, type Insights } from "../../shorts/insights";
 import { againstUsual, median, type Weight } from "../../shorts/learn";
-import type { FormatId, Spec } from "../../shorts/types";
+import type { ShortFormat, Spec } from "../../shorts/types";
 import { asUser, type Tx } from "../db";
 import { weightsFor } from "./weights";
 
@@ -24,7 +24,7 @@ export type LibraryItem = {
   /** the YouTube channel it's for, or null for one made before the account had a channel */
   channelId: string | null;
   title: string;
-  format: FormatId;
+  format: ShortFormat;
   status: ShortStatus;
   /** when it posted, or posts, or was approved */
   at: Date;
@@ -56,7 +56,7 @@ async function typicalsOf(tx: Tx, userId: string, except?: string): Promise<Map<
 }
 
 type Row = {
-  id: string; channel_id: string | null; title: string; format: FormatId; status: ShortStatus; at: Date; youtube_id: string | null; tiktok_publish_id: string | null;
+  id: string; channel_id: string | null; title: string; format: ShortFormat; status: ShortStatus; at: Date; youtube_id: string | null; tiktok_publish_id: string | null;
   views: string | null; day: string | null; day_hours: number | null;
 };
 
@@ -82,7 +82,7 @@ const PAGE = 24;
 
 /** `channel` shows only the Shorts made for that YouTube channel. */
 export async function libraryOf(
-  userId: string, opts: { filter?: Filter; format?: FormatId | null; q?: string; page?: number; channel?: string | null } = {},
+  userId: string, opts: { filter?: Filter; format?: ShortFormat | null; q?: string; page?: number; channel?: string | null } = {},
 ): Promise<{ items: LibraryItem[]; total: number; page: number; pages: number }> {
   const statuses = FILTERS[opts.filter ?? "all"];
   const page = Math.max(1, opts.page ?? 1);
@@ -111,11 +111,11 @@ export async function libraryOf(
   });
 }
 
-export type CalendarItem = { id: string; channelId: string | null; title: string; format: FormatId; status: ShortStatus; at: Date; youtubeId: string | null; tiktok: boolean };
+export type CalendarItem = { id: string; channelId: string | null; title: string; format: ShortFormat; status: ShortStatus; at: Date; youtubeId: string | null; tiktok: boolean };
 
 /** Shorts posting or posted between two moments: the calendar's month, for every channel or only `channel`. */
 export async function calendarOf(userId: string, from: Date, to: Date, channel?: string | null): Promise<CalendarItem[]> {
-  const rows = await asUser(userId, (tx) => tx<{ id: string; channel_id: string | null; title: string; format: FormatId; status: ShortStatus; at: Date; youtube_id: string | null; tiktok: boolean }[]>`
+  const rows = await asUser(userId, (tx) => tx<{ id: string; channel_id: string | null; title: string; format: ShortFormat; status: ShortStatus; at: Date; youtube_id: string | null; tiktok: boolean }[]>`
     select id, channel_id, title, format, status, coalesce(posted_at, scheduled_for) as at, youtube_id,
       (tiktok_publish_id is not null or (tiktok_post is not null and tiktok_error is null)) as tiktok
     from public.videos
@@ -170,7 +170,7 @@ export type ShortDetail = {
 export async function shortOf(userId: string, id: string): Promise<ShortDetail | null> {
   return asUser(userId, async (tx) => {
     const [v] = await tx<{
-      id: string; channel_id: string | null; format: FormatId; params: Spec["params"]; title: string; description: string; why: string[]; status: ShortDetail["status"]; origin: ShortDetail["origin"];
+      id: string; channel_id: string | null; format: ShortFormat; params: Spec["params"]; title: string; description: string; why: string[]; status: ShortDetail["status"]; origin: ShortDetail["origin"];
       created_at: Date; decided_at: Date | null; scheduled_for: Date | null; posted_at: Date | null; uploaded_at: Date | null; youtube_publish_at: Date | null; youtube_id: string | null;
       tiktok_publish_id: string | null; tiktok_posted_at: Date | null; tiktok_post: unknown; tiktok_at: Date | null; tiktok_error: string | null; error: string | null; file_path: string | null;
       tiktok_file: boolean; made_for_kids: boolean | null; youtube_kids: boolean | null; youtube_privacy: string | null; youtube_verified: boolean;

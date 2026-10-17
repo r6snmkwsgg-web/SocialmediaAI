@@ -5,9 +5,9 @@ import { button, Card, CardHead, Empty, PageHead, Pill } from "@/components/app/
 import { Cover } from "@/components/shorts/cover";
 import { Working } from "@/components/shorts/working";
 import { isActive } from "@/lib/shorts/channels";
-import { FORMATS } from "@/lib/shorts/formats";
+import { formatName } from "@/lib/shorts/formats";
 import { times } from "@/lib/shorts/insights";
-import { FORMAT_IDS, type FormatId } from "@/lib/shorts/types";
+import { SHORT_FORMATS, type ShortFormat } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
 import { shortsChannelsOf } from "@/lib/server/channels";
 import { FILTERS, insightsFor, libraryOf, type Filter, type LibraryItem } from "@/lib/server/shorts/library";
@@ -39,7 +39,7 @@ export default async function Library({ searchParams }: { searchParams: Search }
   const q = await searchParams;
   const filter = (one(q.show) ?? "all") as Filter;
   const show: Filter = filter in FILTERS ? filter : "all";
-  const format = FORMAT_IDS.includes(one(q.format) as FormatId) ? (one(q.format) as FormatId) : null;
+  const format = SHORT_FORMATS.includes(one(q.format) as ShortFormat) ? (one(q.format) as ShortFormat) : null;
   const text = (one(q.q) ?? "").slice(0, 80);
   const page = Math.max(1, Number(one(q.page)) || 1);
   // the YouTube channels Shorts are for, and the one picked to see (anything else means all of them)
@@ -121,8 +121,8 @@ export default async function Library({ searchParams }: { searchParams: Search }
           <label className="sr-only" htmlFor="lib-format">Format</label>
           <select id="lib-format" name="format" defaultValue={format ?? ""} className="h-10 border-2 border-edge-strong bg-surface px-2 text-[14px] text-fg focus:border-fg focus:outline-none">
             <option value="">Every format</option>
-            {FORMAT_IDS.map((f) => (
-              <option key={f} value={f}>{FORMATS[f].name}</option>
+            {SHORT_FORMATS.map((f) => (
+              <option key={f} value={f}>{formatName({ format: f })}</option>
             ))}
           </select>
           <label className="sr-only" htmlFor="lib-q">Search titles</label>
@@ -144,7 +144,7 @@ export default async function Library({ searchParams }: { searchParams: Search }
             return (
               <li key={it.id}>
                 <Link href={`/app/shorts/${it.id}`} className="group flex h-full flex-col border-2 border-edge bg-card transition hover:border-fg">
-                  <Cover format={it.format} label={FORMATS[it.format].name} className="aspect-[4/3] w-full" />
+                  <Cover format={it.format} label={formatName(it)} className="aspect-[4/3] w-full" />
                   <div className="flex flex-1 flex-col gap-2 p-3">
                     {tagOf(it) && <p className="-mb-1 truncate font-mono text-[10px] uppercase tracking-[0.12em] text-muted">{tagOf(it)}</p>}
                     <p className="line-clamp-2 text-[14px] font-semibold leading-snug group-hover:underline">{it.title}</p>

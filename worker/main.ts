@@ -23,6 +23,8 @@ import { collectStats } from "../lib/server/shorts/stats";
 import { syncEarnings } from "../lib/server/earnings";
 import { refreshTrends } from "../lib/server/trends";
 import { recapLives } from "../lib/server/live";
+import { tidyClips } from "../lib/server/clips";
+import { unmakeable } from "../lib/live/clip-rules";
 import { putVideo } from "../lib/server/storage";
 import { checkIn, checkOut, forgetStopped } from "../lib/server/worker";
 
@@ -75,9 +77,17 @@ async function renderOne(job: Job, tag: boolean, out: string, from: number, to: 
 /**
  * A job's video, kept in storage. A tagged one whose owner has TikTok
  * gets a second copy without the tag, since TikTok doesn't allow app
- * watermarks; a clean-only job makes just that copy.
+ * watermarks; a clean-only job makes just that copy. A round from a LIVE
+ * is checked once more first, and one that can't be made never will be,
+ * so it isn't tried again.
  */
 async function render(job: Job) {
+  const why = job.spec.format === "clip" ? unmakeable(job.spec.params) : null;
+  if (why) {
+    await failJob(job, why, true);
+    say(`can't make ${job.videoId}: ${why}`);
+    return;
+  }
   const dir = mkdtempSync(join(tmpdir(), "hookline-render-"));
   const cleanKey = `${job.userId}/${job.videoId}-clean.mp4`;
   try {
@@ -170,6 +180,7 @@ async function main() {
   every(30 * 60_000, "trends", () => refreshTrends());
   every(6 * 3600_000, "earnings", () => syncEarnings());
   every(5 * 60_000, "live recaps", () => recapLives());
+  every(3600_000, "clips", () => tidyClips());
   every(5 * 60_000, "daily shorts", () => runDailyShorts());
   await renderLoop();
 }

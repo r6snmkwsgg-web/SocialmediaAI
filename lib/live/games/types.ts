@@ -2,6 +2,7 @@ import type { BattleEvent, Team } from "../../battle/sim";
 import type { Viewer } from "../events";
 import type { Tier } from "../menu";
 import type { GameId, LiveSettings } from "../settings";
+import type { RoundTape } from "../tape";
 
 /**
  * What every live game is to the show around it. The show owns the
@@ -107,6 +108,11 @@ export interface Game {
   route?(gift: string, each: number): { side: Team; tier: Tier } | null;
   /** games where each side has its own gifts: that side's menu, cheapest first, for any gift that isn't one of them */
   sideMenu?(side: Team): Tier[];
+
+  /** games that can be played again exactly (Ball Battle, Rivals): physics steps run this round */
+  readonly step?: number;
+  /** and this round as it reached the arena, while rounds are written down for clips, or null */
+  tape?(): RoundTape | null;
 }
 
 export type GameMaker = (s: LiveSettings) => Game;

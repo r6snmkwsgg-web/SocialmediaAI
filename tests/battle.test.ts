@@ -5,6 +5,7 @@ import { arenaAt, ARENA, FPS, SHRINK_TO, simulate, SUDDEN_DEATH } from "@/lib/ba
 import { drama, pickBattle } from "@/lib/battle/drama";
 import { OUTRO, SLOW, SLOW_FRAMES, timeline } from "@/lib/battle/timeline";
 import { MELODIES, RATE, soundtrack, wav } from "@/lib/battle/sound";
+import { clipOutro } from "@/lib/live/clip";
 
 describe("the fight", () => {
   it("is the same fight every time for the same pair and seed, and a different one for another seed", () => {
@@ -101,5 +102,53 @@ describe("the video and its sound", () => {
     expect(new TextDecoder().decode(bytes.slice(8, 12))).toBe("WAVE");
     expect(bytes.length).toBe(44 + pcm.length * 2);
     expect(MELODIES.ode.length).toBeGreaterThan(30);
+  });
+});
+
+describe("a video that starts part way into the fight", () => {
+  it("is the whole fight from the start, exactly as it always was, for every matchup", () => {
+    for (const a of ABILITY_IDS) {
+      for (const b of ABILITY_IDS) {
+        if (a === b) continue;
+        for (const seed of [2, 9]) {
+          const fight = simulate(a, b, seed);
+          const [whole, zero] = [timeline(fight), timeline(fight, { from: 0 })];
+          expect([zero.duration, zero.slowFrom, zero.outroFrom]).toEqual([whole.duration, whole.slowFrom, whole.outroFrom]);
+          for (let v = 0; v < whole.duration; v++) expect(zero.toSim(v)).toBe(whole.toSim(v));
+          for (let f = 0; f <= fight.endFrame; f++) expect(zero.toVideo(f)).toBe(whole.toVideo(f));
+          // real time, the last 20 frames before a knockout four times slower, then the winner
+          const slow = fight.byTimeout ? 0 : Math.min(SLOW_FRAMES, fight.endFrame);
+          expect(whole.outroFrom).toBe(fight.endFrame + 1 + slow * (SLOW - 1));
+          expect(whole.slowFrom).toBe(slow ? fight.endFrame + 1 - slow : null);
+        }
+      }
+    }
+  });
+
+  it("shows that sim frame first, still slows the knockout, and gets to the winner where clipOutro() says", () => {
+    const fight = simulate("spike", "bomb", 4);
+    const end = 2 * (fight.endFrame + 1);
+    for (const from of [1, 90, fight.endFrame - 40, fight.endFrame - 5, fight.endFrame]) {
+      const tl = timeline(fight, { from });
+      expect(tl.toSim(0)).toBe(from);
+      expect(tl.toVideo(from)).toBe(0);
+      expect(tl.toSim(tl.duration - 1)).toBe(fight.endFrame);
+      expect(tl.duration).toBe(tl.outroFrom + OUTRO);
+      expect(tl.outroFrom).toBe(clipOutro(end, from, false));
+      // the slow motion is the last 20 frames, or as many as the video shows
+      const slow = Math.min(SLOW_FRAMES, fight.endFrame - from);
+      expect(tl.slowFrom).toBe(slow ? fight.endFrame + 1 - from - slow : null);
+      if (slow) {
+        const pre = tl.slowFrom!;
+        expect(tl.toSim(pre - 1)).toBe(from + pre - 1);
+        expect(tl.toSim(pre + SLOW * 2)).toBe(from + pre + 2);
+        expect(tl.toVideo(from + pre + 2)).toBe(pre + SLOW * 2);
+      }
+    }
+    // a fight decided on time has no slow motion, however late it starts
+    const timed = { ...fight, byTimeout: true };
+    expect(timeline(timed, { from: 120 }).slowFrom).toBeNull();
+    expect(timeline(timed, { from: 120 }).outroFrom).toBe(clipOutro(end, 120, true));
+    expect(clipOutro(end, 120, true)).toBe(fight.endFrame + 1 - 120);
   });
 });

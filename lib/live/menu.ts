@@ -49,6 +49,11 @@ export function worth(coins: number): number {
   return coins <= 100 ? coins : Math.round(coins * (1 + WORTH_BONUS * Math.log10(coins / 100)));
 }
 
+/** How big a gift is, for its moment on screen and in a clip: 0 for most, 1 for a Galaxy's worth, 2 for ten times that and more. */
+export function giftLevel(coins: number): 0 | 1 | 2 {
+  return coins >= 10_000 ? 2 : coins >= 999 ? 1 : 0;
+}
+
 /** How many times over a gift pays for the top of the menu: a Universe is 45 Galaxies, and does more than one. */
 export function timesOver(each: number, top: Tier): number {
   return Math.max(1, Math.floor(each / Math.max(1, top.min)));

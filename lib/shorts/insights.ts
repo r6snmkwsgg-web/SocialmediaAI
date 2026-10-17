@@ -1,17 +1,19 @@
 import { ABILITIES } from "../battle/abilities";
 import type { AbilityId } from "../battle/abilities";
-import { FORMATS } from "./formats";
+import { formatName, formatPlural } from "./formats";
 import { alone, odds, type Weight } from "./learn";
-import { FORMAT_IDS, type FormatId } from "./types";
+import { FORMAT_IDS, type ShortFormat } from "./types";
 
 /**
  * What the learning loop has found, in words: each format against the
  * channel's usual Short (1× is usual), how much of tomorrow's queue it
  * gets because of that, and the kinds of Short (a battle's power, a
- * quiz's subject, a story's tone) that stand out.
+ * quiz's subject, a story's tone) that stand out. Rounds from the
+ * creator's LIVEs show too, once they have results, with no share of the
+ * queue: they're never drawn, they come from the LIVEs themselves.
  */
 
-export type FormatInsight = { format: FormatId; name: string; plural: string; score: number; samples: number; share: number };
+export type FormatInsight = { format: ShortFormat; name: string; plural: string; score: number; samples: number; share: number };
 export type KindInsight = { group: string; name: string; score: number; samples: number };
 export type Insights = { formats: FormatInsight[]; kinds: KindInsight[]; measured: number };
 
@@ -28,6 +30,7 @@ export function kindName(group: string): string | null {
   if (format === "texts") return TONE[a] ?? null;
   if (format === "ranking" && METRIC[a]) return `${METRIC[a][0].toUpperCase()}${METRIC[a].slice(1)} rankings`;
   if (format === "race" && METRIC[a]) return `${METRIC[a][0].toUpperCase()}${METRIC[a].slice(1)} races`;
+  if (format === "clip") return a === "battle" ? "Ball Battle clips" : a === "rivals" ? "Rivals clips" : null;
   return null;
 }
 
@@ -39,10 +42,12 @@ const STANDS_OUT = 1.15;
 
 export function insights(weights: Weight[]): Insights {
   const share = odds(weights);
-  const formats = FORMAT_IDS.map((f) => {
+  const row = (f: ShortFormat): FormatInsight => {
     const w = weights.find((x) => x.kind === "format" && x.name === f);
-    return { format: f, name: FORMATS[f].name, plural: FORMATS[f].plural, score: w?.score ?? 1, samples: w?.samples ?? 0, share: share[f] };
-  }).sort((a, b) => Number(b.samples > 0) - Number(a.samples > 0) || b.score - a.score);
+    return { format: f, name: formatName({ format: f }), plural: formatPlural({ format: f }), score: w?.score ?? 1, samples: w?.samples ?? 0, share: f === "clip" ? 0 : share[f] };
+  };
+  const clips = row("clip");
+  const formats = [...FORMAT_IDS.map(row), ...(clips.samples > 0 ? [clips] : [])].sort((a, b) => Number(b.samples > 0) - Number(a.samples > 0) || b.score - a.score);
   const kinds = weights
     .filter((w) => w.kind === "key" && w.samples >= 3 && (alone(w) >= STANDS_OUT || alone(w) <= 1 / STANDS_OUT))
     .map((w) => ({ group: w.name, name: kindName(w.name), score: w.score, samples: w.samples }))

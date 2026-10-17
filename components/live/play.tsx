@@ -1,5 +1,6 @@
 "use client";
 import { useCallback, useEffect, useRef, useState } from "react";
+import type { ClipLog } from "@/lib/live/clip";
 import { lastGoodKey, OLD_ADDRESS, readLastGood, writeLastGood, type LastGood } from "@/lib/live/last-good";
 import type { Heard } from "@/lib/live/proof";
 import { sessionPayload } from "@/lib/live/session";
@@ -8,7 +9,7 @@ import type { Show } from "@/lib/live/show";
 import { overlayUpdate } from "@/lib/live/supporters";
 import { LiveGame } from "./game";
 
-type Props = Omit<React.ComponentProps<typeof LiveGame>, "onStats" | "status" | "hideNames"> & {
+type Props = Omit<React.ComponentProps<typeof LiveGame>, "onStats" | "onClip" | "status" | "hideNames"> & {
   overlayKey?: string;
   /** Hookline couldn't load this key's settings just now: not the same as a key that's gone */
   unsure?: boolean;
@@ -36,8 +37,9 @@ function keep(key: string, g: LastGood) {
 /**
  * The game as a streamer runs it from their own address: it saves the
  * session's numbers to their account as it goes, with the TikTok LIVEs it
- * heard, so Hookline can tell whether they were the streamer's own.
- * Without a key it's the plain game, and saves nothing.
+ * heard, so Hookline can tell whether they were the streamer's own, and
+ * sends each round it keeps for a Short as it's decided. Without a key
+ * it's the plain game, and saves nothing.
  *
  * Each time its settings load, it keeps them. If Hookline can't be reached
  * when it opens, it plays with the ones it kept; with none kept, it plays
@@ -125,6 +127,15 @@ export function Play({ overlayKey, unsure = false, settings, tag, notice: given,
     [key],
   );
 
+  // a round for a Short goes once, with a plain fetch: a beacon carries at most 64 KB and the game is still open. A failed send costs only that round
+  const onClip = useCallback(
+    (clip: ClipLog) => {
+      if (!key) return;
+      void fetch("/api/live/clips", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ key, clip }) }).catch(() => {});
+    },
+    [key],
+  );
+
   if (!game) return <div className="fixed inset-0 bg-[#050506]" />;
   return (
     <LiveGame
@@ -137,6 +148,7 @@ export function Play({ overlayKey, unsure = false, settings, tag, notice: given,
       notice={gone ? OLD_ADDRESS : given}
       status={waiting ? "RECONNECTING TO HOOKLINE…" : undefined}
       onStats={key ? onStats : undefined}
+      onClip={key ? onClip : undefined}
     />
   );
 }

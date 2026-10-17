@@ -8,6 +8,8 @@ import { token } from "./crypto";
 import { admin, asUser, type Tx } from "./db";
 import { configured } from "./env";
 import { notify } from "./notify";
+import type { Goal } from "../app/checklist";
+import { clipsAllowed } from "./clips";
 
 /**
  * A streamer's LIVE game on their account: their settings, the private key
@@ -22,22 +24,25 @@ export type Overlay = { settings: LiveSettings; plan: Plan; supporters: string[]
  * What the game gets for a key: the settings the plan allows, the plan,
  * and who to welcome back. Null if no such key. Throws when it can't tell
  * (the database is down or not set up), which is not the same as a key
- * that's gone.
+ * that's gone. The game keeps rounds for Shorts only when they can become
+ * Shorts, so it never records them for nothing.
  */
 export async function overlayFor(key: string, now = new Date()): Promise<Overlay | null> {
   if (!/^[\w-]{16,64}$/.test(key)) return null;
   if (!configured().db) throw new Error("No database");
   return admin(async (tx) => {
-    const [r] = await tx<{ user_id: string; settings: unknown; plan: PlanId | null }[]>`
-      select k.user_id, s.settings, sub.plan
+    const [r] = await tx<{ user_id: string; settings: unknown; plan: PlanId | null; goal: Goal | null }[]>`
+      select k.user_id, s.settings, sub.plan, p.goal
       from public.overlay_keys k
       left join public.live_settings s on s.user_id = k.user_id
       left join public.subscriptions sub on sub.user_id = k.user_id
+      left join public.profiles p on p.id = k.user_id
       where k.key = ${key}`;
     if (!r) return null;
     const plan = PLANS[r.plan ?? "free"];
+    const settings = allowedBy(parseSettings(r.settings), plan);
     // the name on screen comes from the LIVE itself, as each supporter does something
-    return { settings: allowedBy(parseSettings(r.settings), plan), plan, supporters: supportersFrom(await lastLive(tx, r.user_id, now)) };
+    return { settings: { ...settings, clips: clipsAllowed(settings, r.goal, configured().tiktokProfile) }, plan, supporters: supportersFrom(await lastLive(tx, r.user_id, now)) };
   });
 }
 
