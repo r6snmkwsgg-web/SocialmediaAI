@@ -1,20 +1,23 @@
 import type { Show } from "@/lib/live/show";
 import { LETTERS } from "@/lib/live/show";
-import { INTRO, KO_HOLD } from "@/lib/live/show";
+import { INTRO, KO_HOLD, WELCOME_FOR } from "@/lib/live/show";
+import { welcomeLine } from "@/lib/live/supporters";
 import { battleDraw } from "./battle";
 import {
-  AX, AY, coin, crown, DIM, ease, face, GOLD, H, icon, INK, M, measure, outline, PAPER, pop, roundRect, SIDE, SIGNAL, text, W,
+  AX, AY, coin, crown, DIM, ease, face, GOLD, H, icon, INK, M, measure, MENU_Y, nameOf, outline, PAPER, pop, roundRect, SIDE, SIGNAL, text, TOP3, W,
   type Ctx, type View,
 } from "./kit";
 import { raceDraw } from "./race";
 import { rivalsDraw } from "./rivals";
 import { royaleDraw } from "./royale";
+import { drawTop3, WIN_TOP3_Y } from "./top3";
 import type { GameDraw } from "./types";
 
 /**
  * The live show, drawn onto a 1080 × 1920 canvas every frame. Every game
- * reads the same way top to bottom: how to join and who's ahead, the gift
- * menu (by gift name, with a picture for each), the arena, then the rules.
+ * reads the same way top to bottom: how to join and who's ahead, the LIVE's
+ * top 3 gifters, the gift menu (by gift name, with a picture for each), the
+ * arena, then the rules.
  * Whatever a gift does shows up in the arena with the same picture the
  * menu used, and its menu item lights up, so the menu teaches itself.
  */
@@ -60,14 +63,14 @@ function drawTop(ctx: Ctx, show: Show, view: View) {
  * item lights up when someone sends it, and the ones that last show who
  * has them and for how long.
  */
-function drawMenu(ctx: Ctx, show: Show, d: GameDraw) {
-  const top = 392, h = 86, gap = 10;
+function drawMenu(ctx: Ctx, show: Show, view: View, d: GameDraw) {
+  const top = MENU_Y, h = 80, gap = 10, rowGap = 8;
   const cw = (SIDE - gap * 2) / 3;
   show.game.menu.forEach((t, i) => {
-    const x = M + (i % 3) * (cw + gap), y = top + Math.floor(i / 3) * (h + gap);
+    const x = M + (i % 3) * (cw + gap), y = top + Math.floor(i / 3) * (h + rowGap);
     const sent = show.lit.get(t.effect);
     const flash = sent !== undefined ? Math.max(0, 1 - (show.now - sent) / 0.9) : 0;
-    const on = d.active(show, t.effect);
+    const on = d.active(show, t.effect, view);
     roundRect(ctx, x, y, cw, h, 14, "#161618");
     if (flash > 0 || on) {
       ctx.save();
@@ -77,14 +80,14 @@ function drawMenu(ctx: Ctx, show: Show, d: GameDraw) {
     }
     outline(ctx, x, y, cw, h, 14, on || flash > 0.3 ? t.color : "rgba(244,241,234,0.16)", on ? 4 : 2);
     icon(ctx, t.icon, x + 42, y + h / 2, 44, t.color);
-    text(ctx, t.name.toUpperCase(), x + 82, y + 44, { size: 36, color: t.color, spacing: 1, max: cw - 96 });
-    if (on) text(ctx, on.text, x + 82, y + 72, { size: 22, color: on.color, spacing: 2, max: cw - 96 });
+    text(ctx, t.name.toUpperCase(), x + 82, y + 41, { size: 36, color: t.color, spacing: 1, max: cw - 96 });
+    if (on) text(ctx, on.text, x + 82, y + 67, { size: 22, color: on.color, spacing: 2, max: cw - 96 });
     else {
       const g = t.gift.toUpperCase();
       const gw = Math.min(cw - 150, measure(ctx, g, 22, 1.5));
-      text(ctx, g, x + 82, y + 72, { size: 22, color: PAPER, spacing: 1.5, alpha: 0.8, max: cw - 150 });
-      coin(ctx, x + 82 + gw + 14, y + 64, 7);
-      text(ctx, (t.price ?? t.min).toLocaleString("en-US"), x + 82 + gw + 26, y + 72, { size: 22, color: DIM, spacing: 1 });
+      text(ctx, g, x + 82, y + 67, { size: 22, color: PAPER, spacing: 1.5, alpha: 0.8, max: cw - 150 });
+      coin(ctx, x + 82 + gw + 14, y + 59, 7);
+      text(ctx, (t.price ?? t.min).toLocaleString("en-US"), x + 82 + gw + 26, y + 67, { size: 22, color: DIM, spacing: 1 });
     }
   });
 }
@@ -134,9 +137,9 @@ function drawBlast(ctx: Ctx, show: Show, view: View, d: GameDraw): boolean {
     outline(ctx, x, y, bw, h, 24, t.color, 6);
     const ring = b.side === null ? GOLD : show.teams[b.side].color;
     face(ctx, view, b.viewer.name, b.viewer.avatar, x + 96, y + h / 2, 62, ring, 7);
-    text(ctx, `${b.viewer.name} sent ${b.count > 1 ? `${b.count}x ` : ""}${t.gift}`, x + 188, y + 54, { size: 32, max: bw - 340 });
+    text(ctx, `${nameOf(view, b.viewer.name)} sent ${b.count > 1 ? `${b.count}x ` : ""}${t.gift}`, x + 188, y + 54, { size: 32, max: bw - 340 });
     text(ctx, `${t.name.toUpperCase()}${b.many ? ` ×${b.many}` : ""}!`, x + 188, y + 144, { size: 84, color: t.color, spacing: 3, max: bw - 340 });
-    text(ctx, d.blastLine(show, b), x + 188, y + 180, { size: 26, color: DIM, spacing: 2, max: bw - 340 });
+    text(ctx, d.blastLine(show, b, view), x + 188, y + 180, { size: 26, color: DIM, spacing: 2, max: bw - 340 });
     icon(ctx, t.icon, x + bw - 86, y + h / 2, 92, t.color);
     ctx.restore();
     return true;
@@ -156,7 +159,7 @@ function drawToast(ctx: Ctx, show: Show, view: View) {
     const age = show.now - start;
     if (age < 0 || age >= SHOW) continue;
     const k = Math.min(ease(age / 0.18), ease((SHOW - age) / 0.18));
-    const msg = `${t.viewer.name}  ${t.text}`;
+    const msg = `${nameOf(view, t.viewer.name)}  ${t.text}`;
     const tw = Math.min(720, measure(ctx, msg, 34, 1));
     const pw = tw + 106;
     const x = W / 2 - pw / 2, y = AY + 20 - (1 - k) * 20;
@@ -168,6 +171,27 @@ function drawToast(ctx: Ctx, show: Show, view: View) {
     text(ctx, msg, x + 70, y + 45, { size: 34, color: "#fff", spacing: 1, max: 720 });
     ctx.restore();
   }
+}
+
+/**
+ * One of the last LIVE's top gifters, back: a gold line where the toasts go,
+ * the way a toast comes and goes. True while it's up, so toasts wait.
+ */
+function drawWelcome(ctx: Ctx, show: Show, view: View): boolean {
+  const w = show.welcomes.at(-1);
+  const age = w ? show.now - w.at : -1;
+  if (!w || age < 0 || age >= WELCOME_FOR) return false;
+  const k = Math.min(ease(age / 0.18), ease((WELCOME_FOR - age) / 0.18));
+  const msg = `WELCOME BACK, ${nameOf(view, w.viewer.name).toUpperCase()}: ${welcomeLine(w.rank)}`;
+  const pw = Math.min(760, measure(ctx, msg, 32, 1)) + 106;
+  const x = W / 2 - pw / 2, y = AY + 20 - (1 - k) * 20;
+  ctx.save();
+  ctx.globalAlpha = k;
+  roundRect(ctx, x, y, pw, 66, 33, GOLD);
+  face(ctx, view, w.viewer.name, w.viewer.avatar, x + 34, y + 33, 24, INK, 3);
+  text(ctx, msg, x + 70, y + 44, { size: 32, color: INK, spacing: 1, max: 760 });
+  ctx.restore();
+  return true;
 }
 
 function drawIntro(ctx: Ctx, show: Show, d: GameDraw) {
@@ -210,7 +234,7 @@ function drawIntro(ctx: Ctx, show: Show, d: GameDraw) {
   }
 }
 
-function drawKo(ctx: Ctx, show: Show, d: GameDraw) {
+function drawKo(ctx: Ctx, show: Show, view: View, d: GameDraw) {
   if (show.phase !== "ko") return;
   const k = show.elapsed / KO_HOLD;
   const r = show.result;
@@ -220,7 +244,7 @@ function drawKo(ctx: Ctx, show: Show, d: GameDraw) {
   const s = 0.5 + 0.5 * pop(k * 3);
   ctx.scale(s, s);
   ctx.rotate(-0.05);
-  text(ctx, word, 0, 0, { size: word.length > 5 ? 220 : 270, color: d.winner(show).color, align: "center", stroke: 18, spacing: 6 });
+  text(ctx, word, 0, 0, { size: word.length > 5 ? 220 : 270, color: d.winner(show, view).color, align: "center", stroke: 18, spacing: 6 });
   ctx.restore();
 }
 
@@ -232,7 +256,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
   ctx.fillStyle = `rgba(11,11,12,${0.93 * k})`;
   ctx.fillRect(0, 0, W, H);
   const cx = W / 2;
-  const win = d.winner(show);
+  const win = d.winner(show, view);
   const vote = show.vote;
   const top = vote ? 300 : 520;
 
@@ -253,6 +277,8 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
 
   ctx.save();
   ctx.globalAlpha = k;
+  // the LIVE's top 3 stay up: under the winner when there's a vote, where they always are when there isn't
+  drawTop3(ctx, show, view, WIN_TOP3_Y[vote ? "vote" : "plain"]);
   if (win.series) {
     const s0 = String(show.series[0]), s1 = String(show.series[1]);
     const wd = measure(ctx, "  –  ", 56, 2);
@@ -261,7 +287,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
     text(ctx, "  –  ", cx, y, { size: 56, color: DIM, align: "center", spacing: 2 });
     text(ctx, s1, cx + wd / 2, y, { size: 56, color: show.teams[1].color });
   } else if (show.result?.podium && show.result.podium.length > 1) {
-    const rest = show.result.podium.slice(1).map((p, i) => `${i === 0 ? "2ND" : "3RD"} ${p.name.toUpperCase()}`).join("   ·   ");
+    const rest = show.result.podium.slice(1).map((p, i) => `${i === 0 ? "2ND" : "3RD"} ${nameOf(view, p.name, p.cpu).toUpperCase()}`).join("   ·   ");
     text(ctx, rest, cx, top + 400, { size: 36, color: DIM, align: "center", spacing: 2, max: SIDE });
   }
 
@@ -306,7 +332,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
   if (show.mvp) {
     const m = show.mvp;
     const y = vote ? 1560 : 1250;
-    const label = `${m.viewer.name}  ·  ${m.coins.toLocaleString("en-US")} COINS`;
+    const label = `${nameOf(view, m.viewer.name)}  ·  ${m.coins.toLocaleString("en-US")} COINS`;
     const w = measure(ctx, label, 40, 2);
     crown(ctx, cx - w / 2 - 82, y - 14, 44);
     face(ctx, view, m.viewer.name, m.viewer.avatar, cx - w / 2 - 34, y - 14, 26, GOLD, 4);
@@ -323,13 +349,15 @@ export function draw(ctx: Ctx, show: Show, view: View) {
   ctx.fillRect(0, 0, W, H);
   drawTop(ctx, show, view);
   d.header(ctx, show, view);
+  drawTop3(ctx, show, view, TOP3.y);
   if (d.menu) d.menu(ctx, show);
-  else drawMenu(ctx, show, d);
+  else drawMenu(ctx, show, view, d);
   d.arena(ctx, show, view, turn);
-  if (!drawBlast(ctx, show, view, d)) drawToast(ctx, show, view);
-  d.rules(ctx, show);
+  // one thing at a time over the top of the arena: a big gift, then a welcome back, then the toasts
+  if (!drawBlast(ctx, show, view, d) && !drawWelcome(ctx, show, view)) drawToast(ctx, show, view);
+  d.rules(ctx, show, view);
   drawIntro(ctx, show, d);
-  drawKo(ctx, show, d);
+  drawKo(ctx, show, view, d);
   drawWin(ctx, show, view, d);
   if (view.tag) text(ctx, "MADE WITH HOOKLINE", W / 2, H - 40, { size: 28, color: DIM, align: "center", spacing: 4 });
 }

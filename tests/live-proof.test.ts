@@ -289,16 +289,16 @@ describe("whose LIVE a session heard", () => {
     // usernames read before it was switched off still count
     expect(whyNotCounted({ verified: true, heard: ["kayla.live"] }, ["kayla.live"], false)).toBeNull();
     expect(whyNotCounted({ verified: false, heard: ["famous.one"] }, ["kayla.live"], false)).toMatch(/@famous\.one/);
-    const note = recapNote({ rounds: 1, coins: 10, peakPlayers: 2, top: null, verified: false, heard: ["kayla.live"] }, [], false);
+    const note = recapNote({ rounds: 1, coins: 10, peakPlayers: 2, verified: false, heard: ["kayla.live"] }, [], false);
     expect(note.body).toMatch(/can't check TikTok usernames yet/);
     expect(note.body).not.toMatch(/Connect/);
   });
 
   it("recaps a verified LIVE's coins as coins seen, and an unverified one as not counted", () => {
-    const base = { rounds: 9, coins: 1234, peakPlayers: 17, top: { name: "mia", coins: 999 } };
+    const base = { rounds: 9, coins: 1234, peakPlayers: 17 };
     expect(recapNote({ ...base, verified: true, heard: ["kayla.live"] }, ["kayla.live"])).toEqual({
       title: "LIVE recap: 9 rounds, 1,234 gift coins seen",
-      body: "17 playing at once. Top gifter: mia with 999 coins.",
+      body: "17 playing at once. Your recap card is ready.",
     });
     const no = recapNote({ ...base, verified: false, heard: ["famous.one"] }, ["kayla.live"]);
     expect(no.title).toBe("LIVE recap: 9 rounds, not verified");

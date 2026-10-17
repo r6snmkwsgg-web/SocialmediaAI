@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { NamesSwitch } from "@/components/app/live-names";
 import { LiveSettingsForm } from "@/components/app/live-settings";
 import { LocalTime } from "@/components/app/local-time";
 import { button, Card, CardHead, Empty, PageHead, Pill } from "@/components/app/ui";
@@ -12,12 +13,13 @@ import { ROYALE_MENU } from "@/lib/live/games/royale";
 import { liveFit, sellLive } from "@/lib/live/eligibility";
 import { NO_USERNAMES, whyNotCounted } from "@/lib/live/proof";
 import { RIVAL_POWERS } from "@/lib/live/rivals";
+import { lasted } from "@/lib/live/session";
 import { allowedBy, LIVE_ABILITIES } from "@/lib/live/settings";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
-import { liveSettingsOf, overlayKeyOf, sessionsOf, tiktokUsernamesOf, type LiveSession } from "@/lib/server/live";
-import { checkLive, newKey, recheckLive, saveLive } from "./actions";
+import { lastLiveOf, liveSettingsOf, overlayKeyOf, sessionsOf, tiktokUsernamesOf } from "@/lib/server/live";
+import { checkLive, newKey, recheckLive, saveLive, saveNames } from "./actions";
 
 export const metadata: Metadata = { title: "Live" };
 
@@ -26,9 +28,15 @@ const labels = Object.fromEntries(Object.entries(menus).map(([k, m]) => [k, m.ma
 
 const n = (v: number) => v.toLocaleString("en-US");
 
-function length(s: LiveSession): string {
-  const min = Math.max(1, Math.round((s.lastAt.getTime() - s.startedAt.getTime()) / 60000));
-  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
+const OWN_PAGE = "Each LIVE opens on its own page, with a recap card to share when it's verified as yours.";
+
+/** Whether the last LIVE's top gifters get a welcome back, and why: only a LIVE verified as theirs has supporters of their own. */
+function welcomeNote(last: { verified: boolean } | null, checking: boolean, accounts: string[]): string {
+  if (!checking && !accounts.length) return "Welcome backs need a LIVE verified as yours, and Hookline can't check TikTok usernames yet.";
+  if (!last) return "After a LIVE that's verified as yours, its top 3 gifters get a welcome when they come back.";
+  return last.verified
+    ? "Your last LIVE was verified as yours, so its top 3 gifters get a welcome when they come back."
+    : "Your last LIVE wasn't verified as yours, so nobody gets a welcome next time.";
 }
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
@@ -36,7 +44,7 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 export default async function Live({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
-  const [{ settings }, key, sessions, accounts, channels] = await Promise.all([liveSettingsOf(me.id), overlayKeyOf(me.id), sessionsOf(me.id), tiktokUsernamesOf(me.id), channelsOf(me.id)]);
+  const [{ settings }, key, sessions, accounts, channels, last] = await Promise.all([liveSettingsOf(me.id), overlayKeyOf(me.id), sessionsOf(me.id), tiktokUsernamesOf(me.id), channelsOf(me.id), lastLiveOf(me.id)]);
   // usernames come from TikTok only once Hookline asks for them; until then no LIVE can count
   const checking = configured().tiktokProfile;
   // a TikTok connected without its username (before Hookline asked for it) needs connecting again
@@ -106,6 +114,22 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
       </section>
 
       <Card className="mb-8">
+        <CardHead title="On screen" />
+        <dl className="flex flex-col divide-y-2 divide-edge">
+          {[
+            { term: "Top gifters", body: <p>The LIVE&rsquo;s top 3 gifters stay on screen near the top, round after round. Only real viewers count.</p> },
+            { term: "Welcome backs", body: <p>{welcomeNote(last, checking, accounts)}</p> },
+            { term: "Viewer names", body: <NamesSwitch hidden={settings.hideNames} action={saveNames} /> },
+          ].map((r) => (
+            <div key={r.term} className="grid gap-2 px-5 py-4 sm:grid-cols-[11rem_minmax(0,1fr)] sm:gap-6">
+              <dt className="pt-0.5 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{r.term}</dt>
+              <dd className="max-w-2xl text-[15px] leading-relaxed">{r.body}</dd>
+            </div>
+          ))}
+        </dl>
+      </Card>
+
+      <Card className="mb-8">
         <CardHead title="Game settings" />
         <LiveSettingsForm
           initial={settings}
@@ -118,7 +142,7 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
         />
       </Card>
 
-      <Card className="mb-8">
+      <Card id="lives" className="mb-8 scroll-mt-20">
         <CardHead title="Your LIVEs" action={sessions.length ? <span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Real viewers only</span> : undefined} />
         <p className="border-b-2 border-edge px-5 py-3 text-[13px] leading-relaxed text-muted">
           {accounts.length ? (
@@ -134,12 +158,13 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
               <Link href="/app/settings" className="text-fg underline decoration-signal decoration-2 underline-offset-4">Connect your TikTok</Link> so Hookline can tell your LIVEs are yours. Until then, their gift coins seen don&rsquo;t count in Earnings.
             </>
           )}
+          {sessions.length > 0 && ` ${OWN_PAGE}`}
         </p>
         {sessions.length === 0 ? (
           <div className="p-5">
             <Empty
               title="No LIVEs yet"
-              body="After you play it on a LIVE, each one shows up here: how long it ran, rounds, the most people playing at once, gift coins seen and your top gifters. Only real viewers count; demo and test-panel viewers never do."
+              body={`After you play it on a LIVE, each one shows up here: how long it ran, rounds, the most people playing at once, gift coins seen and your top gifters. Only real viewers count; demo and test-panel viewers never do. ${OWN_PAGE}`}
             />
           </div>
         ) : (
@@ -161,9 +186,13 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
               <tbody>
                 {sessions.map((s) => (
                   <tr key={s.id} className="border-b border-edge last:border-0">
-                    <td className="px-5 py-3 whitespace-nowrap"><LocalTime iso={s.startedAt.toISOString()} /></td>
+                    <td className="px-5 py-3 whitespace-nowrap">
+                      <Link href={`/app/live/${s.id}`} className="font-medium underline decoration-edge-strong decoration-2 underline-offset-4 transition hover:decoration-signal">
+                        <LocalTime iso={s.startedAt.toISOString()} />
+                      </Link>
+                    </td>
                     <td className="hidden px-3 py-3 whitespace-nowrap md:table-cell">{GAMES.find((g) => g.id === s.game)?.name ?? s.game}</td>
-                    <td className="hidden px-3 py-3 text-right tabular-nums sm:table-cell">{length(s)}</td>
+                    <td className="hidden px-3 py-3 text-right tabular-nums sm:table-cell">{lasted(s)}</td>
                     <td className="px-3 py-3 text-right tabular-nums">{n(s.rounds)}</td>
                     <td className="hidden px-3 py-3 text-right tabular-nums sm:table-cell">{n(s.peakPlayers)}</td>
                     <td className="px-5 py-3 text-right tabular-nums md:px-3">

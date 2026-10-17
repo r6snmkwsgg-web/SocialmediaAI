@@ -3,7 +3,7 @@ import { BOARD, FINISH, type Racer, type RaceGame } from "@/lib/live/games/race"
 import type { Show } from "@/lib/live/show";
 import { crownLine, drawEffects, ruleLines } from "./battle";
 import {
-  AX, AY, circle, CPU, crown, ease, face, GOLD, icon, INK, M, PAPER, roundRect, SCALE, shakeFrom, SIDE, text,
+  AX, AY, circle, CPU, crown, ease, face, GOLD, HEAD, icon, INK, M, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, STRIP, text,
   type Ctx, type View,
 } from "./kit";
 import type { GameDraw } from "./types";
@@ -88,7 +88,7 @@ function drawRacer(ctx: Ctx, show: Show, view: View, g: RaceGame, r: Racer, turn
   const bw = Math.max(44, label.length * 15 + 12);
   roundRect(ctx, r.x + rad * 0.45, r.y - rad - 6, bw, 28, 8, INK);
   text(ctx, label, r.x + rad * 0.45 + bw / 2, r.y - rad + 15, { size: 22, align: "center", color: r.cpu ? "#B9B6AE" : GOLD });
-  if (!r.cpu) text(ctx, r.name, r.x, r.y + rad + 24, { size: 22, align: "center", stroke: 7, max: 180 });
+  if (!r.cpu) text(ctx, nameOf(view, r.name), r.x, r.y + rad + 24, { size: 22, align: "center", stroke: 7, max: 180 });
   if (r.finishedAt !== null) {
     const medal = ["", GOLD, "#C9CED6", "#D08A4E"][r.place] ?? DIM_MEDAL;
     circle(ctx, r.x - rad * 0.8, r.y - rad * 0.8, 20, medal, INK, 4);
@@ -105,7 +105,7 @@ const DIM_MEDAL = "#5E5C58";
 export const raceDraw: GameDraw = {
   header(ctx, show) {
     const g = game(show);
-    const y = 172, h = 168;
+    const { y, h } = HEAD;
     roundRect(ctx, M, y, SIDE, h, 18, GOLD);
     text(ctx, "TYPE GO", M + 28, y + 82, { size: 78, color: INK, spacing: 1 });
     text(ctx, "TO RACE FOR FREE · GIFTS MAKE YOUR BALL HEAVIER", M + 28, y + 124, { size: 28, color: INK, spacing: 1.5, alpha: 0.8, max: SIDE - 260 });
@@ -113,11 +113,11 @@ export const raceDraw: GameDraw = {
     text(ctx, String(n), M + SIDE - 28, y + 104, { size: 96, color: INK, align: "right" });
     text(ctx, n === 1 ? "RACER" : "RACERS", M + SIDE - 28, y + 142, { size: 26, color: INK, align: "right", spacing: 3, alpha: 0.75 });
     // where everyone is: a strip from the start to the finish line
-    const by = y + h + 12;
-    roundRect(ctx, M, by, SIDE, 18, 9, "#1A1A1C");
+    const { y: by, h: bh } = STRIP;
+    roundRect(ctx, M, by, SIDE, bh, bh / 2, "#1A1A1C");
     for (const r of g.racers) {
       const k = r.finishedAt !== null ? 1 : Math.max(0, Math.min(1, r.y / FINISH));
-      circle(ctx, M + 9 + (SIDE - 18) * k, by + 9, r.cpu ? 6 : 8, r.cpu ? CPU : r.free ? PAPER : GOLD);
+      circle(ctx, M + 9 + (SIDE - 18) * k, by + bh / 2, r.cpu ? 5 : 6, r.cpu ? CPU : r.free ? PAPER : GOLD);
     }
   },
 
@@ -155,18 +155,18 @@ export const raceDraw: GameDraw = {
     ctx.restore();
   },
 
-  rules(ctx, show) {
+  rules(ctx, show, view) {
     ruleLines(ctx, [
       { s: "LIKES MAKE YOUR BALL HEAVIER", size: 40, color: PAPER, pic: (x, y) => icon(ctx, "weight", x, y, 38, PAPER) },
-      { ...crownLine(show), pic: (x, y) => crown(ctx, x, y, 34) },
+      { ...crownLine(show, view), pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },
 
-  active(show, effect) {
+  active(show, effect, view) {
     const g = game(show);
     if (effect === "ghost") {
       const r = g.racers.find((x) => x.ghostUntil > g.clock);
-      if (r) return { text: `${r.name.toUpperCase()} · ${Math.ceil(r.ghostUntil - g.clock)}S`, color: "#BF5AF2" };
+      if (r) return { text: `${nameOf(view, r.name).toUpperCase()} · ${Math.ceil(r.ghostUntil - g.clock)}S`, color: "#BF5AF2" };
     }
     return null;
   },
@@ -179,15 +179,15 @@ export const raceDraw: GameDraw = {
     text(ctx, `${n} IN THE GATE`, cx, cy + 110, { size: 40, align: "center", spacing: 3, alpha: 0.8 });
   },
 
-  winner(show) {
+  winner(show, view) {
     const c = show.result?.champion;
     if (!c) return { title: "NOBODY", color: PAPER };
     const wins = show.winsOf(c);
-    return { title: c.name.toUpperCase(), color: c.cpu ? "#B9B6AE" : GOLD, entrant: c, line: c.cpu ? "THE CPU WON THIS ONE" : wins > 1 ? `${wins} WINS TODAY` : "WINS THE RACE" };
+    return { title: nameOf(view, c.name, c.cpu).toUpperCase(), color: c.cpu ? "#B9B6AE" : GOLD, entrant: c, line: c.cpu ? "THE CPU WON THIS ONE" : wins > 1 ? `${wins} WINS TODAY` : "WINS THE RACE" };
   },
 
-  blastLine(show, b) {
-    const name = b.viewer.name.toUpperCase();
+  blastLine(show, b, view) {
+    const name = nameOf(view, b.viewer.name).toUpperCase();
     if (b.tier.effect === "ghost") return `${name} SLIPS THROUGH EVERYTHING`;
     if (b.tier.effect === "shock") return `EVERYONE NEAR ${name} GETS KNOCKED BACK`;
     if (b.extra?.includes("ghost")) return `${name} BLASTS DOWN, KNOCKS EVERYONE BACK AND SLIPS THROUGH`;

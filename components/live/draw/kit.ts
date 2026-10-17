@@ -1,10 +1,12 @@
 import type { Icon } from "@/lib/live/menu";
+import { initials } from "@/lib/live/supporters";
 
 /**
  * What every live game's screen is drawn with: the layout, the type, the
  * shapes, and the little pictures the gift menu and the fight share. A
  * stream covers the very top with the streamer's name and the bottom with
- * chat, so everything a viewer has to read sits in the middle.
+ * chat, so everything a viewer has to read sits in the middle (TIKTOK_PHONE
+ * is roughly where TikTok's app covers it).
  */
 
 export const W = 1080;
@@ -14,6 +16,17 @@ export const M = 80;
 export const SIDE = W - 2 * M;
 export const AX = M;
 export const AY = 592;
+/** the bands down the top of every game: the cards, the strip under them (who's ahead, where everyone is), the LIVE's top 3, then the menu */
+export const HEAD = { y: 172, h: 160 };
+export const STRIP = { y: 340, h: 14 };
+export const TOP3 = { y: 362, h: 44 };
+export const MENU_Y = 414;
+/**
+ * Roughly where TikTok's own app covers a LIVE on a phone: its top bar, and
+ * the comments down the left. Estimates to check on a real phone (NEXT.md
+ * section 10); the top 3 and welcome backs stay out of them.
+ */
+export const TIKTOK_PHONE = { top: 240, chat: { x: 0, y: 1100, w: 780, h: 660 } };
 /** every game's arena is 800 units across, drawn 920 pixels wide */
 export const UNITS = 800;
 export const SCALE = SIDE / UNITS;
@@ -38,9 +51,16 @@ export type View = {
   tag?: boolean;
   /** something the streamer has to fix, in a bar across the top */
   notice?: string;
+  /** the streamer hides viewers' names: initials instead, and no pictures */
+  hideNames?: boolean;
 };
 
 export type Ctx = CanvasRenderingContext2D;
+
+/** A viewer's name as the screen shows it: initials like K.S. while the streamer hides names. A CPU isn't a viewer, so it keeps its own. */
+export function nameOf(view: View, name: string, cpu = false): string {
+  return view.hideNames && !cpu ? initials(name) : name;
+}
 
 export const ease = (k: number) => 1 - (1 - Math.min(1, Math.max(0, k))) ** 3;
 /** a springy pop from 0 to 1 and a touch past it */
@@ -119,9 +139,9 @@ export function textOn(hex: string): string {
   return 0.299 * r + 0.587 * g + 0.114 * b > 160 ? INK : "#fff";
 }
 
-/** A viewer's face in a circle, or their first letter when there's no picture. */
+/** A viewer's face in a circle, or their first letter when there's no picture. While names are hidden, no picture is fetched or drawn. */
 export function face(ctx: Ctx, view: View, name: string, avatar: string | undefined, x: number, y: number, r: number, ring: string, lw = Math.max(3, r * 0.12)) {
-  const img = avatar ? view.image(avatar) : null;
+  const img = avatar && !view.hideNames ? view.image(avatar) : null;
   ctx.save();
   ctx.beginPath();
   ctx.arc(x, y, r, 0, Math.PI * 2);
@@ -130,10 +150,15 @@ export function face(ctx: Ctx, view: View, name: string, avatar: string | undefi
   else {
     ctx.fillStyle = "#26262A";
     ctx.fillRect(x - r, y - r, r * 2, r * 2);
-    text(ctx, (name.replace(/[^\p{L}\p{N}]/gu, "")[0] ?? "?").toUpperCase(), x, y + r * 0.4, { size: r * 1.1, align: "center" });
+    text(ctx, firstLetter(nameOf(view, name)), x, y + r * 0.4, { size: r * 1.1, align: "center" });
   }
   ctx.restore();
   circle(ctx, x, y, r, undefined, ring, lw);
+}
+
+/** A name's first letter or number, whole even outside the basic alphabet, with fancy-text letters made plain; "?" when it has none. */
+function firstLetter(name: string): string {
+  return Array.from(name.normalize("NFKC").replace(/[^\p{L}\p{N}]/gu, ""))[0]?.toUpperCase() ?? "?";
 }
 
 export function coin(ctx: Ctx, x: number, y: number, r: number) {

@@ -144,7 +144,7 @@ The LIVE games hear a stream through something on the streamer's computer: **Tik
 - To release it, push a tag like `bridge-v1.0.0`: `.github/workflows/bridge.yml` builds it for Windows, macOS (Apple silicon and Intel) and Linux and attaches them to a GitHub release. The setup page links to the latest release in `NEXT_PUBLIC_BRIDGE_REPO`.
 - TikTok makes outside apps sign their connection. The connector does that through Euler Stream, which works without a key at low volume; if it starts refusing, get a free key at eulerstream.com and pass it with `--key` or `EULER_API_KEY`.
 
-The game itself is `/live/play`, an OBS browser source at 1080 × 1920. Its address carries the streamer's private key from `/app/live`, so it plays with their settings. `?demo=1` adds pretend viewers and `?clean=1` hides the hints. On the game, T opens a test panel, D switches the demo, M mutes and F goes full screen.
+The game itself is `/live/play`, an OBS browser source at 1080 × 1920. Its address carries the streamer's private key from `/app/live`, so it plays with their settings. `?demo=1` adds pretend viewers and `?clean=1` hides the hints. On the game, T opens a test panel, D switches the demo, M mutes and F goes full screen. Every game keeps the LIVE's top 3 gifters on screen, and each LIVE has its own page under `/app/live`, with a recap card to share once it's verified as the streamer's own.
 
 ## Scripts
 

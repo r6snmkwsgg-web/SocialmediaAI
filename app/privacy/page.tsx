@@ -5,7 +5,7 @@ export const metadata: Metadata = { title: "Privacy", description: "What Hooklin
 
 export default function Privacy() {
   return (
-    <LegalPage title="Privacy" updated="October 16, 2026">
+    <LegalPage title="Privacy" updated="October 17, 2026">
       <p>This page says what Hookline keeps about you, why, who else sees it, and how to delete it. If anything here is unclear, write to <Contact />.</p>
 
       <h2>What we keep</h2>
@@ -13,7 +13,7 @@ export default function Privacy() {
         <li><b>Your account</b>: your email address, the name you give, what you use Hookline for, and your timezone.</li>
         <li><b>Connected accounts</b>: for YouTube and TikTok, the channel or account&rsquo;s id, name and picture, your TikTok username, and the access tokens they give us, stored encrypted.</li>
         <li><b>Your Shorts</b>: the videos we make for you, your yes or no on each, titles you edit, the rendered files, and each posted Short&rsquo;s view counts.</li>
-        <li><b>Your LIVE game</b>: your game settings, your answers about whether you can get gifts on a TikTok LIVE, and each session&rsquo;s numbers (rounds, gift coins seen, the most viewers playing, your top gifters&rsquo; display names and coins, and the username of the TikTok LIVE the game heard).</li>
+        <li><b>Your LIVE game</b>: your game settings, your answers about whether you can get gifts on a TikTok LIVE, and each session&rsquo;s numbers (rounds, gift coins seen, the most viewers playing, your top 5 gifters&rsquo; TikTok ids, display names and coins, and the username of the TikTok LIVE the game heard). Your top gifters&rsquo; ids are used only to welcome them back at your next LIVE, and only your own game gets them.</li>
         <li><b>Earnings</b>: daily figures from the accounts you connect, and your goals. If you add a Stripe key, it&rsquo;s a read-only restricted key, stored encrypted.</li>
         <li><b>Billing</b>: your plan and Stripe&rsquo;s customer and subscription ids. Stripe handles your card; we never see it.</li>
       </ul>

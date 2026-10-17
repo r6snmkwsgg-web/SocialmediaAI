@@ -39,6 +39,8 @@ export const liveSettingsSchema = z.object({
     own: z.array(z.object({ red: z.string().trim().max(NAME_MAX), blue: z.string().trim().max(NAME_MAX) })).max(12),
     gifts: z.object({ red: z.array(gift).length(3), blue: z.array(gift).length(3) }).nullable(),
   }),
+  /** show viewers' initials instead of their names and pictures, everywhere on screen; off when it's missing, as from a page loaded before there was a switch */
+  hideNames: z.boolean().default(false),
 });
 
 export type LiveSettings = z.infer<typeof liveSettingsSchema>;
@@ -58,6 +60,7 @@ export const DEFAULT_SETTINGS: LiveSettings = {
   abilities: LIVE_ABILITIES,
   vote: true,
   rivals: { groups: RIVAL_GROUPS.filter((g) => g.on).map((g) => g.id), own: [], gifts: null },
+  hideNames: false,
 };
 
 /** Settings from anywhere (the database, a URL): whatever's valid, defaults for the rest. */
@@ -86,7 +89,7 @@ export function parseSettings(raw: unknown): LiveSettings {
   return s;
 }
 
-/** What a plan allows: games it doesn't include fall back to the battle, and only some plans get their own gifts. */
+/** What a plan allows: games it doesn't include fall back to the battle, and only some plans get their own gifts. Hiding names is on every plan. */
 export function allowedBy(s: LiveSettings, plan: { games: readonly GameId[]; customMenus: boolean }): LiveSettings {
   return {
     ...s,

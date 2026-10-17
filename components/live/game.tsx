@@ -7,7 +7,7 @@ import { demoTick, demoViewer } from "@/lib/live/demo";
 import type { LiveEvent, Viewer } from "@/lib/live/events";
 import type { MenuGift, Tier } from "@/lib/live/menu";
 import type { LiveSettings } from "@/lib/live/settings";
-import { HeardLog, type Heard } from "@/lib/live/proof";
+import { HeardLog, heardIn, type Heard } from "@/lib/live/proof";
 import { LETTERS, LIKES_PER_HP, Show } from "@/lib/live/show";
 import { draw, H, W } from "./draw/frame";
 import { LiveSound } from "./sound";
@@ -29,6 +29,10 @@ type Props = {
   notice?: string;
   /** a calm line at the top, like RECONNECTING, when nothing more pressing needs saying */
   status?: string;
+  /** initials instead of viewers' names and pictures; it can change while the game runs, and without it the settings say */
+  hideNames?: boolean;
+  /** the last LIVE's top gifters' TikTok ids, best first, to welcome back */
+  supporters?: string[];
   /** reports the session's numbers now and then, for the streamer's stats, with the TikTok LIVEs it heard */
   onStats?: (show: Show, final: boolean, heard: Heard) => void;
 };
@@ -64,7 +68,7 @@ function useImages() {
  * runs the game in real time, listens to TikFinity or the bridge, and has
  * a test panel (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, onStats }: Props) {
+export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, hideNames, supporters, onStats }: Props) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -81,6 +85,9 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const heard = useRef(new HeardLog());
   const stats = useRef(onStats);
   stats.current = onStats;
+  // whether names are hidden, which the drawing loop reads fresh every frame
+  const names = useRef(false);
+  names.current = hideNames ?? settings?.hideNames ?? false;
 
   if (!show.current) show.current = new Show({ settings });
   if (!sound.current) {
@@ -95,6 +102,11 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   }, []);
 
   const handle = useCallback((e: LiveEvent) => show.current?.handle(e), []);
+
+  // the last LIVE's top gifters, as Play hears them
+  useEffect(() => {
+    show.current?.setSupporters(supporters ?? []);
+  }, [supporters]);
 
   const [srcWas, setSrcWas] = useState(src);
   if (src !== srcWas) {
@@ -113,7 +125,8 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
         handle(e);
         // whose LIVE this came from, by what the bridge says it's connected to; TikFinity doesn't say
         const b = h.bridge;
-        if (!e.viewer.pretend && show.current) heard.current.note(show.current.stats.id, b?.state === "live" ? b.user : null);
+        const id = show.current ? heardIn(show.current, e) : null;
+        if (id) heard.current.note(id, b?.state === "live" ? b.user : null);
       },
       onState: (st) => {
         h.since = sinceAfter(h.socket, st, h.since, Date.now());
@@ -194,7 +207,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     let ticks = 0;
     const frame = (now: number) => {
       step(now);
-      draw(ctx, s, { demo: demo.current, image, tag, ...top() });
+      draw(ctx, s, { demo: demo.current, image, tag, hideNames: names.current, ...top() });
       // the test panel shows the vote's buttons only while there's a vote
       if (++ticks % 15 === 0) redraw((n) => n + 1);
       raf = requestAnimationFrame(frame);
@@ -348,6 +361,15 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
               </div>
             </div>
           ))}
+          <div className="mt-4">
+            <p className="mb-2 uppercase tracking-[0.16em] text-[#FFD60A]">Your supporters</p>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button type="button" onClick={() => show.current!.welcome(TESTERS[0], 1)} className={btn}>
+                <span className="block text-paper">Welcome back</span>
+                <span className="block text-[10px] text-dim">as if {TESTERS[0].name} gave most last LIVE</span>
+              </button>
+            </div>
+          </div>
           <button
             type="button"
             onClick={() => {

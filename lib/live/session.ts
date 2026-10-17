@@ -9,6 +9,14 @@ import type { Show } from "./show";
  * whole session so far, so a lost one costs nothing.
  */
 
+/** a stretch this long with nothing from a real viewer ends a session; the next thing starts a new one */
+export const SESSION_IDLE = 20 * 60_000;
+
+/** The LIVE's over: nothing from a real viewer since `lastAt` for SESSION_IDLE. The game, the server and the pages all go by this. */
+export function over(lastAt: Date | number, now: Date | number = Date.now()): boolean {
+  return +now - +lastAt > SESSION_IDLE;
+}
+
 export const sessionSchema = z.object({
   /** the streamer's overlay key: whose session this is */
   key: z.string().min(16).max(64).regex(/^[\w-]+$/),
@@ -52,4 +60,10 @@ export function sessionPayload(show: Show, key: string, { heard, unknown }: Hear
 export function plausible(p: Pick<SessionPayload, "startedAt" | "lastAt">, now = Date.now()): boolean {
   const week = 7 * 24 * 3600_000;
   return p.startedAt > now - week && p.lastAt >= p.startedAt && p.lastAt <= now + 5 * 60_000;
+}
+
+/** How long a LIVE ran, the way the app shows it: 45m, or 1h 12m. */
+export function lasted(s: { startedAt: Date; lastAt: Date }): string {
+  const min = Math.max(1, Math.round((s.lastAt.getTime() - s.startedAt.getTime()) / 60000));
+  return min < 60 ? `${min}m` : `${Math.floor(min / 60)}h ${min % 60}m`;
 }

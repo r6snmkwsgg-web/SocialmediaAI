@@ -557,7 +557,7 @@ describe("big gifts get the biggest moments", () => {
     s.join(viewer("a"), 0);
     s.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
     const b = s.blasts.at(-1)!;
-    expect(battleDraw.blastLine(s, b)).toBe(`${b.many} METEORS ON BLUE`);
+    expect(battleDraw.blastLine(s, b, { demo: false, image: () => null })).toBe(`${b.many} METEORS ON BLUE`);
   });
 
   /** a real show with each gift at its own time, in seconds into the fight */
@@ -985,7 +985,7 @@ describe("Ball Race", () => {
     s.handle({ kind: "gift", viewer: viewer("u"), gift: "Universe", coins: 44999, count: 1 });
     const b = s.blasts.at(-1)!;
     expect(b.many).toBeUndefined();
-    expect(raceDraw.blastLine(s, b)).toBe("U BLASTS DOWN, KNOCKS EVERYONE BACK AND SLIPS THROUGH");
+    expect(raceDraw.blastLine(s, b, { demo: false, image: () => null })).toBe("U BLASTS DOWN, KNOCKS EVERYONE BACK AND SLIPS THROUGH");
   });
 
   it("knocks nearby balls back with a shockwave, and lets a ghost through pegs", () => {
@@ -1061,7 +1061,7 @@ describe("Last One Standing", () => {
     expect(new Set(g.meteors.map((m) => m.target)).size).toBe(rivals);
     const b = s.blasts.at(-1)!;
     expect(b.many).toBe(rivals);
-    expect(royaleDraw.blastLine(s, b)).toBe("ON U'S 4 BIGGEST RIVALS");
+    expect(royaleDraw.blastLine(s, b, { demo: false, image: () => null })).toBe("ON U'S 4 BIGGEST RIVALS");
   });
 
   it("protects a shielded ball and arms a sword", () => {

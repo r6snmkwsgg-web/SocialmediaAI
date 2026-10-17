@@ -3,7 +3,7 @@ import { ARENA, type Fighter, type RoyaleGame } from "@/lib/live/games/royale";
 import type { Show } from "@/lib/live/show";
 import { crownLine, drawEffects, drawFloor, ruleLines } from "./battle";
 import {
-  AX, AY, blade, circle, CPU, crown, ease, face, GOLD, heart, INK, M, meteorFall, PAPER, roundRect, SCALE, shakeFrom, SIDE, SIGNAL, spikeRing, text, W,
+  AX, AY, blade, circle, CPU, crown, ease, face, GOLD, HEAD, heart, INK, M, meteorFall, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, SIGNAL, spikeRing, STRIP, text, W,
   type Ctx, type View,
 } from "./kit";
 import type { GameDraw } from "./types";
@@ -33,7 +33,7 @@ function drawFighter(ctx: Ctx, view: View, g: RoyaleGame, f: Fighter, turn: numb
   const hx = f.x + r * 0.74, hy = f.y - r * 0.74;
   circle(ctx, hx, hy, hr, f.cpu ? CPU : SIGNAL, INK, 4);
   text(ctx, String(Math.ceil(f.hp)), hx, hy + hr * 0.4, { size: hr * 1.1, align: "center", color: "#fff" });
-  if (!f.cpu) text(ctx, f.name, f.x, f.y + r + 26, { size: 24, align: "center", stroke: 7, max: 190 });
+  if (!f.cpu) text(ctx, nameOf(view, f.name), f.x, f.y + r + 26, { size: 24, align: "center", stroke: 7, max: 190 });
   if (f.shieldUntil > g.clock) {
     const pulse = 0.5 + 0.5 * Math.sin(turn * 6);
     circle(ctx, f.x, f.y, r + 14 + pulse * 4, "rgba(100,210,255,0.14)", "#64D2FF", 5);
@@ -44,7 +44,7 @@ function drawFighter(ctx: Ctx, view: View, g: RoyaleGame, f: Fighter, turn: numb
 export const royaleDraw: GameDraw = {
   header(ctx, show) {
     const g = game(show);
-    const y = 172, h = 168;
+    const { y, h } = HEAD;
     roundRect(ctx, M, y, SIDE, h, 18, SIGNAL);
     text(ctx, "TYPE GO", M + 28, y + 82, { size: 78, color: "#fff", spacing: 1 });
     text(ctx, "TO JOIN THE FIGHT · LAST ONE ALIVE WINS", M + 28, y + 124, { size: 28, color: "#fff", spacing: 1.5, alpha: 0.85, max: SIDE - 260 });
@@ -52,11 +52,11 @@ export const royaleDraw: GameDraw = {
     text(ctx, String(n), M + SIDE - 28, y + 104, { size: 96, color: "#fff", align: "right" });
     text(ctx, "ALIVE", M + SIDE - 28, y + 142, { size: 26, color: "#fff", align: "right", spacing: 3, alpha: 0.8 });
     // who's left: a dot each, out ones faded
-    const by = y + h + 12;
-    roundRect(ctx, M, by, SIDE, 18, 9, "#1A1A1C");
+    const { y: by, h: bh } = STRIP;
+    roundRect(ctx, M, by, SIDE, bh, bh / 2, "#1A1A1C");
     const all = g.fighters;
     const step = Math.min(34, (SIDE - 20) / Math.max(1, all.length));
-    all.forEach((f, i) => circle(ctx, M + 14 + i * step, by + 9, 7, f.alive ? (f.cpu ? CPU : GOLD) : "#2A2A2E"));
+    all.forEach((f, i) => circle(ctx, M + 14 + i * step, by + bh / 2, 6, f.alive ? (f.cpu ? CPU : GOLD) : "#2A2A2E"));
   },
 
   arena(ctx, show, view, turn) {
@@ -86,19 +86,19 @@ export const royaleDraw: GameDraw = {
     if (sudden && show.phase === "play") text(ctx, "THE WALLS ARE CLOSING IN", W / 2, AY + SIDE - 28, { size: 40, align: "center", color: "#FF3B30", spacing: 3, stroke: 8 });
   },
 
-  rules(ctx, show) {
+  rules(ctx, show, view) {
     ruleLines(ctx, [
       { s: "LIKES HEAL YOUR BALL", size: 40, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 36, "#FF6FB5") },
-      { ...crownLine(show), pic: (x, y) => crown(ctx, x, y, 34) },
+      { ...crownLine(show, view), pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },
 
-  active(show, effect) {
+  active(show, effect, view) {
     const g = game(show);
     const key = effect === "shield" ? "shieldUntil" : effect === "sword" ? "swordUntil" : effect === "spikes" ? "spikesUntil" : null;
     if (key) {
       const f = g.alive().find((x) => x[key] > g.clock);
-      if (f) return { text: `${f.name.toUpperCase()} · ${Math.ceil(f[key] - g.clock)}S`, color: GOLD };
+      if (f) return { text: `${nameOf(view, f.name).toUpperCase()} · ${Math.ceil(f[key] - g.clock)}S`, color: GOLD };
     }
     if (effect === "meteor" && g.meteors[0]) return { text: "INCOMING", color: "#FF9F0A" };
     return null;
@@ -112,15 +112,15 @@ export const royaleDraw: GameDraw = {
     text(ctx, `${n} IN SO FAR`, cx, cy + 110, { size: 40, align: "center", spacing: 3, alpha: 0.8 });
   },
 
-  winner(show) {
+  winner(show, view) {
     const c = show.result?.champion;
     if (!c) return { title: "NOBODY", color: PAPER, line: "EVERYONE WENT OUT" };
     const wins = show.winsOf(c);
-    return { title: c.name.toUpperCase(), color: c.cpu ? "#B9B6AE" : GOLD, entrant: c, line: c.cpu ? "THE CPU OUTLASTED EVERYONE" : wins > 1 ? `${wins} WINS TODAY` : "IS THE LAST ONE STANDING" };
+    return { title: nameOf(view, c.name, c.cpu).toUpperCase(), color: c.cpu ? "#B9B6AE" : GOLD, entrant: c, line: c.cpu ? "THE CPU OUTLASTED EVERYONE" : wins > 1 ? `${wins} WINS TODAY` : "IS THE LAST ONE STANDING" };
   },
 
-  blastLine(show, b) {
-    const name = b.viewer.name.toUpperCase();
+  blastLine(show, b, view) {
+    const name = nameOf(view, b.viewer.name).toUpperCase();
     if (b.tier.effect === "shield") return `${name} CAN'T BE HURT`;
     if (b.tier.effect === "sword") return `${name} GETS A SPINNING SWORD`;
     if (b.many) return `ON ${name}'S ${b.many} BIGGEST RIVALS`;

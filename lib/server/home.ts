@@ -30,7 +30,8 @@ export async function homeData(userId: string): Promise<HomeData> {
         exists (select 1 from public.channels where platform = 'youtube' and status = 'connected') as youtube,
         exists (select 1 from public.videos where decided_at is not null) as swiped,
         exists (select 1 from public.videos where status = 'posted') as posted,
-        (exists (select 1 from public.live_settings) or exists (select 1 from public.live_sessions)) as live_set_up,
+        -- hiding names alone saves settings with no game in them, which isn't setting the game up
+        (exists (select 1 from public.live_settings where settings ? 'game') or exists (select 1 from public.live_sessions)) as live_set_up,
         exists (select 1 from public.live_sessions) as went_live,
         exists (select 1 from public.goals) as goal,
         (select count(*) from public.videos where status = 'review')::int as in_review,

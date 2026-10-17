@@ -41,11 +41,14 @@ export default async function LivePlay({ searchParams }: { searchParams: Search 
   let tag = true;
   let notice: string | undefined;
   let unsure = false;
+  // the last LIVE's top gifters' TikTok ids, to welcome back; none without a key, or when the key can't be read
+  let supporters: string[] = [];
   if (key) {
     const o = await lookUp(() => overlayFor(key));
     if (o.state === "ok") {
       settings = o.value.settings;
       tag = o.value.plan.tag;
+      supporters = o.value.supporters;
     } else {
       settings = allowedBy(settings, PLANS.free);
       if (o.state === "gone") notice = OLD_ADDRESS;
@@ -56,5 +59,5 @@ export default async function LivePlay({ searchParams }: { searchParams: Search 
     settings = allowedBy(settings, PLANS.free);
   }
 
-  return <Play src={src} url={url} demo={demo} clean={one(q.clean) === "1"} settings={settings} tag={tag} notice={notice} unsure={unsure} overlayKey={key && !notice ? key : undefined} />;
+  return <Play src={src} url={url} demo={demo} clean={one(q.clean) === "1"} settings={settings} tag={tag} notice={notice} unsure={unsure} overlayKey={key && !notice ? key : undefined} supporters={supporters} />;
 }

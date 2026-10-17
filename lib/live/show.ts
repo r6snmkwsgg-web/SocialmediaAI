@@ -3,14 +3,17 @@ import type { LiveEvent, Viewer } from "./events";
 import { makeGame } from "./games";
 import type { Entrant, Game, Result, VoteOption } from "./games/types";
 import { tierIn, type Tier } from "./menu";
+import { over } from "./session";
 import { DEFAULT_SETTINGS, parseSettings, type LiveSettings } from "./settings";
+import { TOP_SHOWN } from "./supporters";
 
 /**
  * A live show: round after round of one game, steered by the chat. The
  * show owns everything about the stream (who's watching and on which
- * team, coins, the crown, the vote between rounds, the session's numbers)
- * and hands the arena to the game. It's all plain logic: the screen reads
- * it and draws it, and a test can run a whole show without one.
+ * team, coins, the crown, the vote between rounds, the LIVE's top gifters
+ * and welcome backs, the session's numbers) and hands the arena to the
+ * game. It's all plain logic: the screen reads it and draws it, and a test
+ * can run a whole show without one.
  */
 
 export type Phase = "intro" | "play" | "ko" | "win";
@@ -34,9 +37,13 @@ const LIKE_WINDOW = 10;
 export const FOLLOW_HP = 3;
 /** a gift during the vote adds a vote per coin */
 export const VOTES_PER_COIN = 1;
-/** a stretch this long with nothing from a real viewer ends a session; the next thing starts a new one */
-export const SESSION_IDLE = 20 * 60_000;
+// the quiet that ends a session lives with the session, so the server can use it without the game
+export { SESSION_IDLE } from "./session";
 export const LETTERS = ["A", "B", "C"] as const;
+/** seconds a welcome back stays up */
+export const WELCOME_FOR = 3.5;
+/** a welcome waits this long after the newest big gift arrives: its moment can start up to 3 s late and last up to 4 s (frame.ts) */
+export const WELCOME_AFTER_BLAST = 8;
 
 export type Member = { viewer: Viewer; side: Team | null; coins: number };
 /** one line about what just happened, shown briefly */
@@ -44,6 +51,8 @@ export type Toast = { id: number; at: number; side: Team | null; viewer: Viewer;
 /** a big gift going off: its moment on screen, bigger for more coins; `many` is how many of its power it set off, `extra` what else it set off */
 export type Blast = { id: number; at: number; side: Team | null; viewer: Viewer; tier: Tier; count: number; coins: number; many?: number; extra?: string[] };
 export type Cue = { at: number; kind: "count" | "fight" | "ko" | "win" | "gift" | "join" | "vote"; n?: number };
+/** one of the last LIVE's top gifters, back again: `rank` is where they came */
+export type Welcome = { id: number; at: number; viewer: Viewer; rank: number };
 
 export type Vote = {
   options: VoteOption[];
@@ -152,8 +161,21 @@ export class Show {
   voted: { option: VoteOption; votes: number } | null = null;
   /** the session's numbers; a new session starts after SESSION_IDLE without a real viewer */
   stats: SessionStats;
+  /** the last LIVE's top gifters as each is welcomed back, the last few */
+  readonly welcomes: Welcome[] = [];
   /** the real viewers taking part this round */
   private readonly roundPlayers = new Set<string>();
+  /** what pretend viewers gave, so the test panel and demo can show a top 3 while no LIVE is going */
+  private readonly tried: SessionStats["gifters"] = new Map();
+  /** the last LIVE's top gifters, by TikTok id, with where each came */
+  private readonly supporters = new Map<string, number>();
+  /** when each of them was last welcomed back, or joined the list while a LIVE was going, as epoch ms */
+  private readonly greeted = new Map<string, number>();
+  /** welcome backs waiting for their turn on screen */
+  private readonly due: { viewer: Viewer; rank: number }[] = [];
+  /** when the LIVE now going began, and the last thing a real viewer did, joins included, as epoch ms */
+  private liveFrom = 0;
+  private lastReal = 0;
   private readonly pending: Pending[] = [];
   private readonly followed = new Set<string>();
   private readonly shared = new Set<string>();
@@ -284,6 +306,7 @@ export class Show {
         if (this.phase === "play" && this.decided()) break;
       }
       if (this.acc > TICK * 12) this.acc = 0;
+      if (this.phase === "play") this.welcomeNext();
       if (this.phase === "ko" && this.elapsed >= KO_HOLD) {
         this.go("win");
         this.cue("win");
@@ -308,7 +331,7 @@ export class Show {
     const top = this.crown ? this.members.get(this.crown) : undefined;
     this.mvp = top && this.crown ? { viewer: top.viewer, coins: this.roundCoins.get(this.crown) ?? 0 } : null;
     // a round counts once a real viewer has shown up, and not while they've all been gone a while
-    if (this.stats.lastAt !== null && Date.now() - this.stats.lastAt <= SESSION_IDLE) this.stats.rounds++;
+    if (this.liveNow()) this.stats.rounds++;
     this.go("ko");
     this.cue("ko");
     return true;
@@ -344,6 +367,8 @@ export class Show {
   /** One thing that happened on the stream. */
   handle(e: LiveEvent) {
     const g = this.game;
+    // joins too: a top gifter coming back is welcomed whatever they do first
+    this.greet(e.viewer);
     if (e.kind === "join") return;
 
     if (e.kind === "chat") {
@@ -402,12 +427,10 @@ export class Show {
     const m = this.join(e.viewer, team);
     const coins = e.coins * e.count;
     m.coins += coins;
-    if (!e.viewer.pretend) {
-      this.stats.coins += coins;
-      const g2 = this.stats.gifters.get(e.viewer.id);
-      if (g2) g2.coins += coins;
-      else this.stats.gifters.set(e.viewer.id, { viewer: m.viewer, coins });
-    }
+    if (!e.viewer.pretend) this.stats.coins += coins;
+    // real gifters count for the session; pretend ones only show while no LIVE is going, so one tried during a LIVE never does
+    if (!e.viewer.pretend) gave(this.stats.gifters, m.viewer, coins);
+    else if (over(this.lastReal)) gave(this.tried, m.viewer, coins);
     this.cue("gift", coins);
 
     // during the vote, a gift is votes as well, one a coin like everywhere else
@@ -462,6 +485,7 @@ export class Show {
     if (said.blast) {
       this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, count, coins: each * count, many: said.many, extra: said.extra });
       if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
+      this.welcomeLater();
     } else if (took && top > 0) this.toast(side, viewer, `took the crown · ${gift}`);
     else if (said.toast) this.toast(side, viewer, said.toast);
   }
@@ -474,7 +498,7 @@ export class Show {
   private taking(viewer: Viewer) {
     if (viewer.pretend) return;
     const now = Date.now();
-    if (this.stats.lastAt !== null && now - this.stats.lastAt > SESSION_IDLE) {
+    if (this.stats.lastAt !== null && over(this.stats.lastAt, now)) {
       this.stats = this.newStats();
       this.roundPlayers.clear();
     }
@@ -493,10 +517,111 @@ export class Show {
     return [...this.stats.gifters.values()].sort((a, b) => b.coins - a.coins).slice(0, n);
   }
 
+  /** a real viewer has taken part in the last SESSION_IDLE, so the session's numbers are the LIVE now going */
+  liveNow(): boolean {
+    return this.stats.lastAt !== null && !over(this.stats.lastAt);
+  }
+
+  /**
+   * The LIVE's top gifters for the screen, most coins first, with ties to
+   * whoever gave first: real ones while a LIVE is going, pretend ones only
+   * while none is, so a test run never shows as a real LIVE's.
+   */
+  top3(): { viewer: Viewer; coins: number }[] {
+    // a real viewer who's only joined or said hello means a LIVE is going, before its session has started
+    const from = this.liveNow() ? this.stats.gifters : over(this.lastReal) ? this.tried : null;
+    return from ? topOf(from, TOP_SHOWN) : [];
+  }
+
+  /**
+   * The last LIVE's top gifters, by TikTok id, best first: each is welcomed
+   * back once a LIVE. One who joins the list while a LIVE is going waits for
+   * the next LIVE: the server can't hear the joins and hellos that keep a
+   * LIVE going, and goes by its own clock, so a list it sends mid-LIVE can be
+   * from earlier in this one.
+   */
+  setSupporters(ids: string[]) {
+    const now = Date.now();
+    const had = new Set(this.supporters.keys());
+    this.supporters.clear();
+    ids.slice(0, TOP_SHOWN).forEach((id, i) => {
+      this.supporters.set(id, i + 1);
+      if (!had.has(id) && !over(this.lastReal, now)) this.greeted.set(id, now);
+    });
+  }
+
+  /** A welcome back, as if they'd come back: the test panel's, so pretend viewers get one too. */
+  welcome(viewer: Viewer, rank: number) {
+    this.due.push({ viewer, rank });
+  }
+
+  /**
+   * Anything a real viewer does, joins included. After SESSION_IDLE of
+   * nothing it's a new LIVE beginning, and each of the last LIVE's top
+   * gifters is welcomed back once in it, whatever they do first.
+   */
+  private greet(viewer: Viewer) {
+    if (viewer.pretend) return;
+    const now = Date.now();
+    if (over(this.lastReal, now)) {
+      this.liveFrom = now;
+      // whatever the test panel or demo gave before isn't this LIVE's
+      this.tried.clear();
+    }
+    this.lastReal = now;
+    const rank = this.supporters.get(viewer.id);
+    if (!rank || (this.greeted.get(viewer.id) ?? -1) >= this.liveFrom) return;
+    this.greeted.set(viewer.id, now);
+    this.due.push({ viewer, rank });
+  }
+
+  /** The next welcome back goes up during play, once the last one has had its time and no big gift's moment can still be on screen. */
+  private welcomeNext() {
+    const last = this.welcomes.at(-1), blast = this.blasts.at(-1);
+    if (!this.due.length || (last && this.now - last.at < WELCOME_FOR) || (blast && this.now - blast.at < WELCOME_AFTER_BLAST)) return;
+    const { viewer, rank } = this.due.shift()!;
+    this.welcomes.push({ id: this.nextId++, at: this.now, viewer, rank });
+    if (this.welcomes.length > 4) this.welcomes.splice(0, this.welcomes.length - 4);
+    this.cue("join");
+  }
+
+  /** A big gift's moment would hide a welcome back that's up, so it goes back to the front of the line, to go up again once the moment's over. */
+  private welcomeLater() {
+    const w = this.welcomes.at(-1);
+    if (!w || this.now - w.at >= WELCOME_FOR) return;
+    this.welcomes.pop();
+    this.due.unshift({ viewer: w.viewer, rank: w.rank });
+  }
+
   /** the champion's record this session, for the win screen */
   winsOf(e: Entrant | null | undefined): number {
     return e && !e.cpu ? (this.wins.get(e.id) ?? 0) : 0;
   }
+}
+
+/**
+ * The `n` who gave most, most first, with ties to whoever gave first. One
+ * pass rather than a sort, since the screen asks every frame and a big
+ * LIVE can have thousands of gifters.
+ */
+function topOf(list: SessionStats["gifters"], n: number): { viewer: Viewer; coins: number }[] {
+  const best: { viewer: Viewer; coins: number }[] = [];
+  for (const g of list.values()) {
+    const i = best.findIndex((b) => g.coins > b.coins);
+    if (i >= 0) best.splice(i, 0, g);
+    else if (best.length < n) best.push(g);
+    if (best.length > n) best.pop();
+  }
+  return best;
+}
+
+/** Adds a gift to a list of gifters, under the name the gifter has now, so someone who renames shows the new name. */
+function gave(list: SessionStats["gifters"], viewer: Viewer, coins: number) {
+  const g = list.get(viewer.id);
+  if (g) {
+    g.coins += coins;
+    g.viewer = viewer;
+  } else list.set(viewer.id, { viewer, coins });
 }
 
 /** Likes on their way to the next HP, and how many a second have been coming in lately. */

@@ -2,7 +2,7 @@ import type { Team } from "@/lib/battle/sim";
 import type { RivalsGame } from "@/lib/live/games/rivals";
 import type { Show } from "@/lib/live/show";
 import { battleDraw, crownLine, ruleLines } from "./battle";
-import { circle, coin, crown, DIM, heart, icon, INK, M, measure, outline, PAPER, roundRect, SIDE, text, W } from "./kit";
+import { circle, coin, crown, DIM, HEAD, heart, icon, INK, M, measure, MENU_Y, outline, PAPER, roundRect, SIDE, STRIP, text, W } from "./kit";
 import type { GameDraw } from "./types";
 
 /**
@@ -26,7 +26,7 @@ function going(show: Show, side: Team, effect: string): { text: string; color: s
 export const rivalsDraw: GameDraw = {
   header(ctx, show) {
     const g = game(show);
-    const y = 172, h = 168, gap = 20;
+    const { y, h } = HEAD, gap = 20;
     const cw = (SIDE - gap) / 2;
     SIDES.forEach((t) => {
       const x = M + t * (cw + gap);
@@ -50,25 +50,25 @@ export const rivalsDraw: GameDraw = {
     // who's ahead, as one bar
     const h0 = g.world.hp(0), h1 = g.world.hp(1);
     const share = h0 + h1 > 0 ? h0 / (h0 + h1) : 0.5;
-    const by = y + h + 12;
+    const { y: by, h: bh } = STRIP;
     const split = M + SIDE * share;
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(M, by, SIDE, 18, 9);
+    ctx.roundRect(M, by, SIDE, bh, bh / 2);
     ctx.clip();
     ctx.fillStyle = show.teams[0].color;
-    ctx.fillRect(M, by, split - M, 18);
+    ctx.fillRect(M, by, split - M, bh);
     ctx.fillStyle = show.teams[1].color;
-    ctx.fillRect(split, by, M + SIDE - split, 18);
+    ctx.fillRect(split, by, M + SIDE - split, bh);
     ctx.restore();
     ctx.fillStyle = PAPER;
-    ctx.fillRect(split - 3, by - 6, 6, 30);
+    ctx.fillRect(split - 3, by - 4, 6, bh + 8);
   },
 
   /** each side's three gifts, under its card: the same powers, the side's own gifts */
   menu(ctx, show) {
     const g = game(show);
-    const top = 392, rh = 58, rg = 8, gap = 16;
+    const top = MENU_Y, rh = 50, rg = 8, gap = 16;
     const cw = (SIDE - gap) / 2;
     SIDES.forEach((side) => {
       const x = M + side * (cw + gap);
@@ -86,26 +86,26 @@ export const rivalsDraw: GameDraw = {
           roundRect(ctx, x, y, cw, rh, 12, flash > 0 || on ? t.color : color);
           ctx.restore();
           if (on || flash > 0.3) outline(ctx, x, y, cw, rh, 12, t.color, on ? 4 : 3);
-          icon(ctx, t.icon, x + 34, y + rh / 2, 36, t.color);
-          text(ctx, t.name.toUpperCase(), x + 64, y + 40, { size: 30, color: t.color, spacing: 1, max: 150 });
+          icon(ctx, t.icon, x + 34, y + rh / 2, 32, t.color);
+          text(ctx, t.name.toUpperCase(), x + 64, y + 35, { size: 28, color: t.color, spacing: 1, max: 150 });
           const r = x + cw - 18;
           if (on) {
-            text(ctx, on.text, r, y + 39, { size: 26, color: on.color, align: "right", spacing: 2 });
+            text(ctx, on.text, r, y + 34, { size: 24, color: on.color, align: "right", spacing: 2 });
             return;
           }
           const price = (t.price ?? t.min).toLocaleString("en-US");
-          const pw = measure(ctx, price, 26, 1);
-          text(ctx, price, r, y + 39, { size: 26, color: DIM, align: "right", spacing: 1 });
-          coin(ctx, r - pw - 14, y + 30, 8);
-          text(ctx, t.gift.toUpperCase(), r - pw - 30, y + 39, { size: 26, color: PAPER, align: "right", spacing: 1, max: cw - 260 - pw });
+          const pw = measure(ctx, price, 24, 1);
+          text(ctx, price, r, y + 34, { size: 24, color: DIM, align: "right", spacing: 1 });
+          coin(ctx, r - pw - 14, y + 26, 7);
+          text(ctx, t.gift.toUpperCase(), r - pw - 30, y + 34, { size: 24, color: PAPER, align: "right", spacing: 1, max: cw - 260 - pw });
         });
     });
   },
 
   arena: battleDraw.arena,
 
-  rules(ctx, show) {
-    const c = crownLine(show);
+  rules(ctx, show, view) {
+    const c = crownLine(show, view);
     ruleLines(ctx, [
       { s: "LIKES AND OTHER GIFTS HELP YOUR SIDE", size: 36, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 32, "#FF6FB5") },
       { ...c, pic: (x, y) => crown(ctx, x, y, 34) },

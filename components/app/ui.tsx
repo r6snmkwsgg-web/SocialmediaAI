@@ -25,8 +25,9 @@ export function PageHead({ eyebrow, title, line, action }: { eyebrow?: string; t
   );
 }
 
-export function Card({ children, className = "", as: Tag = "section" }: { children: React.ReactNode; className?: string; as?: "section" | "div" | "li" | "article" }) {
-  return <Tag className={`min-w-0 border-2 border-edge bg-card ${className}`}>{children}</Tag>;
+/** A box of related things. `id` lets a link land on it, like /app/live#lives. */
+export function Card({ children, className = "", as: Tag = "section", id }: { children: React.ReactNode; className?: string; as?: "section" | "div" | "li" | "article"; id?: string }) {
+  return <Tag id={id} className={`min-w-0 border-2 border-edge bg-card ${className}`}>{children}</Tag>;
 }
 
 export function CardHead({ title, action }: { title: string; action?: React.ReactNode }) {

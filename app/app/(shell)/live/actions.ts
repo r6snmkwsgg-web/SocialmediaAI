@@ -7,9 +7,11 @@ import { ownRivalryProblem, sidesProblem, validSideGifts } from "@/lib/live/riva
 import { liveSettingsSchema } from "@/lib/live/settings";
 import { requireUser } from "@/lib/server/auth";
 import { asUser } from "@/lib/server/db";
-import { rotateOverlayKey, saveLiveSettings } from "@/lib/server/live";
+import { rotateOverlayKey, saveLiveSettings, setHideNames } from "@/lib/server/live";
 
 export type SaveState = { ok: boolean; message: string; at: number } | null;
+/** after a tap on the names switch: whether it saved, and which way */
+export type NamesState = { ok: boolean; hide: boolean; at: number } | null;
 
 export async function saveLive(_: SaveState, form: FormData): Promise<SaveState> {
   const me = await requireUser();
@@ -47,6 +49,20 @@ export async function saveLive(_: SaveState, form: FormData): Promise<SaveState>
   revalidatePath("/app/live");
   revalidatePath("/app");
   return { ok: true, message: "Saved. A game that's already open picks it up when you reload it.", at: Date.now() };
+}
+
+/** One tap: viewers' initials instead of their names and pictures in the game, or names again. A game that's open asks within a minute. */
+export async function saveNames(_: NamesState, form: FormData): Promise<NamesState> {
+  const me = await requireUser();
+  const hide = form.get("hide") === "1";
+  try {
+    await setHideNames(me.id, hide);
+  } catch (err) {
+    console.error("hide names: saving failed", err instanceof Error ? err.message : err);
+    return { ok: false, hide, at: Date.now() };
+  }
+  revalidatePath("/app/live");
+  return { ok: true, hide, at: Date.now() };
 }
 
 /** A new private key for the game's address; the old address stops working. */

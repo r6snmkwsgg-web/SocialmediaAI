@@ -2,7 +2,7 @@ import { ARENA, FPS, type Ball, type Team } from "@/lib/battle/sim";
 import type { BattleGame } from "@/lib/live/games/battle";
 import type { Blast, Show } from "@/lib/live/show";
 import {
-  AX, AY, blade, circle, crown, face, flame, FX, heart, INK, M, PAPER, roundRect, SCALE, shakeFrom, SIDE, spikeRing, text, W,
+  AX, AY, blade, circle, crown, face, flame, FX, HEAD, heart, INK, M, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, spikeRing, STRIP, text, W,
   type Ctx, type View, ease, measure, meteorFall, meteorSize,
 } from "./kit";
 import type { GameDraw } from "./types";
@@ -43,7 +43,7 @@ function drawBall(ctx: Ctx, show: Show, view: View, b: Ball, turn: number, crown
     const hx = b.x + r * 0.74, hy = b.y - r * 0.74;
     circle(ctx, hx, hy, hr, c, INK, 4);
     text(ctx, String(Math.ceil(b.hp)), hx, hy + hr * 0.4, { size: hr * 1.1, align: "center", color: "#fff" });
-    text(ctx, b.tag.name, b.x, b.y + r + (b.plain ? 24 : 30), { size: b.plain ? 22 : 28, align: "center", stroke: 7, max: 200 });
+    text(ctx, nameOf(view, b.tag.name), b.x, b.y + r + (b.plain ? 24 : 30), { size: b.plain ? 22 : 28, align: "center", stroke: 7, max: 200 });
   } else {
     circle(ctx, b.x, b.y, r, c, PAPER, 6);
     const size = Math.max(28, r * 0.95);
@@ -176,18 +176,18 @@ export function ruleLines(ctx: Ctx, lines: { s: string; size: number; color: str
 }
 
 /** The crown's line: who has it and what it takes, or how to get it. */
-export function crownLine(show: Show): { s: string; size: number; color: string; pic: (x: number, y: number) => void } {
+export function crownLine(show: Show, view: View): { s: string; size: number; color: string; pic: (x: number, y: number) => void } {
   const king = show.crown ? show.members.get(show.crown) : undefined;
   const coins = show.crown ? (show.roundCoins.get(show.crown) ?? 0) : 0;
   return king
-    ? { s: `${king.viewer.name.toUpperCase()} HAS THE CROWN · ${coins.toLocaleString("en-US")} COINS · OUTGIVE THEM`, size: 32, color: "#FFD60A", pic: () => {} }
+    ? { s: `${nameOf(view, king.viewer.name).toUpperCase()} HAS THE CROWN · ${coins.toLocaleString("en-US")} COINS · OUTGIVE THEM`, size: 32, color: "#FFD60A", pic: () => {} }
     : { s: "BIGGEST GIFTER WEARS THE CROWN", size: 34, color: "#8D8A83", pic: () => {} };
 }
 
 export const battleDraw: GameDraw = {
   header(ctx, show) {
     const g = game(show);
-    const y = 172, h = 168, gap = 20;
+    const { y, h } = HEAD, gap = 20;
     const cw = (SIDE - gap) / 2;
     ([0, 1] as Team[]).forEach((t) => {
       const x = M + t * (cw + gap);
@@ -208,19 +208,19 @@ export const battleDraw: GameDraw = {
     // who's ahead, as one bar
     const h0 = g.world.hp(0), h1 = g.world.hp(1);
     const share = h0 + h1 > 0 ? h0 / (h0 + h1) : 0.5;
-    const by = y + h + 12;
+    const { y: by, h: bh } = STRIP;
     const split = M + SIDE * share;
     ctx.save();
     ctx.beginPath();
-    ctx.roundRect(M, by, SIDE, 18, 9);
+    ctx.roundRect(M, by, SIDE, bh, bh / 2);
     ctx.clip();
     ctx.fillStyle = teamColor(show, 0);
-    ctx.fillRect(M, by, split - M, 18);
+    ctx.fillRect(M, by, split - M, bh);
     ctx.fillStyle = teamColor(show, 1);
-    ctx.fillRect(split, by, M + SIDE - split, 18);
+    ctx.fillRect(split, by, M + SIDE - split, bh);
     ctx.restore();
     ctx.fillStyle = PAPER;
-    ctx.fillRect(split - 3, by - 6, 6, 30);
+    ctx.fillRect(split - 3, by - 4, 6, bh + 8);
   },
 
   arena(ctx, show, view, turn) {
@@ -260,8 +260,8 @@ export const battleDraw: GameDraw = {
     });
   },
 
-  rules(ctx, show) {
-    const c = crownLine(show);
+  rules(ctx, show, view) {
+    const c = crownLine(show, view);
     ruleLines(ctx, [
       { s: "LIKES HEAL YOUR TEAM", size: 40, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 36, "#FF6FB5") },
       { ...c, pic: (x, y) => crown(ctx, x, y, 34) },

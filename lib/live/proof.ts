@@ -1,3 +1,6 @@
+import type { LiveEvent } from "./events";
+import type { Show } from "./show";
+
 /**
  * Whose LIVE a session's coins came from. The game can be pointed at any
  * TikTok LIVE, so coins only count as the streamer's when the game heard
@@ -45,6 +48,26 @@ export class HeardLog {
   }
 }
 
+/**
+ * Whether the log notes an event: anything a real viewer does, except
+ * joining. A join never starts a session, so the first joins of the next
+ * LIVE would be filed under the last one, and could unverify it for good.
+ */
+export function notesHeard(e: LiveEvent): boolean {
+  return !e.viewer.pretend && e.kind !== "join";
+}
+
+/**
+ * The session an event the show has just handled is noted under: the one
+ * now going, for anything notesHeard takes. Null after 20 quiet minutes,
+ * until something starts the next session: a hello, a second follow or a
+ * second share doesn't, and noted under the last one, it could unverify
+ * that LIVE for good.
+ */
+export function heardIn(show: Pick<Show, "stats" | "liveNow">, e: LiveEvent): string | null {
+  return notesHeard(e) && show.liveNow() ? show.stats.id : null;
+}
+
 /** Whether a session counts as the streamer's: it heard at least one LIVE, and every one was theirs. */
 export function ownLive(heard: string[], mine: string[]): boolean {
   const own = new Set(mine.map((u) => u.toLowerCase()));
@@ -74,11 +97,14 @@ export function whyNotCounted(s: { verified: boolean; heard: string[]; unknown?:
 
 const n = (v: number) => v.toLocaleString("en-US");
 
-/** A LIVE's recap notification, once it's over. A LIVE that isn't verified as theirs says so, and why. */
-export function recapNote(s: { rounds: number; coins: number; peakPlayers: number; top: { name: string; coins: number } | null; verified: boolean; heard: string[]; unknown?: boolean }, mine: string[], checking = true): { title: string; body: string } {
+/**
+ * A LIVE's recap notification, once it's over. A LIVE that isn't verified
+ * as theirs says so, and why. It names no viewer, so supporters' names stay
+ * only with the session they gifted in.
+ */
+export function recapNote(s: { rounds: number; coins: number; peakPlayers: number; verified: boolean; heard: string[]; unknown?: boolean }, mine: string[], checking = true): { title: string; body: string } {
   const rounds = `${n(s.rounds)} round${s.rounds === 1 ? "" : "s"}`;
-  const top = s.top ? ` Top gifter: ${s.top.name} with ${n(s.top.coins)} coins.` : "";
-  if (s.verified) return { title: `LIVE recap: ${rounds}, ${n(s.coins)} gift coins seen`, body: `${n(s.peakPlayers)} playing at once.${top}` };
+  if (s.verified) return { title: `LIVE recap: ${rounds}, ${n(s.coins)} gift coins seen`, body: `${n(s.peakPlayers)} playing at once. Your recap card is ready.` };
   const why = whyNotCounted(s, mine, checking)!;
   return { title: `LIVE recap: ${rounds}, not verified`, body: `${why} Its ${n(s.coins)} gift coins seen don't count in Earnings.` };
 }

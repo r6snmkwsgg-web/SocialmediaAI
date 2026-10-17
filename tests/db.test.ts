@@ -392,7 +392,7 @@ describe.skipIf(!safe)("the database", () => {
     const recaps = (await notes.notificationsOf(B)).items.filter((n) => n.kind === "live");
     const mine = recaps.find((n) => n.title.startsWith("LIVE recap: 9 rounds"))!;
     expect(mine.title).toBe("LIVE recap: 9 rounds, 1,234 gift coins seen");
-    expect(mine.body).toMatch(/17 playing at once\. Top gifter: mia with 999 coins/);
+    expect(mine.body).toBe("17 playing at once. Your recap card is ready.");
     expect(await live.recapLives()).not.toContain(`recap for ${other.id}`);
     const theirs = recaps.find((n) => n.title.startsWith("LIVE recap: 3 rounds"))!;
     expect(theirs.title).toBe("LIVE recap: 3 rounds, not verified");
@@ -935,7 +935,7 @@ describe.skipIf(!safe)("the database", () => {
     await db.admin((tx) => tx`delete from auth.users where id = ${B}`);
     const left = await db.admin((tx) => tx<{ n: number }[]>`
       select (select count(*) from public.profiles where id = ${B}) + (select count(*) from public.videos where user_id = ${B})
-        + (select count(*) from public.live_sessions where user_id = ${B}) + (select count(*) from public.stripe_keys where user_id = ${B}) as n`);
+        + (select count(*) from public.live_sessions where user_id = ${B}) + (select count(*) from public.stripe_keys where user_id = ${B}) + (select count(*) from public.notifications where user_id = ${B}) as n`);
     expect(Number(left[0].n)).toBe(0);
     // what they had stays claimed, since their videos stay up
     const kept = await db.admin((tx) => tx<{ user_id: string | null }[]>`select user_id from public.content_ledger where item = 'b-had-this'`);
@@ -2432,6 +2432,125 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: leaderboard
+  describe("leaderboard: welcome backs, hidden names and each LIVE's own page", () => {
+    /** the one moment every job here runs at */
+    const now = new Date();
+    const ago = (ms: number) => new Date(now.getTime() - ms);
+    let K = "";
+    let N = "";
+    /** a streamer whose LIVE today was reloaded twice */
+    let R = "";
+    let key = "";
+    /** K's LIVEs: an older one verified as theirs, one nobody played in, the one going now, and a newer one that wasn't theirs */
+    const ids = { verified: "", empty: "", going: "", theirs: "" };
+    const top = [
+      { id: "7001", name: "Kayla Smith", coins: 1500 },
+      { id: "7002", name: "Drew Quill", coins: 900 },
+      { id: "7003", name: "Mia Zephyr", coins: 400 },
+      { id: "7004", name: "Zed Ocho", coins: 200 },
+    ];
+    /** A LIVE as the game's saves would have left it, started and last heard from so long ago; K's unless it says */
+    const session = async (o: { user?: string; start: number; last: number; rounds?: number; coins?: number; top?: object[]; heard?: string[]; verified?: boolean }) => {
+      const [r] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, coins, peak_players, top_gifters, heard, verified)
+        values (gen_random_uuid(), ${o.user ?? K}, 'battle', ${ago(o.start)}, ${ago(o.last)}, ${o.rounds ?? 0}, ${o.coins ?? 0}, 4, ${tx.json((o.top ?? []) as never)},
+          ${o.heard ?? []}::text[], ${o.verified ?? false})
+        returning id`);
+      return r.id;
+    };
+
+    beforeAll(async () => {
+      if (!safe) return;
+      [{ id: K }, { id: N }, { id: R }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into auth.users (email) values ('w2-leaderboard-1@test.local'), ('w2-leaderboard-2@test.local'), ('w2-leaderboard-3@test.local') returning id`);
+    });
+
+    afterAll(async () => {
+      if (!safe) return;
+      await db.admin((tx) => tx`delete from auth.users where email in ('w2-leaderboard-1@test.local', 'w2-leaderboard-2@test.local', 'w2-leaderboard-3@test.local')`);
+    });
+
+    it("sends the game the ids of the last LIVE's top gifters, never their names, and only when that LIVE was theirs", async () => {
+      key = await live.overlayKeyOf(K);
+      // before any LIVE is over, there's nobody to welcome back
+      expect((await live.overlayFor(key, now))?.supporters).toEqual([]);
+      expect(await live.lastLiveOf(K, now)).toBeNull();
+      ids.verified = await session({ start: 3 * 3600_000, last: 2 * 3600_000, rounds: 12, coins: 3000, top, heard: ["k.streams"], verified: true });
+      // newer ones that don't count as the last LIVE: one nobody played in, and the one going now (quiet for only 2 minutes)
+      ids.empty = await session({ start: 60 * 60_000, last: 59 * 60_000 });
+      ids.going = await session({ start: 30 * 60_000, last: 2 * 60_000, rounds: 3, coins: 50, top: [{ id: "9001", name: "Newt Vale", coins: 50 }], heard: ["k.streams"], verified: true });
+      const o = await live.overlayFor(key, now);
+      expect(o?.supporters).toEqual(["7001", "7002", "7003"]);
+      const json = JSON.stringify(o);
+      for (const name of [...top.map((g) => g.name), "Newt Vale"]) expect(json).not.toContain(name);
+      expect(await live.lastLiveOf(K, now)).toEqual({ verified: true });
+      // a newer LIVE that's over but wasn't verified as theirs: its gifters could be anyone's supporters, so nobody
+      ids.theirs = await session({ start: 100 * 60_000, last: 90 * 60_000, rounds: 2, coins: 10, top: [{ id: "8001", name: "Famous Fan", coins: 10 }], heard: ["famous.one"] });
+      expect((await live.overlayFor(key, now))?.supporters).toEqual([]);
+      expect(await live.lastLiveOf(K, now)).toEqual({ verified: false });
+      // nobody else sees K's
+      expect(await live.lastLiveOf(N, now)).toBeNull();
+    });
+
+    it("hides viewers' names with one tap, and saving the other settings never undoes it", async () => {
+      const { DEFAULT_SETTINGS } = await import("@/lib/live/settings");
+      await live.saveLiveSettings(K, { ...DEFAULT_SETTINGS, vote: false, roundSeconds: 120 });
+      await live.setHideNames(K, true);
+      expect((await live.overlayFor(key, now))?.settings).toMatchObject({ hideNames: true, vote: false, roundSeconds: 120 });
+      // the settings form sends back what it loaded with, so its hideNames can be out of date: the tap stands
+      await live.saveLiveSettings(K, { ...DEFAULT_SETTINGS, vote: true, hideNames: false });
+      expect((await live.liveSettingsOf(K)).settings).toMatchObject({ hideNames: true, vote: true });
+      await live.setHideNames(K, false);
+      expect((await live.overlayFor(key, now))?.settings).toMatchObject({ hideNames: false, vote: true });
+      // a new account's tap keeps the defaults for everything else, and isn't setting up the game
+      await live.setHideNames(N, true);
+      expect(await live.liveSettingsOf(N)).toEqual({ settings: { ...DEFAULT_SETTINGS, hideNames: true }, saved: true });
+      const home = await import("@/lib/server/home");
+      expect((await home.homeData(N)).liveSetUp).toBe(false);
+      await live.saveLiveSettings(N, (await live.liveSettingsOf(N)).settings);
+      expect((await home.homeData(N)).liveSetUp).toBe(true);
+    });
+
+    it("links each LIVE's recap to its own page, and names no viewer in it", async () => {
+      const notes = await import("@/lib/server/notify");
+      const done = await live.recapLives(now);
+      expect(done).toContain(`recap for ${ids.verified}`);
+      const recaps = (await notes.notificationsOf(K)).items.filter((n) => n.kind === "live");
+      // the one going now and the one nobody played in get none yet
+      expect(recaps.map((n) => n.href).sort()).toEqual([`/app/live/${ids.verified}`, `/app/live/${ids.theirs}`].sort());
+      expect(recaps.find((n) => n.href === `/app/live/${ids.verified}`)).toMatchObject({
+        title: "LIVE recap: 12 rounds, 3,000 gift coins seen",
+        body: "4 playing at once. Your recap card is ready.",
+      });
+      for (const n of recaps) for (const name of [...top.map((g) => g.name), "Famous Fan"]) expect(`${n.title} ${n.body}`).not.toContain(name.split(" ")[0]);
+    });
+
+    it("shows a streamer one of their LIVEs on its own, and nobody else", async () => {
+      const s = await live.sessionOf(K, ids.verified);
+      expect(s).toMatchObject({ id: ids.verified, rounds: 12, coins: 3000, peakPlayers: 4, heard: ["k.streams"], unknown: false, verified: true, topGifters: top });
+      expect(s?.lastAt).toEqual(ago(2 * 3600_000));
+      expect((await live.sessionsOf(K)).find((x) => x.id === ids.verified)).toEqual(s);
+      expect(await live.sessionOf(N, ids.verified)).toBeNull();
+      expect(await live.sessionOf(K, "00000000-0000-4000-8000-000000000000")).toBeNull();
+    });
+
+    it("counts a LIVE that reloads split into sessions as one, so nobody is welcomed back to the LIVE they're giving in", async () => {
+      const rKey = await live.overlayKeyOf(R);
+      const fan = (id: string, coins: number) => [{ id, name: `Fan ${id}`, coins }];
+      await session({ user: R, start: 26 * 3600_000, last: 25 * 3600_000, rounds: 10, coins: 2000, top: top.slice(0, 3), heard: ["r.streams"], verified: true });
+      // today's LIVE, reloaded twice: each part begins a minute after the one before last heard anything, and the newest is going
+      await session({ user: R, start: 70 * 60_000, last: 50 * 60_000, rounds: 8, coins: 900, top: fan("9101", 900), heard: ["r.streams"], verified: true });
+      await session({ user: R, start: 49 * 60_000, last: 25 * 60_000, rounds: 5, coins: 300, top: fan("9102", 300), heard: ["r.streams"], verified: true });
+      await session({ user: R, start: 24 * 60_000, last: 2 * 60_000, rounds: 3, coins: 40, top: fan("9103", 40), heard: ["r.streams"], verified: true });
+      // its first two parts are over, but they're the LIVE now going, not the last one: that's still yesterday's
+      expect((await live.overlayFor(rKey, now))?.supporters).toEqual(["7001", "7002", "7003"]);
+      // one more reload just before the end, with nothing played after it: once it's all over, its last part with rounds is the last LIVE
+      await session({ user: R, start: 60_000, last: 30_000 });
+      const later = new Date(now.getTime() + 3600_000);
+      expect((await live.overlayFor(rKey, later))?.supporters).toEqual(["9103"]);
+      expect(await live.lastLiveOf(R, later)).toEqual({ verified: true });
+    });
+  });
 
   // wave 2: quota
 
