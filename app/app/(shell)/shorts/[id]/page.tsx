@@ -18,6 +18,9 @@ import { readAfter, times } from "@/lib/shorts/insights";
 import { againstUsual } from "@/lib/shorts/learn";
 import { seconds } from "@/lib/shorts/timing";
 import { markable, STUDIO_UPLOAD, whyFor } from "@/lib/shorts/youtube";
+import { HeldWords } from "@/components/shorts/held";
+import { uploadCap } from "@/lib/billing/plans";
+import { HELD, heldShown, type Held } from "@/lib/shorts/history";
 import { account } from "@/lib/server/account";
 import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
@@ -28,7 +31,7 @@ export const metadata: Metadata = { title: "Short" };
 
 const n = (v: number) => v.toLocaleString("en-US");
 
-function stateOf(d: ShortDetail, byHand: boolean, now: Date): { label: string; tone: "plain" | "good" | "warn" | "signal" } {
+function stateOf(d: ShortDetail, byHand: boolean, now: Date, held: Held | null): { label: string; tone: "plain" | "good" | "warn" | "signal" } {
   switch (d.status) {
     case "review": return { label: "In your queue", tone: "plain" };
     case "rejected": return { label: "Skipped", tone: "plain" };
@@ -36,7 +39,7 @@ function stateOf(d: ShortDetail, byHand: boolean, now: Date): { label: string; t
     case "failed": return { label: "Failed", tone: "signal" };
     // up on YouTube, but only posted once YouTube says so
     case "scheduled": return d.scheduledFor && d.scheduledFor > now ? { label: "Scheduled", tone: "plain" } : { label: "Checking YouTube", tone: "warn" };
-    case "ready": return d.heldBack ? { label: "Waiting for quota", tone: "warn" } : { label: byHand ? "Ready for you to post" : "Ready", tone: "plain" };
+    case "ready": return held ? { label: HELD[held.on].pill, tone: "warn" } : { label: byHand ? "Ready for you to post" : "Ready", tone: "plain" };
     default: return { label: "Being made", tone: "warn" };
   }
 }
@@ -66,7 +69,12 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
   // ready, and waiting for them to post it
   const byHand = self && d.hasFile && d.status === "ready";
   const now = new Date();
-  const s = stateOf(d, byHand, now);
+  // what it's waiting for: a plan wait shows only while the plan still uploads, and says how many a day for the YouTube channels connected
+  const uploads = { name: me.plan.name, cap: uploadCap(me.plan, channels.filter((c) => c.platform === "youtube" && c.status === "connected").length) };
+  const held = heldShown(d.heldBack, uploads.cap);
+  // an upload that didn't go through, for a reason that passes: it says what went wrong, not that it's waiting, until it goes again
+  const unsent = auto && d.status === "ready" && !held ? d.error : null;
+  const s = stateOf(d, byHand, now, held);
   const steps = historyOf({
     createdAt: d.createdAt,
     origin: d.origin,
@@ -85,7 +93,7 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
     youtubePrivacy: d.youtubePrivacy,
     verified: d.verified,
     byHand: self,
-    heldBack: d.heldBack,
+    heldBack: held,
   });
   const day = d.views["24h"];
   // a first day read late is scaled back to 24 hours, and says it's an estimate; with several channels, it says whose usual
@@ -164,11 +172,17 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
             </p>
           )}
 
-          {d.heldBack && (
+          {held && (
             <p role="status" className="border-2 border-edge-strong bg-card-2 px-4 py-3 text-[14px] leading-relaxed">
-              <b className="font-semibold">Waiting for YouTube upload quota.</b> YouTube caps how many videos Hookline can upload a day, and today&rsquo;s are used up.
-              {d.heldBack.until && <> It goes up when that resets, around <LocalTime iso={d.heldBack.until.toISOString()} />.</>}
+              <b className="font-semibold">{HELD[held.on].lead(uploads)}</b> <HeldWords text={HELD[held.on].box(uploads)} until={held.until} />
             </p>
+          )}
+
+          {unsent && (
+            <div role="status" className="border-2 border-signal px-4 py-3 text-[14px] leading-relaxed">
+              <p><b className="font-semibold">The upload didn&rsquo;t go through.</b> Hookline tries again in about half an hour.</p>
+              <p className="mt-1 text-[13px] text-signal">{unsent}</p>
+            </div>
           )}
 
           {tiktokDirect && chosen && !d.tiktokPublishId && d.status !== "failed" && (!d.tiktok || d.tiktok.error) && (

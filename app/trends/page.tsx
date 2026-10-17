@@ -13,7 +13,7 @@ export const metadata: Metadata = {
 
 const HOW = [
   { title: "Views per hour", body: "Total views tell you what already happened. Views per hour since upload tell you what's taking off now, while there's still time to ride it." },
-  { title: "Straight from YouTube", body: "Every figure comes from YouTube's official API, checked every four hours. Nothing scraped, nothing guessed." },
+  { title: "Straight from YouTube", body: "Every figure comes from YouTube's official API, checked once a day. Nothing scraped, nothing guessed." },
   { title: "Make one like this", body: "Rising Shorts in a format Hookline makes come with a button: a Short in the same format goes straight into your queue." },
 ];
 

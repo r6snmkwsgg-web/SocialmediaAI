@@ -5,8 +5,51 @@
  * only ever comes from YouTube saying so, or a link checked with it.
  */
 
-/** What a ready Short is waiting for before it can go up: so far only YouTube's daily upload quota, and when it's tried again. */
-export type HeldBack = { on: "youtube_quota"; until: Date | null };
+/**
+ * What a ready Short is waiting for before it can go up, and when it's
+ * tried again: YouTube's uploads for Hookline today (used up by YouTube's
+ * word or Hookline's own count), or its plan's uploads today.
+ */
+export type HeldBack = { on: "youtube_quota" | "plan_cap"; until: Date | null };
+
+/** A wait as it's shown: what for, and when it goes up. */
+export type Held = { on: HeldBack["on"]; until: Date };
+
+/** The plan, as a plan wait names it: its name, and the Shorts it uploads a day (uploadCap). */
+export type HeldPlan = { name: string; cap: number };
+
+/**
+ * How each wait reads, written once for the queue, the Short's page and
+ * its history: its pill, its step, its line in the queue, and the box on
+ * the Short's page with its lead. {time} is when it goes up, shown in the
+ * viewer's own timezone.
+ */
+export const HELD: Record<Held["on"], { pill: string; step: string; line: (p: HeldPlan) => string; lead: (p: HeldPlan) => string; box: (p: HeldPlan) => string }> = {
+  youtube_quota: {
+    pill: "Waiting for quota",
+    step: "Waiting for YouTube upload quota",
+    line: () => "Waiting for YouTube upload quota. It goes up when that resets, around {time}.",
+    lead: () => "Waiting for YouTube upload quota.",
+    box: () => "YouTube caps how many videos Hookline can upload a day, and today's are used up. It goes up when that resets, around {time}.",
+  },
+  plan_cap: {
+    pill: "Daily uploads done",
+    step: "Waiting for your plan's next uploads",
+    line: (p) => `${p.name} uploads up to ${p.cap} Shorts a day to YouTube, and today's are done. This one goes up around {time}.`,
+    lead: (p) => `Today's uploads on ${p.name} are done.`,
+    box: (p) => `${p.name} uploads up to ${p.cap} Shorts a day to YouTube. This one goes up when that resets, around {time}.`,
+  },
+};
+
+/**
+ * The wait to show, if any. A plan wait shows only while the plan still
+ * uploads (`cap` is its uploads a day): after a move to Free, a Short
+ * reads like any other Free one, never "Free uploads up to 0".
+ */
+export function heldShown(h: HeldBack | null | undefined, cap: number): Held | null {
+  if (!h?.until || (h.on === "plan_cap" && cap <= 0)) return null;
+  return { on: h.on, until: h.until };
+}
 
 export type HistoryFacts = {
   createdAt: Date;
@@ -45,9 +88,7 @@ export function historyOf(f: HistoryFacts, now = new Date()): Step[] {
   else if (f.status === "failed" && f.error?.startsWith("Rendering failed")) out.push({ at: f.render?.finishedAt ?? null, title: "Couldn't be made into a video", body: f.error ?? undefined, tone: "bad" });
   else out.push({ at: null, title: f.render?.status === "running" ? "Being made into a video now" : "Waiting to be made into a video", tone: "next" });
 
-  if (!f.uploadedAt && f.heldBack?.on === "youtube_quota" && f.status === "ready") {
-    out.push({ at: null, title: "Waiting for YouTube upload quota", tone: "next" });
-  }
+  if (!f.uploadedAt && f.heldBack && f.status === "ready") out.push({ at: null, title: HELD[f.heldBack.on].step, tone: "next" });
   const seen = f.youtubePrivacy === "unlisted" ? "Unlisted on YouTube" : f.youtubePrivacy === "private" ? "Private on YouTube" : "Public on YouTube";
   const youtubeFailed = f.status === "failed" && !!f.error && !f.error.startsWith("Rendering failed");
   if (f.uploadedAt) {

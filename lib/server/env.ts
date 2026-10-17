@@ -1,6 +1,7 @@
 import "server-only";
 import { z } from "zod";
 import { testChannels, type ApiAccess } from "../shorts/youtube";
+import { limitsFrom, type Bucket } from "../shorts/quota";
 
 /**
  * Every setting the server reads, checked once. Each outside service is
@@ -46,6 +47,12 @@ const schema = z.object({
   YOUTUBE_AUDITED: optional,
   /** YouTube channel ids (UC…), comma-separated: your own channels, which get uploads before the audit */
   YOUTUBE_TEST_CHANNELS: optional,
+  /** what Google allows Hookline's project a day, as whole numbers, once it grants more than its defaults (10,000 units, 100 uploads, 100 searches) */
+  YOUTUBE_DAILY_UNITS: optional,
+  YOUTUBE_DAILY_UPLOADS: optional,
+  YOUTUBE_DAILY_SEARCHES: optional,
+  /** YouTube Analytics reports a day: no limit until it's set */
+  YOUTUBE_DAILY_ANALYTICS: optional,
 
   TIKTOK_CLIENT_KEY: optional,
   TIKTOK_CLIENT_SECRET: optional,
@@ -91,6 +98,12 @@ export function configured() {
 export function youtubeApi(): ApiAccess {
   const e = env();
   return { audited: e.YOUTUBE_AUDITED === "1", test: testChannels(e.YOUTUBE_TEST_CHANNELS) };
+}
+
+/** Each YouTube allowance's daily limit: what's set, when it's a whole number of 1 or more, and Google's default otherwise. */
+export function youtubeQuota(): Record<Bucket, number | null> {
+  const e = env();
+  return limitsFrom({ units: e.YOUTUBE_DAILY_UNITS, uploads: e.YOUTUBE_DAILY_UPLOADS, searches: e.YOUTUBE_DAILY_SEARCHES, analytics: e.YOUTUBE_DAILY_ANALYTICS });
 }
 
 /** Signing in without email: only on a developer's own machine, never in a deploy. */

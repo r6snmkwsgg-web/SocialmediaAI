@@ -5,7 +5,8 @@ import { channelsOf, connectChannel } from "@/lib/server/channels";
 import { origin } from "@/lib/server/http";
 import { finishOAuth } from "@/lib/server/oauth";
 import { tiktokExchange, tiktokUser } from "@/lib/server/tiktok";
-import { youtubeChannel, youtubeExchange } from "@/lib/server/youtube";
+import { YouTubeError, youtubeChannel, youtubeExchange } from "@/lib/server/youtube";
+import { QuotaWait } from "@/lib/server/quota";
 
 /**
  * Back from Google or TikTok: swap the code for tokens, find the account,
@@ -49,6 +50,11 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
       return go("error=platform");
     }
   } catch (err) {
+    // no quota left today to read the channel with, by Hookline's count or YouTube's own word. While getting started the
+    // welcome page's connect step says so, since the rest of the app waits until that's done; from anywhere else, Settings does
+    if (err instanceof QuotaWait || (err instanceof YouTubeError && err.quota)) {
+      return /^\/app\/welcome/.test(next) ? go("error=quota") : NextResponse.redirect(`${base}/app/settings?error=quota`);
+    }
     console.error(`connect ${platform}:`, err instanceof Error ? err.message : err);
     return go(`error=${err instanceof Error && /channel yet/.test(err.message) ? "nochannel" : "connect"}`);
   }

@@ -47,6 +47,17 @@ export function postsThroughApi(externalId: string | null | undefined, a: ApiAcc
 }
 
 /**
+ * Whether what a channel let Hookline do (its saved scopes, as Google
+ * gave them) includes `scope`. Null when no scopes were saved, so nothing
+ * is guessed: try the call, and take a refusal for missing permission as
+ * a reason to connect it again.
+ */
+export function hasScope(scopes: string | null, scope: string): boolean | null {
+  if (scopes === null) return null;
+  return scopes.split(/[\s,]+/).includes(scope);
+}
+
+/**
  * The status part of an upload. Public Shorts with a time go up private
  * and YouTube makes them public then; unlisted and private ones go up as
  * they are, at their time. The audience is always said out loud, and so is
@@ -149,6 +160,20 @@ export function verdictOf(
       ? "YouTube kept it private, so nobody can see it. Open it in YouTube Studio to see why."
       : "YouTube kept it private, so nobody can see it. Until YouTube finishes reviewing Hookline, everything Hookline uploads stays private.",
   };
+}
+
+/**
+ * Whether to ask YouTube about an upload again: every 4 minutes for the
+ * first half hour after its time (or after it went up, if that was
+ * later), then every half hour, and always when it's never been asked.
+ * So one YouTube is slow with, or one whose check keeps failing, doesn't
+ * use hundreds of units a day. confirmYouTube's query says the same.
+ */
+export function checkAgain(checkedAt: Date | null, due: Date, uploadedAt: Date | null, now: Date): boolean {
+  if (!checkedAt) return true;
+  const from = Math.max(due.getTime(), (uploadedAt ?? due).getTime());
+  const every = now.getTime() - from < 30 * MINUTE ? 4 * MINUTE : 30 * MINUTE;
+  return now.getTime() - checkedAt.getTime() > every;
 }
 
 /**

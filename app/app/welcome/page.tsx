@@ -4,6 +4,7 @@ import { TimezoneField } from "@/components/app/client-bits";
 import { ConnectList } from "@/components/app/connect";
 import { button } from "@/components/app/ui";
 import type { Plan } from "@/lib/billing/plans";
+import { CONNECT_WAIT } from "@/lib/shorts/quota";
 import { account } from "@/lib/server/account";
 import { channelsOf, type Platform } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
@@ -23,7 +24,8 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 /** Two taps from signing up to the first useful screen. */
 export default async function Welcome({ searchParams }: { searchParams: Search }) {
   const me = await account();
-  const step = (await searchParams).step === "connect" && me.profile.goal ? 2 : 1;
+  const q = await searchParams;
+  const step = q.step === "connect" && me.profile.goal ? 2 : 1;
   const goal = me.profile.goal;
 
   return (
@@ -60,14 +62,18 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
           </form>
         </section>
       ) : (
-        <Connect goal={goal ?? "both"} userId={me.id} plan={me.plan} />
+        <Connect goal={goal ?? "both"} userId={me.id} plan={me.plan} quota={q.error === "quota"} />
       )}
     </div>
   );
 }
 
-/** Their plan says whether Hookline posts Shorts for them, and how many YouTube channels it has room for. */
-async function Connect({ goal, userId, plan }: { goal: "shorts" | "live" | "both"; userId: string; plan: Plan }) {
+/**
+ * Their plan says whether Hookline posts Shorts for them, and how many
+ * YouTube channels it has room for. `quota` when connecting came back with
+ * no quota left today to read the channel with.
+ */
+async function Connect({ goal, userId, plan, quota }: { goal: "shorts" | "live" | "both"; userId: string; plan: Plan; quota: boolean }) {
   const channels = await channelsOf(userId);
   const c = configured();
   const posts = plan.scheduling;
@@ -87,6 +93,7 @@ async function Connect({ goal, userId, plan }: { goal: "shorts" | "live" | "both
               : "So Hookline can check the Shorts you post, and show you what they earn. You can do this later in Settings."}
         </p>
       </div>
+      {quota && <p role="alert" className="border-2 border-signal px-4 py-3 text-[15px]">{CONNECT_WAIT}</p>}
       <ConnectList
         platforms={platforms}
         channels={channels}

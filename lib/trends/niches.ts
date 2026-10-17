@@ -59,3 +59,77 @@ export function heatmap(posts: { weekday: number; hour: number; lift: number }[]
   }
   return { cells: sum.map((row, d) => row.map((s, b) => (counts[d][b] ? Math.exp(s / counts[d][b]) : null))), counts };
 }
+
+/** How a niche's last try went: rising Shorts found, none found, waited for YouTube's quota, or YouTube didn't answer. */
+export type TrendOutcome = "found" | "none" | "quota" | "failed";
+
+/** When a niche was last checked (null until a check has worked), how its last try went, and when it's checked next. */
+export type TrendCheck = { niche: string; checkedAt: Date | null; triedAt: Date; outcome: TrendOutcome | null; nextAt: Date };
+
+/**
+ * The niches whose check is due: never tried, or their next time has
+ * come. Ones never checked go first, then the longest since checked, so
+ * when Trends' share of the quota runs short, the niches take turns.
+ */
+export function dueNiches(niches: Niche[], checks: TrendCheck[], now: Date): Niche[] {
+  const by = new Map(checks.map((c) => [c.niche, c]));
+  const due = niches.filter((n) => (by.get(n.id)?.nextAt.getTime() ?? 0) <= now.getTime());
+  // never checked sorts as the longest since; the list's own order breaks ties
+  const since = (n: Niche) => by.get(n.id)?.checkedAt?.getTime() ?? -Infinity;
+  return due.map((n, i) => ({ n, i, at: since(n) })).sort((a, b) => (a.at === b.at ? a.i - b.i : a.at < b.at ? -1 : 1)).map((x) => x.n);
+}
+
+/** A niche is out of date once it hasn't been checked for this long: its day, and some hours' grace for a check that's late or tried again. */
+export const STALE_AFTER = 30 * 3600_000;
+
+/** A niche shown that's out of date, with how its last try went. */
+export type Stale = { id: string; name: string; checkedAt: Date | null; outcome: TrendOutcome | null };
+
+/** The niches shown that have never been checked, or not in over 30 hours, each with how its last try went. */
+export function staleOf(checks: TrendCheck[], shown: string[], now: Date): Stale[] {
+  const by = new Map(checks.map((c) => [c.niche, c]));
+  return shown.flatMap((id) => {
+    const n = nicheOf(id);
+    const c = by.get(id);
+    if (!n || (c?.checkedAt && now.getTime() - c.checkedAt.getTime() <= STALE_AFTER)) return [];
+    return [{ id, name: n.name, checkedAt: c?.checkedAt ?? null, outcome: c?.outcome ?? null }];
+  });
+}
+
+/** The niches named: those checked before apart from those never checked, so neither is said wrongly of the other. */
+function named(xs: Stale[]): string {
+  const before = xs.filter((s) => s.checkedAt).map((s) => s.name);
+  const never = xs.filter((s) => !s.checkedAt).map((s) => s.name);
+  const parts: string[] = [];
+  if (before.length) parts.push(`Not checked in over a day: ${before.join(", ")}.`);
+  if (never.length) parts.push(`Not checked yet: ${never.join(", ")}.`);
+  return parts.join(" ");
+}
+
+/**
+ * What the Trends page says about stale niches: a line for each reason.
+ * Trends' share of YouTube's allowance is used up, YouTube didn't answer,
+ * or nothing has checked them, since the worker isn't running.
+ */
+export function staleLines(stale: Stale[]): string[] {
+  const quota = stale.filter((s) => s.outcome === "quota");
+  const failed = stale.filter((s) => s.outcome === "failed");
+  const idle = stale.filter((s) => s.outcome !== "quota" && s.outcome !== "failed");
+  const waited = idle.filter((s) => s.checkedAt);
+  const fresh = idle.filter((s) => !s.checkedAt);
+  const out: string[] = [];
+  if (quota.length) {
+    const when = quota.length === 1 ? "it's checked after the reset" : "they're checked after it resets";
+    out.push(`${named(quota)} Hookline's YouTube allowance for Trends is used up for today, so ${when}.`);
+  }
+  if (failed.length) out.push(`${named(failed)} YouTube didn't answer, so Hookline tries again within the hour.`);
+  if (waited.length) out.push(`${named(waited)} Niches are checked while the worker is running.`);
+  if (fresh.length) out.push(`${named(fresh)} Niches are checked within half an hour of the worker starting.`);
+  return out;
+}
+
+/** A niche's made-for-kids share for the page: "9 of 48" and 19 (percent), or "Not measured yet" with nothing YouTube said either way. */
+export function kidsOf(kids: number, of: number): { text: string; pct: number | null } {
+  if (of <= 0) return { text: "Not measured yet", pct: null };
+  return { text: `${kids} of ${of}`, pct: Math.round((kids / of) * 100) };
+}

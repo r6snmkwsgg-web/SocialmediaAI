@@ -3,6 +3,7 @@ import { ConnectList } from "@/components/app/connect";
 import { SettingsTabs } from "@/components/app/settings-tabs";
 import { button, Card, CardHead, PageHead } from "@/components/app/ui";
 import { gettingShorts } from "@/lib/shorts/channels";
+import { CONNECT_WAIT } from "@/lib/shorts/quota";
 import { account } from "@/lib/server/account";
 import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { asUser } from "@/lib/server/db";
@@ -28,6 +29,7 @@ const NOTES: Record<string, { text: string; bad?: boolean }> = {
   connect: { text: "That didn't connect. Try again, and allow everything Hookline asks for.", bad: true },
   denied: { text: "Nothing was connected: the permission was turned down.", bad: true },
   nochannel: { text: "That Google account has no YouTube channel yet. Make one on YouTube, then connect again.", bad: true },
+  quota: { text: CONNECT_WAIT, bad: true },
   setup: { text: "Connecting accounts isn't set up on this Hookline yet.", bad: true },
   disconnectedYoutube: {
     text: "Disconnected. Hookline can't post there or read it any more, and its figures are gone from Earnings. Shorts kept for it stay: post them yourself, or connect it again to carry on.",

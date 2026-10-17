@@ -12,8 +12,9 @@ export const maxDuration = 300;
 /**
  * The worker's periodic jobs, for a scheduler to call instead (Vercel Cron
  * sends CRON_SECRET as a bearer token): post, stats, shorts, trends,
- * earnings, live. Safe to run alongside the worker; each job locks what
- * it works on.
+ * earnings, live. Trends checks only the niches whose daily check has
+ * come, so calling it often uses no more of YouTube's quota. Safe to run
+ * alongside the worker; each job locks what it works on.
  */
 export async function GET(req: Request, { params }: { params: Promise<{ job: string }> }) {
   const secret = env().CRON_SECRET;

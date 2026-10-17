@@ -58,6 +58,7 @@ Every setting is in [.env.example](.env.example), with what it's for. Locally th
 | Google | `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` | Connecting YouTube channels: posting, views and analytics. |
 | YouTube data | `YOUTUBE_API_KEY` | Trends, and checking the links people paste. |
 | YouTube audit | `YOUTUBE_TEST_CHANNELS`, `YOUTUBE_AUDITED` | Which channels Hookline uploads to: only the test channels until YouTube's API audit passes, then all of them. |
+| YouTube quota | `YOUTUBE_DAILY_UNITS`, `YOUTUBE_DAILY_UPLOADS`, `YOUTUBE_DAILY_SEARCHES`, `YOUTUBE_DAILY_ANALYTICS` | What Google allows Hookline's project a day, once it grants more than its defaults (10,000 units, 100 uploads, 100 searches), as whole numbers. YouTube Analytics has no limit until one is set. |
 | TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_DIRECT_POST`, `TIKTOK_PROFILE` | Connecting TikTok: Shorts to the creator's drafts, or posted straight to their TikTok; with `TIKTOK_PROFILE=1`, the username that makes a LIVE count as theirs. |
 | Scheduler | `CRON_SECRET` | The `/api/cron/*` routes, for a scheduler running the background jobs. |
 | Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY`, `BRIDGE_OFF` | Where the bridge downloads come from, a signing key if TikTok starts refusing it, and `BRIDGE_OFF=1` to switch every bridge off (games move to TikFinity). |
@@ -126,7 +127,7 @@ An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the 
 - posts whatever is due, every minute
 - makes each channel's Shorts for the day, from 6am in its timezone
 - reads views 1 hour, 1 day and 3 days after posting, for the learning loop
-- refreshes Trends (each niche every 4 hours) and syncs Earnings every 6 hours
+- refreshes Trends (each niche once a day) and syncs Earnings every 6 hours
 - sends each LIVE's recap once it's been quiet for 20 minutes
 - checks in every 30 seconds, so the app can say when rendering has stopped and `/admin` can show the workers
 

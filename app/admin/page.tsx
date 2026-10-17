@@ -6,8 +6,10 @@ import { LocalTime } from "@/components/app/local-time";
 import { Card, CardHead, PageHead, Pill, Stat } from "@/components/app/ui";
 import { PLANS } from "@/lib/billing/plans";
 import { fill, lastDays } from "@/lib/earnings/series";
+import { KIND_NAMES, type Bucket } from "@/lib/shorts/quota";
 import { overview } from "@/lib/server/admin";
 import { configured } from "@/lib/server/env";
+import { quotaToday, type QuotaToday } from "@/lib/server/quota";
 
 export const metadata: Metadata = { title: "Today" };
 
@@ -20,8 +22,128 @@ function age(from: Date | null, now: Date): string {
   return m < 1 ? "Under a minute" : m < 60 ? `${m} min` : `${Math.floor(m / 60)}h ${m % 60}m`;
 }
 
+type Allowance = QuotaToday["buckets"][number];
+
+/** What an allowance has used today, against its limit when it has one. */
+const usedOf = (a: Allowance) => (a.limit === null ? n(a.used) : `${n(a.used)} / ${n(a.limit)}`);
+
+/** Under an allowance's figure: when YouTube said it was used up, or when Hookline's count found no room, or else `otherwise`. */
+function soFar(a: Allowance, otherwise: string): React.ReactNode {
+  if (a.fullAt) return <>YouTube said used up at <LocalTime iso={a.fullAt.toISOString()} style="time" /></>;
+  if (a.ranOutAt) return <>Ran out at <LocalTime iso={a.ranOutAt.toISOString()} style="time" /></>;
+  return otherwise;
+}
+
+/** A quota day as the table names it: its Pacific date, or Today. */
+function dayName(day: string, today: string): string {
+  if (day === today) return "Today";
+  return new Date(`${day}T12:00:00Z`).toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric", timeZone: "UTC" });
+}
+
+/**
+ * YouTube's quota today, as Hookline counted it: each allowance, the
+ * units each part of Hookline used against the most it may, what's held
+ * for posting, the Shorts waiting, and the last 7 days for Google's
+ * quota form.
+ */
+function YouTubeQuota({ q }: { q: QuotaToday }) {
+  const of = Object.fromEntries(q.buckets.map((b) => [b.bucket, b])) as Record<Bucket, Allowance>;
+  const units = of.units;
+  // the Data API's three allowances, which Google's quota form asks about
+  const columns: Bucket[] = ["uploads", "searches", "units"];
+  return (
+    <Card className="mt-6">
+      <CardHead title="YouTube quota" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Resets <LocalTime iso={q.resetsAt.toISOString()} /></span>} />
+      {!q.firstAt ? (
+        <p className="px-5 py-5 text-[15px] text-muted">Nothing counted yet. Every YouTube call is counted from the first one after this update.</p>
+      ) : (
+        <>
+          <div className="grid grid-cols-2 gap-x-6 gap-y-7 px-5 py-6 lg:grid-cols-4">
+            <Stat label="Uploads" value={usedOf(of.uploads)} sub={soFar(of.uploads, "Shared by every account")} />
+            <Stat label="Searches" value={usedOf(of.searches)} sub={soFar(of.searches, "Trends")} />
+            <Stat label="Units" value={usedOf(units)} sub={units.fullAt ? soFar(units, "") : `${n(units.held ?? 0)} held for posting`} />
+            <Stat label="YouTube Analytics" value={usedOf(of.analytics)} sub={of.analytics.limit === null ? "No limit set" : soFar(of.analytics, "Earnings")} />
+          </div>
+          <p className="border-t border-edge px-5 py-3 text-[13px] leading-relaxed text-muted">
+            Counted by Hookline as it makes each call. Google&rsquo;s own figures are on the project&rsquo;s Quotas page in Cloud Console.
+          </p>
+
+          <div className="overflow-x-auto border-t-2 border-edge">
+            <table className="w-full text-left text-[14px]">
+              <caption className="px-5 pt-4 text-left font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Units used today by each part of Hookline, and the most each may use</caption>
+              <thead>
+                <tr className="border-b-2 border-edge font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
+                  <th scope="col" className="px-5 py-3 font-normal">Part</th>
+                  <th scope="col" className="px-3 py-3 text-right font-normal">Used</th>
+                  <th scope="col" className="px-5 py-3 text-right font-normal">Most a day</th>
+                </tr>
+              </thead>
+              <tbody>
+                {units.kinds.map((k) => (
+                  <tr key={k.kind} className="border-b border-edge last:border-0">
+                    <th scope="row" className="px-5 py-2.5 font-normal">{KIND_NAMES[k.kind]}</th>
+                    <td className="px-3 py-2.5 text-right font-mono text-[12px] tabular-nums">
+                      {n(k.units)}
+                      {k.ranOutAt && <span className="block text-[11px] text-signal">ran out at <LocalTime iso={k.ranOutAt.toISOString()} style="time" /></span>}
+                    </td>
+                    <td className="px-5 py-2.5 text-right font-mono text-[12px] tabular-nums">{k.cap === null ? <span className="text-muted">Whatever&rsquo;s left</span> : n(k.cap)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="flex flex-col gap-2 border-t border-edge px-5 py-4 text-[14px] leading-relaxed">
+            <p>
+              Trends, views, link checks, connecting channels and YouTube Live can&rsquo;t go past their share, so at least {n(units.held ?? 0)} units a day are left for posting. A call with no room waits for the reset instead of going to YouTube.
+            </p>
+            <p className="text-muted">Shorts waiting now: {n(q.waiting.youtube_quota)} for YouTube&rsquo;s upload quota · {n(q.waiting.plan_cap)} for their plan&rsquo;s next uploads.</p>
+          </div>
+
+          <div className="overflow-x-auto border-t-2 border-edge">
+            <table className="w-full text-left text-[14px]">
+              <caption className="px-5 pt-4 text-left font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Last 7 days</caption>
+              <thead>
+                <tr className="border-b-2 border-edge font-mono text-[10px] uppercase tracking-[0.16em] text-muted">
+                  <th scope="col" className="py-3 pl-5 pr-2 font-normal">Day (Pacific)</th>
+                  <th scope="col" className="px-2 py-3 text-right font-normal">Uploads</th>
+                  <th scope="col" className="px-2 py-3 text-right font-normal">Searches</th>
+                  <th scope="col" className="py-3 pl-2 pr-5 text-right font-normal">Units</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...q.week].reverse().map(({ day, used, full }) => (
+                  <tr key={day} className="border-b border-edge last:border-0">
+                    <th scope="row" className="py-2.5 pl-5 pr-2 font-normal">
+                      {dayName(day, q.day)}
+                      {/* counting began part way through that day */}
+                      {day === q.firstDay && q.firstAt && <span className="block text-[12px] text-muted">from <LocalTime iso={q.firstAt.toISOString()} style="time" /></span>}
+                    </th>
+                    {used === null ? (
+                      <td colSpan={3} className="px-5 py-2.5 text-right text-muted">Not counted</td>
+                    ) : (
+                      columns.map((b) => (
+                        <td key={b} className={`py-2.5 text-right font-mono text-[12px] tabular-nums ${b === "units" ? "pl-2 pr-5" : "px-2"}`}>
+                          {/* the pill under the figure on a phone, and before it on a wider screen, so the figures line up */}
+                          <span className="flex flex-col items-end gap-1 sm:flex-row-reverse sm:items-center sm:justify-start sm:gap-2">
+                            {n(used[b])}
+                            {full.includes(b) && <span className="whitespace-nowrap"><Pill tone="signal">used up</Pill></span>}
+                          </span>
+                        </td>
+                      ))
+                    )}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </Card>
+  );
+}
+
 export default async function Admin() {
-  const o = await overview();
+  const [o, quota] = await Promise.all([overview(), quotaToday()]);
   const c = configured();
   const now = new Date();
   const signups = fill(lastDays(now.toISOString().slice(0, 10), 30), o.signups, 0);
@@ -115,6 +237,8 @@ export default async function Admin() {
           </Card>
         </div>
       </div>
+
+      <YouTubeQuota q={quota} />
 
       <Card className="mt-6">
         <CardHead title="Newest accounts" />

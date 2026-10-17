@@ -812,6 +812,8 @@ describe.skipIf(!safe)("the database", () => {
     expect(yt.quotaResetsAt(new Date("2026-11-02T12:00:00Z")).toISOString()).toBe("2026-11-03T08:05:00.000Z");
 
     const [{ id: Q }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values ('quota@test.local') returning id`);
+    // noon Pacific tomorrow: never in the minutes after midnight, and the reset it waits for is still to come
+    const now = new Date(yt.quotaResetsAt(new Date()).getTime() + 12 * 3600_000);
     const vids = await db.admin(async (tx) => {
       await tx`insert into public.subscriptions (user_id, plan, status) values (${Q}, 'pro', 'active')`;
       // a channel Hookline may upload to, that's said who it's for
@@ -819,11 +821,10 @@ describe.skipIf(!safe)("the database", () => {
       await tx`insert into public.channel_tokens (channel_id, access_token) values (${ch.id}, 'sealed')`;
       return tx<{ id: string }[]>`
         insert into public.videos (user_id, channel_id, format, params, key, title, status, file_path, scheduled_for, decided_at)
-        select ${Q}, ${ch.id}, 'wyr', '{"pairs":[]}', 'wyr', 'Held ' || g, 'ready', 'q/' || g || '.mp4', now() + make_interval(days => 2 + g), now()
+        select ${Q}, ${ch.id}, 'wyr', '{"pairs":[]}', 'wyr', 'Held ' || g, 'ready', 'q/' || g || '.mp4', ${now}::timestamptz + make_interval(hours => 18 + g), now()
         from generate_series(1, 2) g returning id`;
     });
     onTestFinished(() => void upload.mockReset());
-    const now = new Date();
     upload.mockReset();
     upload.mockImplementation(async () => {
       throw new yt.YouTubeError("Starting the upload: The request cannot be completed because you have exceeded your quota.", 403, "quotaExceeded");
@@ -853,7 +854,7 @@ describe.skipIf(!safe)("the database", () => {
     // held for quota, then after the reset the channel's access has gone: it shows that, not the quota
     const [again] = await db.admin((tx) => tx<{ id: string }[]>`
       insert into public.videos (user_id, channel_id, format, params, key, title, status, file_path, scheduled_for, decided_at, waiting_on, waiting_until)
-      select ${Q}, id, 'wyr', '{"pairs":[]}', 'wyr', 'Held again', 'ready', 'q/3.mp4', now() + interval '3 days', now(), 'youtube_quota', ${until}
+      select ${Q}, id, 'wyr', '{"pairs":[]}', 'wyr', 'Held again', 'ready', 'q/3.mp4', ${until}::timestamptz + interval '3 hours', now(), 'youtube_quota', ${until}
       from public.channels where user_id = ${Q}
       returning id`);
     upload.mockReset();
@@ -2553,6 +2554,815 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: quota
+  describe("quota: every YouTube call counted", () => {
+    let quota: typeof import("@/lib/server/quota");
+    let yt: typeof import("@/lib/server/youtube");
+    let seal: (s: string) => string;
+    /** everyone the test running now made, deleted once it's done, so nothing it leaves is due when the next one posts */
+    const made: string[] = [];
+    let count = 0;
+    /**
+     * A moment in Pacific time, on quota days of these tests' own, years from any other test's: 2031 for counting, and early
+     * 2019 for posting and Trends, before every other test's times, so nobody else's Shorts are due then. /admin's report
+     * uses January 2033, and for when counting began, a January a year before anything else was counted. All before the
+     * clocks go forward, so UTC-8.
+     */
+    const pacific = (date: string, time: string) => new Date(`${date}T${time}:00-08:00`);
+    /** YouTube's answer once an allowance is used up */
+    const usedUp = () => new Response(JSON.stringify({
+      error: { code: 403, message: "The request cannot be completed because you have exceeded your quota.", errors: [{ reason: "quotaExceeded" }] },
+    }), { status: 403 });
+
+    /** Someone new on Pro, with a YouTube channel Hookline holds a working token for. */
+    const someone = async () => {
+      const email = `w2-quota-${++count}@test.local`;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      made.push(user);
+      const [c] = await db.admin(async (tx) => {
+        await tx`insert into public.subscriptions (user_id, plan, status) values (${user}, 'pro', 'active')`;
+        return tx<{ id: string }[]>`
+          insert into public.channels (user_id, platform, external_id, title, made_for_kids) values (${user}, 'youtube', ${`UCw2quota${count}`}, 'Counted', false) returning id`;
+      });
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at) values (${c.id}, ${seal(`ya29.${email}`)}, now() + interval '1 hour')`);
+      return { user, channel: c.id };
+    };
+
+    /** The ledger's rows for a quota day. */
+    const counted = (day: string) => db.admin((tx) => tx<{ bucket: string; kind: string; units: number; calls: number; ran_out_at: Date | null; full_at: Date | null }[]>`
+      select bucket, kind, units, calls, ran_out_at, full_at from public.youtube_quota where day = ${day} order by bucket, kind`);
+
+    /** What a kind has used of an allowance on a quota day, as if those calls had been made. */
+    const used = (day: string, bucket: string, kind: string, units: number) => db.admin((tx) => tx`
+      insert into public.youtube_quota (day, bucket, kind, units, calls) values (${day}, ${bucket}, ${kind}, ${units}, ${units})
+      on conflict (day, bucket, kind) do update set units = excluded.units, calls = excluded.calls`);
+
+    /** Someone new on a plan, with one of the founder's test channels (Hookline uploads to those before YouTube's audit), answered as not made for kids. */
+    const uploader = async (plan: "pro" | "creator" = "pro", privacy: "public" | "unlisted" = "public") => {
+      const email = `w2-quota-${++count}@test.local`;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      made.push(user);
+      const [c] = await db.admin(async (tx) => {
+        await tx`insert into public.subscriptions (user_id, plan, status) values (${user}, ${plan}, 'active')`;
+        return tx<{ id: string }[]>`
+          insert into public.channels (user_id, platform, external_id, title, made_for_kids, privacy) values (${user}, 'youtube', ${TEST_CHANNEL}, 'Uploads', false, ${privacy}) returning id`;
+      });
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at) values (${c.id}, ${seal(`ya29.${email}`)}, now() + interval '1 hour')`);
+      return { user, channel: c.id, email };
+    };
+
+    /** A Short of theirs, rendered, ready to go up for its time. */
+    const ready = async (u: { user: string; channel: string }, title: string, at: Date) => (await db.admin((tx) => tx<{ id: string }[]>`
+      insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+      values (${u.user}, ${u.channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', now(), ${at}, 'w2q/ready.mp4') returning id`))[0].id;
+
+    /** Where a Short is, and what it's waiting for. */
+    const state = async (id: string) => (await db.admin((tx) => tx<{ status: string; youtube_id: string | null; waiting_on: string | null; waiting_until: Date | null; error: string | null }[]>`
+      select status, youtube_id, waiting_on, waiting_until, error from public.videos where id = ${id}`))[0];
+
+    /** An account's uploads and link checks on a quota day, as the server counted them, or as if it had. */
+    const accountDay = async (user: string, day: string) => (await db.admin((tx) => tx<{ uploads: number; link_checks: number }[]>`
+      select uploads, link_checks from public.youtube_account_days where user_id = ${user} and day = ${day}`))[0];
+    const hadToday = (user: string, day: string, uploads: number, linkChecks = 0) => db.admin((tx) => tx`
+      insert into public.youtube_account_days (day, user_id, uploads, link_checks) values (${day}, ${user}, ${uploads}, ${linkChecks})`);
+
+    /** What YouTube's upload is asked for while a test lasts, without the real upload. */
+    const uploading = () => {
+      const seen: { title: string; publishAt: Date | null }[] = [];
+      onTestFinished(() => void upload.mockReset());
+      upload.mockReset();
+      upload.mockImplementation(async (...a) => {
+        const meta = a[2] as { title: string; publishAt: Date | null };
+        seen.push({ title: meta.title, publishAt: meta.publishAt });
+        return `w2qup${seen.length}`;
+      });
+      return seen;
+    };
+
+    /** YouTube's side of the real upload, counted like any other: the titles of the Shorts it was asked to take. */
+    const youtubeUploads = () => {
+      upload.mockReset();
+      const titles: string[] = [];
+      stubFetch((u, init) => {
+        if (u.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) {
+          titles.push((JSON.parse(String(init?.body)) as { snippet: { title: string } }).snippet.title);
+          return new Response("{}", { status: 200, headers: { location: `https://upload.test/w2q${titles.length}` } });
+        }
+        if (u.startsWith("https://upload.test/w2q")) return { id: `w2qreal${u.slice("https://upload.test/w2q".length)}` };
+        return { items: [] };
+      });
+      return titles;
+    };
+
+    beforeAll(async () => {
+      if (!safe) return;
+      quota = await import("@/lib/server/quota");
+      yt = await import("@/lib/server/youtube");
+      seal = (await import("@/lib/server/crypto")).seal;
+    });
+
+    afterEach(async () => {
+      if (!safe || !made.length) return;
+      const gone = made.splice(0);
+      await db.admin((tx) => tx`delete from auth.users where id = any(${gone}::uuid[])`);
+    });
+
+    afterAll(async () => {
+      if (!safe) return;
+      await db.admin((tx) => tx`delete from public.youtube_quota where day between '2031-01-01' and '2031-12-31' or day between '2019-01-01' and '2019-12-31'`);
+    });
+
+    it("counts every YouTube call before it's made, by quota day, allowance and kind, with its calls and units", async () => {
+      const { user, channel } = await someone();
+      const now = pacific("2031-03-03", "11:00");
+      const ids = (n: number) => Array.from({ length: n }, (_, i) => `w2q${String(i).padStart(8, "0")}`);
+      const calls = stubFetch((u) => {
+        if (u.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) return new Response("{}", { status: 200, headers: { location: "https://upload.test/w2q" } });
+        if (u === "https://upload.test/w2q") return { id: "w2qupload01" };
+        if (new URL(u).pathname.endsWith("/channels")) return { items: [{ id: "UCw2qchannel", snippet: { title: "Counted" }, status: { madeForKids: false } }] };
+        return { items: [] };
+      });
+      // a check of 120 videos is three calls of 50, counted together before the first
+      await yt.youtubeVideoStates(ids(120), { kind: "checks", now });
+      // posting's own check after an upload, asked as the channel
+      await yt.youtubeVideoStates(ids(3), { access: "ya29.w2q", kind: "uploads", now });
+      await yt.youtubeViews(ids(51), { now });
+      expect((await yt.youtubeChannel("ya29.w2q", now)).externalId).toBe("UCw2qchannel");
+      await yt.youtubeGet("trends", "search.list", "search", { part: "snippet", q: "w2q" }, { now, what: "Searching YouTube" });
+      expect(await yt.youtubeUpload(channel, Buffer.from("video"), { title: "Counted", description: "", publishAt: null, privacy: "public", madeForKids: false }, now)).toBe("w2qupload01");
+      expect(calls).toHaveLength(3 + 1 + 2 + 1 + 1 + 2);
+      const open = { ran_out_at: null, full_at: null };
+      expect(await counted("2031-03-03")).toEqual([
+        { bucket: "searches", kind: "trends", units: 1, calls: 1, ...open },
+        { bucket: "units", kind: "checks", units: 3, calls: 3, ...open },
+        { bucket: "units", kind: "other", units: 1, calls: 1, ...open },
+        { bucket: "units", kind: "stats", units: 2, calls: 2, ...open },
+        { bucket: "units", kind: "uploads", units: 1, calls: 1, ...open },
+        { bucket: "uploads", kind: "uploads", units: 1, calls: 1, ...open },
+      ]);
+
+      // what each kind used today and the most it may: posting has no share of its own, so whatever's left is its
+      const units = await quota.usageToday("units", now);
+      expect(units).toMatchObject({ day: "2031-03-03", limit: 10_000, used: 7, full: false });
+      expect(units.kinds.checks).toEqual({ used: 3, cap: 3000 });
+      expect(units.kinds.live).toEqual({ used: 0, cap: 2500 });
+      expect(units.kinds.uploads).toEqual({ used: 1, cap: null });
+      // and what /admin reads
+      const today = await quota.quotaToday(now);
+      expect(today).toMatchObject({ day: "2031-03-03", resetsAt: pacific("2031-03-04", "00:05") });
+      const all = today.buckets.find((b) => b.bucket === "units")!;
+      expect(all).toMatchObject({ limit: 10_000, used: 7, held: 2000, fullAt: null, ranOutAt: null });
+      expect(all.kinds.map((k) => [k.kind, k.units, k.cap])).toEqual([
+        ["uploads", 1, null], ["checks", 3, 3000], ["stats", 2, 1500], ["trends", 0, 500], ["other", 1, 500], ["live", 0, 2500],
+      ]);
+      expect(today.buckets.find((b) => b.bucket === "analytics")).toMatchObject({ limit: null, used: 0, held: null });
+      expect(today.week.at(-1)).toEqual({ day: "2031-03-03", used: { units: 7, uploads: 1, searches: 1, analytics: 0 }, full: [] });
+
+      // each account's uploads and link checks, counted by the server alone, and kept for a week
+      await db.admin((tx) => tx`insert into public.youtube_account_days (day, user_id, uploads) values ('2031-02-23', ${user}, 4), ('2031-02-24', ${user}, 2)`);
+      await db.admin((tx) => quota.countUpload(tx, user, now));
+      await db.admin((tx) => quota.countUpload(tx, user, now));
+      expect(await quota.takeLinkCheck(user, now)).toBe(true);
+      expect(await db.admin((tx) => tx`select day::text as day, uploads, link_checks from public.youtube_account_days where user_id = ${user} order by day`)).toEqual([
+        { day: "2031-02-24", uploads: 2, link_checks: 0 },
+        { day: "2031-03-03", uploads: 2, link_checks: 1 },
+      ]);
+      // fifty link checks a day, then none until the reset
+      for (let i = 1; i < 50; i++) expect(await quota.takeLinkCheck(user, now)).toBe(true);
+      expect(await quota.takeLinkCheck(user, now)).toBe(false);
+      expect(await quota.takeLinkCheck(user, pacific("2031-03-04", "00:06"))).toBe(true);
+    });
+
+    it("gives up on a counted call YouTube doesn't answer in time, which passes like an outage", async () => {
+      const now = pacific("2031-03-02", "12:00");
+      const calls = stubFetch(() => {
+        throw new DOMException("The operation timed out.", "TimeoutError");
+      });
+      const err = await yt.youtubeGet("live", "liveBroadcasts.list", "liveBroadcasts", { part: "snippet" }, { access: "ya29.w2q", now, what: "Finding the stream", timeoutMs: 8000 })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(yt.YouTubeError);
+      expect(err).toMatchObject({ status: 0, reason: "timeout" });
+      expect((err as InstanceType<typeof yt.YouTubeError>).retry).toBe(true);
+      expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
+      // counted all the same, at what a stream's call costs
+      expect(await counted("2031-03-02")).toEqual([{ bucket: "units", kind: "live", units: 5, calls: 1, ran_out_at: null, full_at: null }]);
+    });
+
+    it("never lets calls at once go past a share or the allowance, and keeps posting's part whatever the others use", async () => {
+      const day = "2031-03-04";
+      const now = pacific(day, "09:00");
+      // five units left of Trends' 500: twenty at once, and exactly five go through
+      await used(day, "units", "trends", 495);
+      const tries = await Promise.allSettled(Array.from({ length: 20 }, () => quota.spend("trends", "videos.list", { now })));
+      expect(tries.filter((t) => t.status === "fulfilled")).toHaveLength(5);
+      const refused = tries.flatMap((t) => (t.status === "rejected" ? [t.reason as unknown] : []));
+      expect(refused).toHaveLength(15);
+      for (const e of refused) {
+        expect(e).toBeInstanceOf(quota.QuotaWait);
+        expect(e).toMatchObject({ bucket: "units", kind: "trends", google: false, until: pacific("2031-03-05", "00:05") });
+      }
+      expect((await counted(day)).find((r) => r.kind === "trends")).toMatchObject({ units: 500, calls: 500, ran_out_at: now, full_at: null });
+
+      // views, link checks, connecting and YouTube Live at their shares too: posting's checks still go, and none of theirs do
+      await used(day, "units", "stats", 1500);
+      await used(day, "units", "checks", 3000);
+      await used(day, "units", "other", 500);
+      await used(day, "units", "live", 2500);
+      const later = pacific(day, "10:00");
+      await quota.spend("uploads", "videos.list", { times: 3, now: later });
+      for (const kind of ["trends", "stats", "checks", "other", "live"] as const) {
+        await expect(quota.spend(kind, "videos.list", { now: later })).rejects.toBeInstanceOf(quota.QuotaWait);
+      }
+      // Trends first ran out at nine, and that stays
+      expect((await counted(day)).find((r) => r.kind === "trends")?.ran_out_at).toEqual(now);
+      // the last unit goes to posting, and a batch that wouldn't fit isn't counted at all
+      await used(day, "units", "uploads", 1999);
+      await expect(quota.spend("uploads", "videos.list", { times: 2, now: later })).rejects.toMatchObject({ google: false });
+      await quota.spend("uploads", "videos.list", { now: later });
+      await expect(quota.spend("uploads", "videos.list", { now: later })).rejects.toBeInstanceOf(quota.QuotaWait);
+      expect((await counted(day)).reduce((n, r) => n + r.units, 0)).toBe(10_000);
+    });
+
+    it("closes an allowance for the rest of its quota day once YouTube says it's used up, whatever Hookline counted", async () => {
+      const day = "2031-03-05";
+      const noon = pacific(day, "12:00");
+      const calls = stubFetch(() => usedUp());
+      const err = await yt.youtubeVideoStates(["w2qfull0001"], { kind: "checks", now: noon }).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(yt.YouTubeError);
+      expect((err as InstanceType<typeof yt.YouTubeError>).quota).toBe(true);
+      expect((await counted(day)).find((r) => r.kind === "checks")).toMatchObject({ bucket: "units", units: 1, calls: 1, full_at: noon });
+      // every kind of the units waits for the reset now, without asking YouTube
+      const one = pacific(day, "13:00");
+      const wait = await quota.spend("stats", "videos.list", { now: one }).catch((e: unknown) => e);
+      expect(wait).toBeInstanceOf(quota.QuotaWait);
+      expect(wait).toMatchObject({ bucket: "units", kind: "stats", google: true, until: pacific("2031-03-06", "00:05") });
+      await expect(yt.youtubeViews(["w2qfull0001"], { now: one })).rejects.toBeInstanceOf(quota.QuotaWait);
+      expect(calls).toHaveLength(1);
+      expect((await quota.usageToday("units", one)).full).toBe(true);
+      // the uploads are another allowance, still open
+      await quota.spend("uploads", "videos.insert", { now: one });
+      // and the next quota day starts at 00:05 Pacific with the units open again
+      await quota.spend("stats", "videos.list", { now: pacific("2031-03-06", "00:06") });
+      expect((await quota.usageToday("units", pacific("2031-03-06", "00:06"))).full).toBe(false);
+    });
+
+    it("counts a refusal in the five minutes after midnight Pacific against the day before, so it waits only until 00:05", async () => {
+      const { channel } = await someone();
+      const early = pacific("2031-03-08", "00:02");
+      const calls = stubFetch((u) => (u.startsWith("https://www.googleapis.com/upload/youtube/v3/videos") ? usedUp() : new Response("{}", { status: 500 })));
+      const err = await yt.youtubeUpload(channel, Buffer.from("video"), { title: "Early", description: "", publishAt: null, privacy: "public", madeForKids: false }, early)
+        .catch((e: unknown) => e);
+      expect((err as InstanceType<typeof yt.YouTubeError>).quota).toBe(true);
+      expect(calls).toHaveLength(1);
+      // the upload and YouTube's word both belong to the day before, which runs to 00:05
+      expect(await counted("2031-03-07")).toEqual([{ bucket: "uploads", kind: "uploads", units: 1, calls: 1, ran_out_at: null, full_at: early }]);
+      expect(await counted("2031-03-08")).toEqual([]);
+      const wait = await quota.spend("uploads", "videos.insert", { now: pacific("2031-03-08", "00:03") }).catch((e: unknown) => e);
+      expect(wait).toMatchObject({ bucket: "uploads", google: true, until: pacific("2031-03-08", "00:05") });
+      // from 00:05 it's a new day, with nothing closed
+      await quota.spend("uploads", "videos.insert", { now: pacific("2031-03-08", "00:06") });
+      expect(await counted("2031-03-08")).toEqual([{ bucket: "uploads", kind: "uploads", units: 1, calls: 1, ran_out_at: null, full_at: null }]);
+    });
+
+    it("says when a pasted link can be checked once there's no quota left today to ask with, and marks nothing", async () => {
+      const { user, channel } = await someone();
+      const [{ id: short }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, file_path)
+        values (${user}, ${channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Posted by hand', 'ready', now(), 'w2q/hand.mp4') returning id`);
+      const calls = stubFetch(() => ({ items: [] }));
+      // Hookline's count: the day's link checks are used up
+      const now = pacific("2031-03-01", "11:00");
+      await used("2031-03-01", "units", "checks", 3000);
+      expect(await queue.markPosted(user, short, "https://youtube.com/shorts/w2qwaiting1", undefined, now)).toEqual({
+        ok: false, message: "Hookline has used today's YouTube link checks, so this one can't be checked yet. Try again in about 13 hours, or leave the link out.",
+      });
+      // YouTube's word: the units are used up for everyone
+      const evening = pacific("2031-02-28", "21:00");
+      await quota.closeForToday("videos.list", "stats", evening);
+      expect(await queue.markPosted(user, short, "https://youtube.com/shorts/w2qwaiting1", undefined, evening)).toEqual({
+        ok: false, message: "YouTube's quota for Hookline is used up for today, so the link can't be checked yet. Try again in about 3 hours, or leave the link out.",
+      });
+      expect(calls).toHaveLength(0);
+      expect((await db.admin((tx) => tx<{ status: string; youtube_id: string | null }[]>`select status, youtube_id from public.videos where id = ${short}`))[0])
+        .toEqual({ status: "ready", youtube_id: null });
+    });
+
+    it("lets nobody signed in read or change the ledger or an account's counts, and everyone read how fresh Trends is", async () => {
+      const { user } = await someone();
+      await db.admin(async (tx) => {
+        await tx`insert into public.youtube_account_days (day, user_id, uploads) values ('2031-03-03', ${user}, 1)`;
+        await tx`insert into public.trend_checks (niche, tried_at, next_at) values ('w2q-niche', now(), now())`;
+      });
+      const refused: ((tx: import("@/lib/server/db").Tx) => Promise<unknown>)[] = [
+        (tx) => tx`select * from public.youtube_quota`,
+        (tx) => tx`insert into public.youtube_quota (day, bucket, kind) values ('2031-03-03', 'units', 'trends')`,
+        (tx) => tx`update public.youtube_quota set units = 0`,
+        (tx) => tx`delete from public.youtube_quota`,
+        (tx) => tx`select * from public.youtube_account_days`,
+        (tx) => tx`insert into public.youtube_account_days (day, user_id) values ('2031-03-04', ${user})`,
+        (tx) => tx`update public.youtube_account_days set uploads = 0`,
+        (tx) => tx`delete from public.youtube_account_days`,
+        (tx) => tx`insert into public.trend_checks (niche, tried_at, next_at) values ('w2q-mine', now(), now())`,
+        (tx) => tx`update public.trend_checks set next_at = now()`,
+        (tx) => tx`delete from public.trend_checks`,
+      ];
+      for (const q of refused) await expect(db.asUser(user, q)).rejects.toThrow(/permission denied/);
+      expect(await db.asUser(user, (tx) => tx`select niche from public.trend_checks where niche = 'w2q-niche'`)).toEqual([{ niche: "w2q-niche" }]);
+      expect(await db.admin((tx) => tx`select uploads from public.youtube_account_days where user_id = ${user}`)).toEqual([{ uploads: 1 }]);
+      await db.admin((tx) => tx`delete from public.trend_checks where niche = 'w2q-niche'`);
+    });
+
+    it("waits for the reset without asking YouTube once Hookline has counted the day's uploads, and uploads them after it", async () => {
+      const u = await uploader();
+      const now = pacific("2019-02-25", "15:00");
+      const reset = pacific("2019-02-26", "00:05");
+      const ids = [await ready(u, "First", new Date(now.getTime() + 2 * 3600_000)), await ready(u, "Second", new Date(now.getTime() + 3 * 3600_000))];
+      // everyone's 100 for the day, by Hookline's own count
+      await used("2019-02-25", "uploads", "uploads", 100);
+      const asked = youtubeUploads();
+      await post.postDue(now);
+      expect(asked).toEqual([]);
+      for (const id of ids) expect(await state(id)).toEqual({ status: "ready", youtube_id: null, waiting_on: "youtube_quota", waiting_until: reset, error: null });
+      // the try that found no room is written down, for /admin
+      expect((await counted("2019-02-25")).find((r) => r.bucket === "uploads")).toMatchObject({ units: 100, ran_out_at: now, full_at: null });
+      // a minute later nothing is asked
+      await post.postDue(new Date(now.getTime() + 60_000));
+      expect(asked).toEqual([]);
+      // from 00:05 Pacific it's a new day: they go up, stop waiting, and are the account's first two
+      await post.postDue(new Date(reset.getTime() + 60_000));
+      expect(asked).toEqual(["First", "Second"]);
+      for (const id of ids) expect(await state(id)).toMatchObject({ status: "scheduled", youtube_id: expect.stringMatching(/^w2qreal/), waiting_on: null, waiting_until: null });
+      expect(await counted("2019-02-26")).toEqual([{ bucket: "uploads", kind: "uploads", units: 2, calls: 2, ran_out_at: null, full_at: null }]);
+      expect(await accountDay(u.user, "2019-02-26")).toEqual({ uploads: 2, link_checks: 0 });
+    });
+
+    it("uploads a Pro account's 6 in a quota day, says the rest wait for its plan's next uploads, and lets them go once the plan has room", async () => {
+      const lib = await import("@/lib/server/shorts/library");
+      const u = await uploader("pro");
+      const now = pacific("2019-02-20", "09:00");
+      const reset = pacific("2019-02-21", "00:05");
+      const ids: string[] = [];
+      for (let h = 1; h <= 7; h++) ids.push(await ready(u, `Hour ${h}`, new Date(now.getTime() + h * 3600_000)));
+      const seen = uploading();
+      stubFetch(() => ({ items: [] }));
+      await post.postDue(now, 100);
+      expect(seen.map((x) => x.title)).toEqual(["Hour 1", "Hour 2", "Hour 3", "Hour 4", "Hour 5", "Hour 6"]);
+      expect(await accountDay(u.user, "2019-02-20")).toEqual({ uploads: 6, link_checks: 0 });
+      // the seventh says why, until the reset
+      expect(await state(ids[6])).toEqual({ status: "ready", youtube_id: null, waiting_on: "plan_cap", waiting_until: reset, error: null });
+      await post.postDue(new Date(now.getTime() + 60_000), 100);
+      expect(seen).toHaveLength(6);
+      // with its reset still to come (this one's was long ago), the queue and the Short's page say so
+      const until = new Date(Date.now() + 3600_000);
+      await db.admin((tx) => tx`update public.videos set waiting_until = ${until} where id = ${ids[6]}`);
+      expect((await queue.queueOf(u.user)).coming.find((c) => c.id === ids[6])?.heldBack).toEqual({ on: "plan_cap", until });
+      expect((await lib.shortOf(u.user, ids[6]))?.heldBack).toEqual({ on: "plan_cap", until });
+
+      // on Creator there's room again: the wait ends and it goes up in the same run
+      await db.admin((tx) => tx`update public.subscriptions set plan = 'creator' where user_id = ${u.user}`);
+      await post.postDue(new Date(now.getTime() + 2 * 60_000), 100);
+      expect(seen.map((x) => x.title).at(-1)).toBe("Hour 7");
+      expect(await state(ids[6])).toMatchObject({ status: "scheduled", waiting_on: null, waiting_until: null });
+      expect(await accountDay(u.user, "2019-02-20")).toEqual({ uploads: 7, link_checks: 0 });
+    });
+
+    it("counts each account's uploads on the server, so changing or deleting its own Shorts frees no room", async () => {
+      const u = await uploader("pro");
+      const now = pacific("2019-02-17", "09:00");
+      for (let h = 1; h <= 6; h++) await ready(u, `Hour ${h}`, new Date(now.getTime() + h * 3600_000));
+      const seen = uploading();
+      stubFetch(() => ({ items: [] }));
+      await post.postDue(now, 100);
+      expect(seen).toHaveLength(6);
+      // as the account itself: half look as if they never went up, and the rest are gone
+      const up = (await db.admin((tx) => tx<{ id: string }[]>`select id from public.videos where user_id = ${u.user} and youtube_id is not null order by scheduled_for`)).map((v) => v.id);
+      expect(await db.asUser(u.user, (tx) => tx`update public.videos set uploaded_at = null where id in ${tx(up.slice(0, 3))} returning id`)).toHaveLength(3);
+      expect(await db.asUser(u.user, (tx) => tx`delete from public.videos where id in ${tx(up.slice(3))} returning id`)).toHaveLength(3);
+      const more = await ready(u, "Hour 8", new Date(now.getTime() + 8 * 3600_000));
+      await post.postDue(new Date(now.getTime() + 60_000), 100);
+      expect(seen).toHaveLength(6);
+      expect(await state(more)).toMatchObject({ status: "ready", waiting_on: "plan_cap" });
+    });
+
+    it("gives the day's last upload to the account with the fewest today, even when another's Short is due sooner", async () => {
+      const day = "2019-02-14";
+      const now = pacific(day, "20:00");
+      const busy = await uploader();
+      const fresh = await uploader();
+      await hadToday(busy.user, day, 3);
+      const sooner = await ready(busy, "Busy's", pacific(day, "21:00"));
+      await ready(fresh, "Fresh's", pacific(day, "22:00"));
+      // one left of everyone's 100
+      await used(day, "uploads", "uploads", 99);
+      const asked = youtubeUploads();
+      await post.postDue(now);
+      expect(asked).toEqual(["Fresh's"]);
+      expect(await state(sooner)).toMatchObject({ status: "ready", waiting_on: "youtube_quota", waiting_until: pacific("2019-02-15", "00:05") });
+    });
+
+    it("gives the day's last upload to a Short due before the reset over one due after it, whoever has had more today", async () => {
+      const day = "2019-02-11";
+      const now = pacific(day, "20:00");
+      const busy = await uploader();
+      const fresh = await uploader();
+      await hadToday(busy.user, day, 3);
+      await ready(busy, "Tonight", pacific(day, "23:00"));
+      const morning = await ready(fresh, "Tomorrow morning", pacific("2019-02-12", "06:00"));
+      await used(day, "uploads", "uploads", 99);
+      const asked = youtubeUploads();
+      await post.postDue(now);
+      expect(asked).toEqual(["Tonight"]);
+      expect(await state(morning)).toMatchObject({ status: "ready", waiting_on: "youtube_quota" });
+    });
+
+    it("leaves an account at its plan's uploads out of the line, however many it has ready", async () => {
+      const day = "2019-02-08";
+      const now = pacific(day, "10:00");
+      const full = await uploader();
+      const other = await uploader();
+      await hadToday(full.user, day, 6);
+      await db.admin((tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path)
+        select ${full.user}, ${full.channel}, 'wyr', '{"pairs":[]}', 'wyr', 'One of many', 'ready', now(), ${now}::timestamptz + make_interval(mins => g), 'w2q/many.mp4'
+        from generate_series(1, 200) g`);
+      await ready(other, "Theirs", new Date(now.getTime() + 5 * 3600_000));
+      const seen = uploading();
+      stubFetch(() => ({ items: [] }));
+      await post.postDue(now);
+      expect(seen.map((x) => x.title)).toEqual(["Theirs"]);
+      // and every one of the 200 says it's waiting for the plan's next uploads
+      expect(await db.admin((tx) => tx`select waiting_on, count(*)::int as n from public.videos where user_id = ${full.user} group by waiting_on`)).toEqual([{ waiting_on: "plan_cap", n: 200 }]);
+    });
+
+    it("uploads a public Short at most a day before its time, and an unlisted one at its time", async () => {
+      const now = pacific("2019-02-01", "12:00");
+      const pub = await uploader("pro", "public");
+      const unl = await uploader("pro", "unlisted");
+      const due = new Date(now.getTime() + 72 * 3600_000);
+      await ready(pub, "In three days", due);
+      await ready(unl, "Unlisted now", new Date(now.getTime() + 10 * 60_000));
+      await ready(unl, "Unlisted later", new Date(now.getTime() + 5 * 3600_000));
+      const seen = uploading();
+      stubFetch((url) => ({
+        items: (new URL(url).searchParams.get("id") ?? "").split(",").map((id) => ({ id, snippet: { channelId: TEST_CHANNEL }, status: { uploadStatus: "processed", privacyStatus: "unlisted" } })),
+      }));
+      await post.postDue(now);
+      expect(seen).toEqual([{ title: "Unlisted now", publishAt: null }]);
+      // 25 hours before its time the public one still waits, and the unlisted one goes now its time has passed
+      await post.postDue(new Date(due.getTime() - 25 * 3600_000));
+      expect(seen.slice(1)).toEqual([{ title: "Unlisted later", publishAt: null }]);
+      // 23 hours before, it goes up private, to go public at its time
+      await post.postDue(new Date(due.getTime() - 23 * 3600_000));
+      expect(seen.slice(2)).toEqual([{ title: "In three days", publishAt: due }]);
+    });
+
+    it("tries an upload that failed again in half an hour, not every minute, saying what went wrong and not that it's waiting, while TikTok still gets it", async () => {
+      const now = pacific("2019-01-28", "12:00");
+      const u = await uploader();
+      const [tt] = await db.admin((tx) => tx<{ id: string }[]>`insert into public.channels (user_id, platform, external_id, title) values (${u.user}, 'tiktok', ${`w2q-tt-${u.user}`}, 'TikTok') returning id`);
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at) values (${tt.id}, ${seal("act.w2q")}, now() + interval '1 hour')`);
+      const choices = { privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false };
+      const due = new Date(now.getTime() - 60_000);
+      const [{ id }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path, clean_path, tiktok_post, tiktok_at)
+        values (${u.user}, ${u.channel}, 'wyr', '{"pairs":[]}', 'wyr', 'Tried again', 'ready', now(), ${due}, 'w2q/again.mp4', 'w2q/again-clean.mp4', ${tx.json(choices)}, ${due})
+        returning id`);
+      upload.mockReset();
+      let down = true;
+      const tries: string[] = [];
+      stubFetch((url) => {
+        if (url.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) {
+          tries.push(url);
+          return down ? new Response("{}", { status: 500 }) : new Response("{}", { status: 200, headers: { location: "https://upload.test/w2qagain" } });
+        }
+        if (url === "https://upload.test/w2qagain") return { id: "w2qagain001" };
+        if (url.endsWith("/post/publish/creator_info/query/")) return { data: { creator_nickname: "w2q", privacy_level_options: ["SELF_ONLY"], max_video_post_duration_sec: 600 }, error: { code: "ok" } };
+        if (url.endsWith("/post/publish/video/init/")) return { data: { publish_id: "w2q-pub", upload_url: "https://tiktok.test/w2q" }, error: { code: "ok" } };
+        if (url === "https://tiktok.test/w2q") return {};
+        return { items: [] };
+      });
+      await post.postDue(now);
+      expect(tries).toHaveLength(1);
+      const [after] = await db.admin((tx) => tx<{ status: string; error: string | null; waiting_on: string | null; waiting_until: Date | null; tiktok_publish_id: string | null }[]>`
+        select status, error, waiting_on, waiting_until, tiktok_publish_id from public.videos where id = ${id}`);
+      // only waiting_on makes a wait it shows
+      expect(after).toMatchObject({ status: "ready", waiting_on: null, waiting_until: new Date(now.getTime() + 30 * 60_000), tiktok_publish_id: "w2q-pub" });
+      expect(after.error).toMatch(/500/);
+      // every try counts against everyone's uploads, which is why it isn't tried every minute
+      expect((await counted("2019-01-28")).find((r) => r.bucket === "uploads")).toMatchObject({ units: 1, calls: 1 });
+      await post.postDue(new Date(now.getTime() + 60_000));
+      expect(tries).toHaveLength(1);
+      // half an hour on it's tried again, and goes up
+      down = false;
+      await post.postDue(new Date(now.getTime() + 31 * 60_000));
+      expect(tries).toHaveLength(2);
+      expect(await state(id)).toMatchObject({ status: "scheduled", youtube_id: "w2qagain001", error: null, waiting_until: null });
+      expect((await counted("2019-01-28")).find((r) => r.bucket === "uploads")).toMatchObject({ units: 2, calls: 2 });
+    });
+
+    it("gives the whole line that half hour once YouTube fails two uploads in a row, so an outage can't use up the day's, and holds nobody up for one Short's own", async () => {
+      const day = "2019-01-26";
+      const now = pacific(day, "12:00");
+      // ten Shorts of two accounts, due within the hour, more than a run takes
+      const a = await uploader("creator");
+      const b = await uploader("creator");
+      const ids: string[] = [];
+      for (let i = 0; i < 10; i++) ids.push(await ready(i % 2 ? b : a, `Down ${i}`, new Date(now.getTime() + (10 + i) * 60_000)));
+      upload.mockReset();
+      let youtube: "down" | "unreachable" | "back" = "down";
+      // once it's back: one Short's upload fails on its own, and YouTube asks the next to slow down
+      const hiccups = [503, 429];
+      const tries: string[] = [];
+      stubFetch((url) => {
+        if (url.startsWith("https://www.googleapis.com/upload/youtube/v3/videos")) {
+          tries.push(url);
+          if (youtube === "down") return new Response("{}", { status: 503 });
+          if (youtube === "unreachable") throw new TypeError("fetch failed");
+          const hiccup = hiccups.shift();
+          if (hiccup === 503) return new Response("{}", { status: 503 });
+          if (hiccup === 429) return new Response(JSON.stringify({ error: { code: 429, message: "Too many requests", errors: [{ reason: "rateLimitExceeded" }] } }), { status: 429 });
+          return new Response("{}", { status: 200, headers: { location: `https://upload.test/w2qdown${tries.length}` } });
+        }
+        if (url.startsWith("https://upload.test/w2qdown")) return { id: url.slice("https://upload.test/".length) };
+        return { items: [] };
+      });
+      const uploads = async () => (await counted(day)).find((r) => r.bucket === "uploads")?.units;
+      const pausedTill = async (until: Date) => (await Promise.all(ids.map(state))).every((s) => s.status === "ready" && s.waiting_on === null && s.waiting_until?.getTime() === until.getTime());
+
+      // YouTube answers 503 twice in a row: those two tries count, and every Short in line waits the same half hour, the ones never tried too
+      await post.postDue(now, 4);
+      expect(tries).toHaveLength(2);
+      expect(await uploads()).toBe(2);
+      expect(await pausedTill(new Date(now.getTime() + 30 * 60_000))).toBe(true);
+      // only the two tried say what went wrong, and none says it's waiting for anything
+      expect((await Promise.all(ids.map(state))).map((s) => s.error)).toEqual([expect.stringMatching(/503/), expect.stringMatching(/503/), ...Array(8).fill(null)]);
+      // a minute later nothing is tried, though the run before took only four
+      await post.postDue(new Date(now.getTime() + 60_000), 4);
+      expect(tries).toHaveLength(2);
+
+      // half an hour on, YouTube can't be reached at all: the same, with two more tries
+      youtube = "unreachable";
+      const later = new Date(now.getTime() + 31 * 60_000);
+      await post.postDue(later, 4);
+      expect(tries).toHaveLength(4);
+      expect(await pausedTill(new Date(later.getTime() + 30 * 60_000))).toBe(true);
+      expect(await state(ids[0])).toMatchObject({ error: "Starting the upload: YouTube couldn't be reached" });
+
+      // once it's back, one that fails on its own and one YouTube asks to slow down each wait their own half hour, and the rest go up
+      youtube = "back";
+      const back = new Date(later.getTime() + 31 * 60_000);
+      await post.postDue(back, 100);
+      expect(tries).toHaveLength(14);
+      for (const id of ids.slice(0, 2)) expect(await state(id)).toMatchObject({ status: "ready", youtube_id: null, waiting_on: null, waiting_until: new Date(back.getTime() + 30 * 60_000) });
+      for (const id of ids.slice(2)) expect(await state(id)).toMatchObject({ status: "scheduled", youtube_id: expect.stringMatching(/^w2qdown/), error: null });
+      // every try counted against everyone's uploads, and only the ones that went up against each account's
+      expect(await uploads()).toBe(14);
+      expect(await accountDay(a.user, day)).toEqual({ uploads: 4, link_checks: 0 });
+      expect(await accountDay(b.user, day)).toEqual({ uploads: 4, link_checks: 0 });
+    });
+
+    it("asks YouTube about an upload every 4 minutes for its first half hour, then every half hour, ones whose check failed too", async () => {
+      const now = pacific("2019-01-24", "12:00");
+      const ago = (m: number) => new Date(now.getTime() - m * 60_000);
+      const u = await uploader();
+      const other = await uploader();
+      const up = (who: { user: string; channel: string }, id: string, due: Date, checked: Date | null) => db.admin((tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, uploaded_at, file_path,
+          youtube_id, youtube_verified, youtube_status, youtube_wanted, youtube_publish_at, youtube_checked_at)
+        values (${who.user}, ${who.channel}, 'wyr', '{"pairs":[]}', 'wyr', ${id}, 'scheduled', now(), ${due}, ${ago(180)}, 'w2q/up.mp4',
+          ${id}, true, 'uploaded', 'public', ${due}, ${checked})`);
+      // two hours past their time, and ten minutes
+      await up(u, "w2qlate10m", ago(120), ago(10));
+      await up(u, "w2qlate31m", ago(120), ago(31));
+      await up(u, "w2qsoon05m", ago(10), ago(5));
+      await up(u, "w2qsoon03m", ago(10), ago(3));
+      // and one on a channel YouTube won't answer for
+      await up(other, "w2qrefused", ago(60), null);
+      const calls = stubFetch((url, init) => {
+        if (new Headers(init?.headers).get("authorization") === `Bearer ya29.${other.email}`) {
+          return new Response(JSON.stringify({ error: { code: 403, message: "Forbidden", errors: [{ reason: "forbidden" }] } }), { status: 403 });
+        }
+        // still processing
+        return { items: (new URL(url).searchParams.get("id") ?? "").split(",").map((id) => ({ id, snippet: { channelId: TEST_CHANNEL }, status: { uploadStatus: "uploaded", privacyStatus: "private" } })) };
+      });
+      const asked = () => calls.map((c) => new URL(c.url).searchParams.get("id")!.split(",").sort().join(",")).sort();
+      await post.confirmYouTube(now);
+      expect(asked()).toEqual(["w2qlate31m,w2qsoon05m", "w2qrefused"]);
+      // the refused one was asked all the same, so it waits its turn like one still processing
+      expect(await db.admin((tx) => tx`select youtube_checked_at from public.videos where youtube_id = 'w2qrefused'`)).toEqual([{ youtube_checked_at: now }]);
+      // posting's own checks, out of what's kept for posting
+      expect(await counted("2019-01-24")).toEqual([{ bucket: "units", kind: "uploads", units: 2, calls: 2, ran_out_at: null, full_at: null }]);
+      calls.length = 0;
+      await post.confirmYouTube(new Date(now.getTime() + 60_000));
+      expect(calls).toEqual([]);
+      // half an hour on, it's asked again rather than given up on
+      await post.confirmYouTube(new Date(now.getTime() + 31 * 60_000));
+      expect(asked().join(",").split(",")).toContain("w2qrefused");
+    });
+
+    it("checks 50 pasted links a day for each account, and says when the next can be checked", async () => {
+      const day = "2019-01-20";
+      const now = pacific(day, "19:00");
+      const u = await uploader();
+      const byHand = async (title: string) => (await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, file_path)
+        values (${u.user}, ${u.channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', now(), 'w2q/hand.mp4') returning id`))[0].id;
+      const [fiftieth, refused, nextDay] = [await byHand("Fiftieth"), await byHand("Refused"), await byHand("Next day")];
+      await hadToday(u.user, day, 0, 49);
+      const look = vi.fn(async () => ({ state: { channelId: TEST_CHANNEL, uploadStatus: "processed", privacy: "public", failureReason: null, rejectionReason: null, madeForKids: false } as VideoState }));
+      expect(await queue.markPosted(u.user, fiftieth, "https://youtube.com/shorts/w2qlinks050", look, now)).toEqual({ ok: true, checked: true });
+      expect(await accountDay(u.user, day)).toEqual({ uploads: 0, link_checks: 50 });
+      // the next isn't asked about, and says when it can be
+      expect(await queue.markPosted(u.user, refused, "https://youtube.com/shorts/w2qlinks051", look, now)).toEqual({
+        ok: false, message: "That's 50 links checked today, the most for one day. Try again in about 5 hours, or leave the link out.",
+      });
+      expect(look).toHaveBeenCalledTimes(1);
+      expect(await state(refused)).toMatchObject({ status: "ready", youtube_id: null });
+      // leaving the link out still works
+      expect(await queue.markPosted(u.user, refused, "", look, now)).toEqual({ ok: true, checked: false });
+      // and from 00:05 Pacific there are 50 more
+      expect(await queue.markPosted(u.user, nextDay, "https://youtube.com/shorts/w2qlinks052", look, pacific("2019-01-21", "00:06"))).toEqual({ ok: true, checked: true });
+    });
+
+    it("doesn't ask YouTube about a channel being connected once connecting's share of the day is used up", async () => {
+      const now = pacific("2019-01-16", "10:00");
+      await used("2019-01-16", "units", "other", 500);
+      const calls = stubFetch(() => ({ items: [] }));
+      const err = await yt.youtubeChannel("ya29.w2q", now).catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(quota.QuotaWait);
+      expect(err).toMatchObject({ bucket: "units", kind: "other", google: false, until: pacific("2019-01-17", "00:05") });
+      expect(calls).toEqual([]);
+    });
+
+    /**
+     * YouTube's side of Trends: each search finds Shorts of its own niche, put up two hours before `at`. YouTube marked the
+     * first of each made for kids and says nothing about the second, and ball battles' third isn't made for kids.
+     */
+    const trendsAnswer = (at: Date, niches: { id: string; query: string }[]) => (u: string) => {
+      const url = new URL(u);
+      if (url.pathname.endsWith("/search")) {
+        const n = niches.find((x) => `${x.query} #shorts` === url.searchParams.get("q"))!;
+        return { items: Array.from({ length: n.id === "ball-battles" ? 3 : 2 }, (_, i) => ({ id: { videoId: `w2qt-${n.id}-${i + 1}` } })) };
+      }
+      return {
+        items: (url.searchParams.get("id") ?? "").split(",").map((id) => ({
+          id,
+          snippet: { title: `Rising ${id}`, channelTitle: "Someone else", publishedAt: new Date(at.getTime() - 2 * 3600_000).toISOString() },
+          statistics: { viewCount: "5000" },
+          contentDetails: { duration: "PT40S" },
+          status: id.endsWith("-1") ? { madeForKids: true } : id.endsWith("-3") ? { madeForKids: false } : {},
+        })),
+      };
+    };
+    /** What these tests' Trends checks wrote, cleared away so no later run starts from it. */
+    const forgetTrends = () => db.admin(async (tx) => {
+      await tx`delete from public.trend_checks where tried_at < '2020-01-01'`;
+      await tx`delete from public.trend_videos where external_id like 'w2qt-%'`;
+    });
+    /** Each niche's check as trend_checks has it. */
+    const trendChecked = async () => new Map((await db.admin((tx) => tx<{ niche: string; checked_at: Date | null; outcome: string | null; next_at: Date }[]>`
+      select niche, checked_at, outcome, next_at from public.trend_checks`)).map((r) => [r.niche, r]));
+
+    it("checks each niche once a day with one search, keeps YouTube's made-for-kids verdict, and never searches a niche twice at once", async () => {
+      const { NICHES } = await import("@/lib/trends/niches");
+      onTestFinished(forgetTrends);
+      const now = pacific("2019-03-02", "09:00");
+      const calls = stubFetch(trendsAnswer(now, NICHES));
+      const searched = () => calls.filter((c) => new URL(c.url).pathname.endsWith("/search")).map((c) => new URL(c.url).searchParams.get("q"));
+      const every = NICHES.map((n) => `${n.query} #shorts`);
+      await trends.refreshTrends(now);
+      expect(searched()).toEqual(every);
+      // the look at what each found asks for YouTube's verdict too, in the same call
+      const looks = calls.filter((c) => new URL(c.url).pathname.endsWith("/videos"));
+      expect(looks).toHaveLength(NICHES.length);
+      for (const c of looks) expect(new URL(c.url).searchParams.get("part")).toBe("snippet,statistics,contentDetails,status");
+      const checked = await trendChecked();
+      for (const n of NICHES) expect(checked.get(n.id)).toEqual({ niche: n.id, checked_at: now, outcome: "found", next_at: new Date(now.getTime() + 86400_000) });
+      // counted as Trends': a search and a unit for each niche
+      expect((await counted("2019-03-02")).map((r) => [r.bucket, r.kind, r.units])).toEqual([["searches", "trends", NICHES.length], ["units", "trends", NICHES.length]]);
+      // YouTube's own word on who each is for, kept as it said it
+      expect(await db.admin((tx) => tx`select external_id, made_for_kids from public.trend_videos where external_id like 'w2qt-ball-battles-%' order by external_id`)).toEqual([
+        { external_id: "w2qt-ball-battles-1", made_for_kids: true },
+        { external_id: "w2qt-ball-battles-2", made_for_kids: null },
+        { external_id: "w2qt-ball-battles-3", made_for_kids: false },
+      ]);
+      // anyone signed in sees how fresh each niche is, and each niche's made-for-kids share out of the Shorts YouTube said either way about
+      const { user } = await someone();
+      const fresh = new Map((await trends.trendChecks(user)).map((c) => [c.niche, c.checkedAt]));
+      for (const n of NICHES) expect(fresh.get(n.id)).toEqual(now);
+      expect(Object.fromEntries(await trends.kidsShare(user, ["ball-battles", "quizzes"], now))).toEqual({ "ball-battles": { kids: 1, of: 2 }, quizzes: { kids: 1, of: 1 } });
+
+      // an hour later nothing is due, so nothing is asked
+      calls.length = 0;
+      await trends.refreshTrends(new Date(now.getTime() + 3600_000));
+      expect(calls).toEqual([]);
+      // a day later every niche is searched again, once
+      await trends.refreshTrends(new Date(now.getTime() + 86400_000));
+      expect(searched()).toEqual(every);
+      // and two checkers at once share the niches out between them, so each is still searched once
+      calls.length = 0;
+      const both = new Date(now.getTime() + 2 * 86400_000);
+      await Promise.all([trends.refreshTrends(both), trends.refreshTrends(both)]);
+      expect(searched().sort()).toEqual([...every].sort());
+    });
+
+    it("stops a Trends run at the first niche it can't check: the rest wait for the reset when the quota is used up, or an hour when YouTube doesn't answer", async () => {
+      const { NICHES } = await import("@/lib/trends/niches");
+      onTestFinished(forgetTrends);
+      const day = "2019-03-05";
+      const now = pacific(day, "09:00");
+      const reset = pacific("2019-03-06", "00:05");
+      // Trends' share of the day's units is used up: the first search goes, and the look at what it found doesn't
+      await used(day, "units", "trends", 500);
+      const calls = stubFetch(trendsAnswer(now, NICHES));
+      await trends.refreshTrends(now);
+      expect(calls.map((c) => new URL(c.url).pathname)).toEqual(["/youtube/v3/search"]);
+      let checked = await trendChecked();
+      for (const n of NICHES) expect(checked.get(n.id)).toMatchObject({ checked_at: null, outcome: "quota", next_at: reset });
+      // nothing more is searched that day
+      await trends.refreshTrends(pacific(day, "15:00"));
+      expect(calls).toHaveLength(1);
+
+      // after the reset, a key YouTube refuses: one search, and every niche waits an hour rather than using up the day's searches
+      const later = pacific("2019-03-07", "09:00");
+      const refused = stubFetch(() => new Response(JSON.stringify({ error: { code: 403, message: "The API key is invalid.", errors: [{ reason: "keyInvalid" }] } }), { status: 403 }));
+      await trends.refreshTrends(later);
+      expect(refused).toHaveLength(1);
+      checked = await trendChecked();
+      for (const n of NICHES) expect(checked.get(n.id)).toMatchObject({ checked_at: null, outcome: "failed", next_at: new Date(later.getTime() + 3600_000) });
+      await trends.refreshTrends(new Date(later.getTime() + 30 * 60_000));
+      expect(refused).toHaveLength(1);
+      // an hour on it tries again, with one search
+      await trends.refreshTrends(new Date(later.getTime() + 3600_000));
+      expect(refused).toHaveLength(2);
+    });
+
+    it("shows /admin each allowance and part's use today, what's held for posting, the Shorts waiting and the last 7 days", async () => {
+      onTestFinished(async () => {
+        await db.admin((tx) => tx`delete from public.youtube_quota where day between '2033-01-01' and '2033-01-31'`);
+      });
+      const day = "2033-01-12";
+      const now = pacific(day, "15:00");
+      const reset = pacific("2033-01-13", "00:05");
+      // today: posting's checks, link checks at their share since two, views and Trends; uploads and searches; and Analytics, which has no limit
+      await used(day, "units", "uploads", 40);
+      await used(day, "units", "checks", 3000);
+      await db.admin((tx) => tx`update public.youtube_quota set ran_out_at = ${pacific(day, "14:00")} where day = ${day} and kind = 'checks'`);
+      await used(day, "units", "stats", 25);
+      await used(day, "units", "trends", 10);
+      await used(day, "uploads", "uploads", 7);
+      await used(day, "searches", "trends", 10);
+      await used(day, "analytics", "analytics", 3);
+      // two days before, YouTube said the uploads were used up
+      await used("2033-01-10", "uploads", "uploads", 60);
+      await used("2033-01-10", "units", "uploads", 120);
+      await db.admin((tx) => tx`update public.youtube_quota set full_at = ${pacific("2033-01-10", "18:00")} where day = '2033-01-10' and bucket = 'uploads'`);
+      // Shorts waiting: two for YouTube's uploads, one for its plan's; one paused after a failed upload and one whose wait is over aren't.
+      // Every account's are counted, so these are what it adds to what was there
+      const before = (await quota.quotaToday(now)).waiting;
+      const u = await someone();
+      const held = (title: string, on: string | null, until: Date) => db.admin((tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, scheduled_for, file_path, waiting_on, waiting_until)
+        values (${u.user}, ${u.channel}, 'wyr', '{"pairs":[]}', 'wyr', ${title}, 'ready', now(), ${reset}, 'w2q/held.mp4', ${on}, ${until})`);
+      await held("Quota one", "youtube_quota", reset);
+      await held("Quota two", "youtube_quota", reset);
+      await held("Plan", "plan_cap", reset);
+      await held("Paused", null, new Date(now.getTime() + 30 * 60_000));
+      await held("Over", "youtube_quota", new Date(now.getTime() - 60_000));
+
+      const q = await quota.quotaToday(now);
+      expect(q).toMatchObject({ day, resetsAt: reset, waiting: { youtube_quota: before.youtube_quota + 2, plan_cap: before.plan_cap + 1 } });
+      const of = Object.fromEntries(q.buckets.map((b) => [b.bucket, b]));
+      expect(of.units).toMatchObject({ limit: 10_000, used: 3075, held: 2000, fullAt: null, ranOutAt: pacific(day, "14:00") });
+      expect(of.units.kinds.map((k) => [k.kind, k.units, k.cap, k.ranOutAt])).toEqual([
+        ["uploads", 40, null, null], ["checks", 3000, 3000, pacific(day, "14:00")], ["stats", 25, 1500, null],
+        ["trends", 10, 500, null], ["other", 0, 500, null], ["live", 0, 2500, null],
+      ]);
+      expect(of.uploads).toMatchObject({ limit: 100, used: 7, held: 100, fullAt: null, ranOutAt: null });
+      expect(of.searches).toMatchObject({ limit: 100, used: 10, held: 0 });
+      expect(of.analytics).toMatchObject({ limit: null, used: 3, held: null });
+      // the week, oldest first: the day YouTube said the uploads were used up, a day with nothing, and today
+      expect(q.week.map((d) => d.day)).toEqual(["2033-01-06", "2033-01-07", "2033-01-08", "2033-01-09", "2033-01-10", "2033-01-11", "2033-01-12"]);
+      expect(q.week.slice(4)).toEqual([
+        { day: "2033-01-10", used: { units: 120, uploads: 60, searches: 0, analytics: 0 }, full: ["uploads"] },
+        { day: "2033-01-11", used: { units: 0, uploads: 0, searches: 0, analytics: 0 }, full: [] },
+        { day, used: { units: 3075, uploads: 7, searches: 10, analytics: 3 }, full: [] },
+      ]);
+
+      // counting that began part way through a day: the days before it aren't counted, never 0, and that one says from when. It has
+      // to be the ledger's first row, so it goes in a year before anything else counted, whatever other tests have counted
+      const [{ year }] = await db.admin((tx) => tx<{ year: number }[]>`
+        select least(2001, extract(year from min(day))::int - 1, extract(year from min(created_at))::int - 1) as year from public.youtube_quota`);
+      const firstDay = `${year}-01-09`;
+      onTestFinished(async () => {
+        await db.admin((tx) => tx`delete from public.youtube_quota where day = ${firstDay}`);
+      });
+      const began = pacific(firstDay, "16:20");
+      await db.admin((tx) => tx`insert into public.youtube_quota (day, bucket, kind, units, calls, created_at) values (${firstDay}, 'units', 'stats', 4, 4, ${began})`);
+      const first = await quota.quotaToday(pacific(`${year}-01-11`, "10:00"));
+      expect(first).toMatchObject({ day: `${year}-01-11`, firstAt: began, firstDay });
+      expect(first.week.map((d) => d.used?.units ?? null)).toEqual([null, null, null, null, 4, 0, 0]);
+    });
+  });
 
   // wave 2: clipper
 

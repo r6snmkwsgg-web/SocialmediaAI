@@ -10,6 +10,8 @@ import { billingFor } from "../billing";
 import { admin, asUser, type Tx } from "../db";
 import { configured, youtubeApi } from "../env";
 import { YouTubeError, youtubeAccess, youtubeIdFrom, youtubeVideoStates } from "../youtube";
+import { QuotaWait, takeLinkCheck } from "../quota";
+import { LINK_CHECKS_A_DAY, quotaResetsAt, tryAgainIn } from "../../shorts/quota";
 import { hourResults } from "./hours";
 
 /**
@@ -354,40 +356,53 @@ export async function retitle(userId: string, id: string, title: string, descrip
 /**
  * What YouTube says about a pasted link: the video, or null when YouTube
  * doesn't show one; "unchecked" when there's no way to ask (no API key and
- * no channel to ask with); "error" when asking failed. `first` is the
- * channel the Short was made for, asked before the rest.
+ * no channel to ask with); "error" when asking failed; `wait` when there's
+ * no quota left today to ask with. `first` is the channel the Short was
+ * made for, asked before the rest.
  */
-export type Lookup = (userId: string, youtubeId: string, first?: string | null) => Promise<{ state: VideoState | null } | "unchecked" | "error">;
+export type Lookup = (userId: string, youtubeId: string, first?: string | null, now?: Date) => Promise<{ state: VideoState | null } | { wait: QuotaWait } | "unchecked" | "error">;
 
 /**
  * Asked as the creator's own connected channels, which see their private
  * videos too (the Short's own channel first, where it's most likely to
- * be), then with the API key.
+ * be), then with the API key. Each ask is counted as a link check, and
+ * they all come out of the same quota, so once none is left, nothing
+ * more is asked.
  */
-const lookUp: Lookup = async (userId, youtubeId, first = null) => {
+const lookUp: Lookup = async (userId, youtubeId, first = null, now = new Date()) => {
   const connected = await admin((tx) => tx<{ id: string }[]>`
     select id from public.channels where user_id = ${userId} and platform = 'youtube' and status = 'connected' order by added_at, id`);
   const channels = [...connected.filter((c) => c.id === first), ...connected.filter((c) => c.id !== first)];
   let asked = false;
   for (const c of channels) {
     try {
-      const found = (await youtubeVideoStates([youtubeId], await youtubeAccess(c.id))).get(youtubeId);
+      const found = (await youtubeVideoStates([youtubeId], { access: await youtubeAccess(c.id), kind: "checks", now })).get(youtubeId);
       asked = true;
       if (found) return { state: found };
-    } catch {
+    } catch (err) {
+      if (err instanceof QuotaWait) return { wait: err };
       // that channel needs reconnecting, or YouTube didn't answer: try another way
     }
   }
   if (configured().youtubeTrends) {
     try {
-      return { state: (await youtubeVideoStates([youtubeId])).get(youtubeId) ?? null };
+      return { state: (await youtubeVideoStates([youtubeId], { kind: "checks", now })).get(youtubeId) ?? null };
     } catch (err) {
+      if (err instanceof QuotaWait) return { wait: err };
       if (!(err instanceof YouTubeError)) throw err;
       return asked ? { state: null } : "error";
     }
   }
   return asked ? { state: null } : "unchecked";
 };
+
+/** Why a link can't be checked yet: there's no quota left today to ask YouTube with, by Hookline's count or YouTube's word. */
+function checkWait(wait: QuotaWait, now: Date): string {
+  const when = tryAgainIn(wait.until, now);
+  return wait.google
+    ? `YouTube's quota for Hookline is used up for today, so the link can't be checked yet. Try again ${when}, or leave the link out.`
+    : `Hookline has used today's YouTube link checks, so this one can't be checked yet. Try again ${when}, or leave the link out.`;
+}
 
 /** `moved` names the channel a Short went to when its link was on another of the creator's channels than the one it was made for. */
 export type PostedResult = { ok: true; checked: boolean; moved?: string } | { ok: false; message: string };
@@ -398,9 +413,11 @@ export type PostedResult = { ok: true; checked: boolean; moved?: string } | { ok
  * is on one of their own channels that isn't disconnected. On another of
  * theirs than the one it was made for, the Short moves to that one, so its
  * views count where it really is. When there's no way to ask YouTube, the
- * link is kept but left out of views and learning.
+ * link is kept but left out of views and learning. When there's no quota
+ * left to ask with today, or the account has had its link checks for the
+ * day, nothing is marked: it says when to try again.
  */
-export async function markPosted(userId: string, id: string, link: string | null, look: Lookup = lookUp): Promise<PostedResult> {
+export async function markPosted(userId: string, id: string, link: string | null, look: Lookup = lookUp, now = new Date()): Promise<PostedResult> {
   const [v] = await asUser(userId, (tx) => tx<{ id: string; channel_id: string | null }[]>`
     select id, channel_id from public.videos where id = ${id} and file_path is not null
       and status in ('ready', 'scheduled', 'failed') and (status <> 'scheduled' or youtube_id is null)`);
@@ -421,8 +438,12 @@ export async function markPosted(userId: string, id: string, link: string | null
   const [taken] = await admin((tx) => tx`
     select 1 from public.videos where youtube_id = ${youtubeId} and id <> ${id} and (user_id = ${userId} or youtube_verified) limit 1`);
   if (taken) return { ok: false, message: "That video is already linked to another Short." };
+  // so one account can't use everyone's checks: a day's are more than any plan makes, and a link takes one however many channels are asked
+  if (!(await takeLinkCheck(userId, now))) {
+    return { ok: false, message: `That's ${LINK_CHECKS_A_DAY} links checked today, the most for one day. Try again ${tryAgainIn(quotaResetsAt(now), now)}, or leave the link out.` };
+  }
 
-  const found = await look(userId, youtubeId, v.channel_id);
+  const found = await look(userId, youtubeId, v.channel_id, now);
   if (found === "error") return { ok: false, message: "YouTube didn't answer, so the link couldn't be checked. Try again in a few minutes." };
   if (found === "unchecked") {
     await admin((tx) => tx`
@@ -430,6 +451,7 @@ export async function markPosted(userId: string, id: string, link: string | null
       where id = ${id} and user_id = ${userId}`);
     return { ok: true, checked: false };
   }
+  if ("wait" in found) return { ok: false, message: checkWait(found.wait, now) };
   const s = found.state;
   if (!s) return { ok: false, message: "YouTube doesn't show a video at that link. Check the link, and if the video is private, make it public or unlisted first." };
   // one YouTube rejected, couldn't process or deleted isn't posted, whoever uploaded it

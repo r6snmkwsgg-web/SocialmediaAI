@@ -166,6 +166,7 @@ async function main() {
   }
   every(60_000, "post", () => postDue());
   every(15 * 60_000, "stats", () => collectStats());
+  // each niche is checked once a day: every half hour this checks only the ones whose day has come
   every(30 * 60_000, "trends", () => refreshTrends());
   every(6 * 3600_000, "earnings", () => syncEarnings());
   every(5 * 60_000, "live recaps", () => recapLives());

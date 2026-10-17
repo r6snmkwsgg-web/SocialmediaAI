@@ -24,6 +24,13 @@ export type Plan = {
   scheduling: boolean;
   /** YouTube channels that get Shorts of their own, each with the whole of `shorts` */
   channels: number;
+  /**
+   * Shorts Hookline uploads to YouTube for them in a quota day, for each
+   * connected channel on plans with more than one: twice a day's Shorts,
+   * so a day held back can catch up, and no account takes more than its
+   * share of what YouTube allows everyone
+   */
+  uploads: number;
   /** TikTok accounts it posts to: one on every plan, since TikTok's own limits and its form on every post are per account */
   tiktokAccounts: number;
   /** changing the live game's gift prices */
@@ -44,6 +51,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: true,
     scheduling: false,
     channels: 1,
+    uploads: 0,
     tiktokAccounts: 1,
     customMenus: false,
     priority: 0,
@@ -59,6 +67,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: false,
     scheduling: true,
     channels: 1,
+    uploads: 6,
     tiktokAccounts: 1,
     customMenus: false,
     priority: 1,
@@ -74,6 +83,7 @@ export const PLANS: Record<PlanId, Plan> = {
     tag: false,
     scheduling: true,
     channels: 5,
+    uploads: 10,
     tiktokAccounts: 1,
     customMenus: true,
     priority: 2,
@@ -89,6 +99,16 @@ export const PAID: PlanId[] = ["pro", "creator"];
  */
 export function postsPerDay(p: Plan): number {
   return p.shorts.per === "day" ? p.shorts.count : 3;
+}
+
+/**
+ * The most Shorts Hookline uploads to YouTube for an account in a quota
+ * day: the plan's uploads, for each connected YouTube channel on a plan
+ * with more than one (at least one, and no more than the plan has room
+ * for). It's worked out here and nowhere else.
+ */
+export function uploadCap(p: Plan, youtubeChannels: number): number {
+  return p.uploads * (p.channels > 1 ? Math.max(1, Math.min(p.channels, youtubeChannels)) : 1);
 }
 
 /** A year's price as months saved: two months free. */

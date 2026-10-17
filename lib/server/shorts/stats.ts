@@ -5,6 +5,7 @@ import { admin } from "../db";
 import { configured } from "../env";
 import { notify } from "../notify";
 import { youtubeAccess, youtubeViews } from "../youtube";
+import { QuotaWait } from "../quota";
 
 /**
  * The learning loop's eyes: each posted Short's views at 1, 24 and 72
@@ -40,10 +41,17 @@ export async function collectStats(now = new Date()): Promise<string[]> {
   if (!due.length) return [];
 
   // with an API key, one call per 50 videos; without, each channel reads its own, and a Short whose channel isn't
-  // connected is read by another of the account's that is (anyone's access reads a public video's views)
+  // connected is read by another of the account's that is (anyone's access reads a public video's views). Once views
+  // have used their share of the day's quota, the rest are read after the reset, like any reading that comes late
+  const log: string[] = [];
   const views = new Map<string, { views: number; likes: number | null; comments: number | null }>();
   if (configured().youtubeTrends) {
-    for (const [k, v] of await youtubeViews([...new Set(due.map((d) => d.youtube_id))])) views.set(k, v);
+    try {
+      for (const [k, v] of await youtubeViews([...new Set(due.map((d) => d.youtube_id))], { now })) views.set(k, v);
+    } catch (err) {
+      if (!(err instanceof QuotaWait)) throw err;
+      return [`views wait for YouTube quota until ${err.until.toISOString()}`];
+    }
   } else {
     const connected = await admin((tx) => tx<{ id: string; user_id: string }[]>`
       select id, user_id from public.channels
@@ -55,14 +63,18 @@ export async function collectStats(now = new Date()): Promise<string[]> {
     }
     for (const [channelId, ids] of byChannel) {
       try {
-        for (const [k, v] of await youtubeViews([...ids], await youtubeAccess(channelId))) views.set(k, v);
-      } catch {
-        // that channel needs reconnecting; Settings says so
+        for (const [k, v] of await youtubeViews([...ids], { access: await youtubeAccess(channelId), now })) views.set(k, v);
+      } catch (err) {
+        // every channel reads out of the same quota, so once there's none left the rest wait for the reset too
+        if (err instanceof QuotaWait) {
+          log.push(`views wait for YouTube quota until ${err.until.toISOString()}`);
+          break;
+        }
+        // otherwise that channel needs reconnecting; Settings says so
       }
     }
   }
 
-  const log: string[] = [];
   for (const d of due) {
     const v = views.get(d.youtube_id);
     if (!v) continue;

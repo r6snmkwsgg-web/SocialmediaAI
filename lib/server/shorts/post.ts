@@ -8,23 +8,29 @@ import { notify } from "../notify";
 import { getVideo } from "../storage";
 import { TikTokError, tiktokPost } from "../tiktok";
 import { quotaResetsAt, YouTubeError, youtubeAccess, youtubeUpload, youtubeVideoStates } from "../youtube";
+import { countUpload, QuotaWait } from "../quota";
+import { PLANS, uploadCap, type PlanId } from "../../billing/plans";
+import { quotaDay } from "../../shorts/quota";
+import type { Tx } from "../db";
 import { configured, youtubeApi } from "../env";
 import { cleanCopy } from "./render";
 
 /**
  * Posting what's ready, on plans that post for you. YouTube gets each
- * Short as soon as it's rendered (public ones set to go public at their
- * time, the rest at their time), on the channel it was made for and no
- * other, but only where Hookline may upload: every channel once YouTube's
- * audit has passed, the test channels before it. Everyone else posts
- * their own and Hookline checks the link. A Short with no channel never
- * uploads. A Short only counts as posted once YouTube says so. TikTok
- * gets it at its time on the account's one TikTok, since TikTok can't
- * schedule, with the choices the creator made for it and without the
- * free plan's tag. A lock on each video means two posters running at
- * once never post the same one twice. When YouTube's daily upload quota
- * runs out, the Shorts in line say they're waiting for it and are tried
- * again once it resets, not every minute.
+ * Short once it's rendered (public ones up to a day before their time,
+ * set to go public then; the rest at their time), on the channel it was
+ * made for and no other, but only where Hookline may upload: every
+ * channel once YouTube's audit has passed, the test channels before it.
+ * Everyone else posts their own and Hookline checks the link. A Short
+ * with no channel never uploads. A Short only counts as posted once
+ * YouTube says so. TikTok gets it at its time on the account's one
+ * TikTok, since TikTok can't schedule, with the choices the creator made
+ * for it and without the free plan's tag. A lock on each video means two
+ * posters running at once never post the same one twice. Each plan
+ * uploads so many a day, so no account takes everyone's, and when
+ * YouTube's daily uploads for Hookline run out, the Shorts in line say
+ * what they're waiting for and are tried again once it resets, not every
+ * minute.
  */
 
 /** YouTube's category for each format */
@@ -52,6 +58,7 @@ const UP: Record<YouTubePrivacy, string> = { public: "Live on YouTube", unlisted
  */
 export async function confirmYouTube(now = new Date()): Promise<string[]> {
   const { audited } = youtubeApi();
+  const minutesAgo = (m: number) => new Date(now.getTime() - m * 60_000);
   type Due = {
     id: string; user_id: string; title: string; youtube_id: string; scheduled_for: Date; uploaded_at: Date | null;
     uploader: string | null; fallback: string | null; lost: boolean; privacy: string;
@@ -69,7 +76,10 @@ export async function confirmYouTube(now = new Date()): Promise<string[]> {
       order by connected_at limit 1
     ) f on true
     where v.status = 'scheduled' and v.youtube_id is not null and v.scheduled_for <= ${now}
-      and (v.youtube_checked_at is null or v.youtube_checked_at < ${new Date(now.getTime() - 4 * 60_000)})
+      -- every 4 minutes for its first half hour, then every half hour (checkAgain in lib/shorts/youtube.ts)
+      and (v.youtube_checked_at is null
+        or v.youtube_checked_at < ${minutesAgo(4)} and greatest(v.scheduled_for, coalesce(v.uploaded_at, v.scheduled_for)) > ${minutesAgo(30)}
+        or v.youtube_checked_at < ${minutesAgo(30)})
     order by v.scheduled_for limit 200`);
   const log: string[] = [];
   // asked together: each channel's own, and the rest with the API key
@@ -82,9 +92,17 @@ export async function confirmYouTube(now = new Date()): Promise<string[]> {
     let states = new Map<string, VideoState>();
     try {
       const ids = videos.map((v) => v.youtube_id);
-      if (by !== "key") states = await youtubeVideoStates(ids, await youtubeAccess(by));
-      else if (configured().youtubeTrends) states = await youtubeVideoStates(ids);
+      // counted as posting's: the units the other kinds can't take are kept for these
+      if (by !== "key") states = await youtubeVideoStates(ids, { access: await youtubeAccess(by), kind: "uploads", now });
+      else if (configured().youtubeTrends) states = await youtubeVideoStates(ids, { kind: "uploads", now });
     } catch (err) {
+      // every group is asked out of the same quota, so once there's none left the rest wait for the reset too
+      if (err instanceof QuotaWait) {
+        log.push(`checks wait for YouTube quota until ${err.until.toISOString()}`);
+        break;
+      }
+      // asked all the same: they wait like ones still processing, so a check that keeps failing isn't made every minute
+      await admin((tx) => tx`update public.videos set youtube_checked_at = ${now} where id in ${tx(videos.map((v) => v.id))}`);
       log.push(`checking ${videos.length} as ${by} failed: ${err instanceof Error ? err.message : String(err)}`);
       continue;
     }
@@ -145,26 +163,73 @@ export async function confirmYouTube(now = new Date()): Promise<string[]> {
 export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
   const log: string[] = await confirmYouTube(now);
   const { audited, test } = youtubeApi();
+  const resets = quotaResetsAt(now);
+  const day = quotaDay(now);
 
-  // each to the channel it was made for, while that's connected, only where Hookline may upload, and only once the
-  // creator has said who the channel is for. Its owner's own channel: the key on videos keeps it so, and so does this join
-  const youtube = await admin((tx) => tx<{
-    id: string; user_id: string; title: string; description: string; format: FormatId; file_path: string; scheduled_for: Date;
-    channel_id: string; privacy: string; kids: boolean;
-  }[]>`
-    select v.id, v.user_id, v.title, v.description, v.format, v.file_path, v.scheduled_for, c.id as channel_id, c.privacy,
-      coalesce(v.made_for_kids, c.made_for_kids) as kids
+  // what can go up: each to the channel it was made for, while that's connected, only where Hookline may upload, and only once
+  // the creator has said who the channel is for. Its owner's own channel: the key on videos keeps it so, and so does this join.
+  // A public one goes up private until its time, but no more than a day ahead, so each day's uploads go to the Shorts due
+  // soonest. YouTube can only schedule public ones, so unlisted and private ones go up at their time
+  const uploadable = (tx: Tx) => tx`
     from public.videos v
     join public.subscriptions s on s.user_id = v.user_id and s.plan in ('pro', 'creator')
     join public.channels c on c.id = v.channel_id and c.user_id = v.user_id and c.platform = 'youtube' and c.status = 'connected'
     where v.status = 'ready' and v.youtube_id is null and v.file_path is not null and v.scheduled_for is not null
       and c.made_for_kids is not null
       and (${audited} or c.external_id = any(string_to_array(${test.join(",")}, ',')))
-      -- YouTube can only schedule public ones, so unlisted and private ones go up at their time
-      and (c.privacy = 'public' or v.scheduled_for <= ${new Date(now.getTime() + 15 * 60_000)})
-      and (v.waiting_until is null or v.waiting_until <= ${now})
-    order by v.scheduled_for limit ${limit}`);
+      and (c.privacy = 'public' and v.scheduled_for <= ${new Date(now.getTime() + 86400_000)} or v.scheduled_for <= ${new Date(now.getTime() + 15 * 60_000)})`;
+
+  // each account with something to go up, and its room: its plan's uploads a day for the YouTube channels it has connected,
+  // less what Hookline uploaded for it this quota day, as the server counted it
+  const accounts = await admin((tx) => tx<{ user_id: string; plan: PlanId; channels: number; today: number }[]>`
+    select v.user_id, s.plan,
+      (select count(*)::int from public.channels y where y.user_id = v.user_id and y.platform = 'youtube' and y.status = 'connected') as channels,
+      coalesce((select a.uploads from public.youtube_account_days a where a.day = ${day} and a.user_id = v.user_id), 0) as today
+    ${uploadable(tx)}
+    group by v.user_id, s.plan`);
+  const room = new Map(accounts.map((a) => [a.user_id, uploadCap(PLANS[a.plan], a.channels) - a.today]));
+  const full = accounts.filter((a) => room.get(a.user_id)! <= 0).map((a) => a.user_id);
+  const open = accounts.filter((a) => room.get(a.user_id)! > 0).map((a) => a.user_id);
+  // an account whose plan's uploads for today are done: its Shorts say so until the reset (one already waiting keeps what it
+  // says). One with room again (a bigger plan, or another channel on Creator) stops waiting, and goes up in this run
+  if (full.length) {
+    const capped = await admin((tx) => tx`
+      update public.videos set waiting_on = 'plan_cap', waiting_until = ${resets}, error = null
+      where id in (select v.id ${uploadable(tx)} and v.user_id = any(${full}::uuid[]) and (v.waiting_until is null or v.waiting_until <= ${now}))
+      returning id`);
+    if (capped.length) log.push(`${capped.length} waiting for their plan's next uploads until ${resets.toISOString()}`);
+  }
+  if (open.length) {
+    await admin((tx) => tx`
+      update public.videos set waiting_on = null, waiting_until = null
+      where user_id = any(${open}::uuid[]) and status = 'ready' and waiting_on = 'plan_cap'`);
+  }
+
+  // due before the reset first, then the accounts with the fewest uploads today, then the soonest. Only accounts with room
+  // are in it, so one with hundreds ready can't keep anyone else's from going up
+  const youtube = open.length ? await admin((tx) => tx<{
+    id: string; user_id: string; title: string; description: string; format: FormatId; file_path: string; scheduled_for: Date;
+    channel_id: string; privacy: string; kids: boolean;
+  }[]>`
+    select v.id, v.user_id, v.title, v.description, v.format, v.file_path, v.scheduled_for, c.id as channel_id, c.privacy,
+      coalesce(v.made_for_kids, c.made_for_kids) as kids,
+      coalesce((select a.uploads from public.youtube_account_days a where a.day = ${day} and a.user_id = v.user_id), 0) as today
+    ${uploadable(tx)}
+      and v.user_id = any(${open}::uuid[]) and (v.waiting_until is null or v.waiting_until <= ${now})
+    order by v.scheduled_for <= ${resets} desc, today, v.scheduled_for, v.id
+    limit ${limit}`) : [];
+  // what each account has had go up in this run, against its room
+  const done = new Map<string, number>();
+  // uploads in a row YouTube didn't answer, or answered with a failure of its own
+  let down = 0;
   for (const [i, v] of youtube.entries()) {
+    if ((done.get(v.user_id) ?? 0) >= room.get(v.user_id)!) {
+      // that's the account's uploads for today: this one says so until the reset
+      await admin((tx) => tx`
+        update public.videos set waiting_on = 'plan_cap', waiting_until = ${resets}, error = null where id = ${v.id} and status = 'ready' and youtube_id is null`);
+      log.push(`${v.id} waits for its plan's next uploads until ${resets.toISOString()}`);
+      continue;
+    }
     if (!(await claim(v.id))) continue;
     try {
       const bytes = await getVideo(v.file_path);
@@ -179,22 +244,30 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
         categoryId: CATEGORY[v.format],
         privacy,
         madeForKids: v.kids,
+      }, now);
+      // up, not posted: it counts once YouTube says it's processed and can be seen. Counted against the account's uploads
+      // today in the same go, so the two never disagree
+      await admin(async (tx) => {
+        await tx`
+          update public.videos set youtube_id = ${ytId}, youtube_verified = true, status = 'scheduled',
+            youtube_status = 'uploaded', youtube_privacy = null, youtube_kids = null, youtube_checked_at = null,
+            youtube_wanted = ${privacy}, youtube_publish_at = ${publishAt},
+            posted_at = null, uploaded_at = ${now}, error = null, posting_at = null,
+            waiting_on = null, waiting_until = null
+          where id = ${v.id}`;
+        await countUpload(tx, v.user_id, now);
       });
-      // up, not posted: it counts once YouTube says it's processed and can be seen
-      await admin((tx) => tx`
-        update public.videos set youtube_id = ${ytId}, youtube_verified = true, status = 'scheduled',
-          youtube_status = 'uploaded', youtube_privacy = null, youtube_kids = null, youtube_checked_at = null,
-          youtube_wanted = ${privacy}, youtube_publish_at = ${publishAt},
-          posted_at = null, uploaded_at = ${now}, error = null, posting_at = null,
-          waiting_on = null, waiting_until = null
-        where id = ${v.id}`);
+      done.set(v.user_id, (done.get(v.user_id) ?? 0) + 1);
+      down = 0;
       log.push(`${v.id} → YouTube ${ytId}${publishAt ? `, public at ${publishAt.toISOString()}` : ""}`);
     } catch (err) {
       const e = err instanceof YouTubeError ? err : null;
+      const wait = err instanceof QuotaWait ? err : null;
       const msg = err instanceof Error ? err.message : String(err);
-      if (e?.quota) {
-        // the quota is the whole app's, so the rest of this run would fail too: they all wait for the reset, and say so
-        const until = quotaResetsAt(now);
+      if (wait || e?.quota) {
+        // the quota is the whole app's, so the rest of this run would fail too: they all wait for the reset, and say so.
+        // Hookline's own count reaching YouTube's uploads for the day is the same wait as YouTube refusing one
+        const until = wait?.until ?? quotaResetsAt(now);
         const rest = youtube.slice(i).map((x) => x.id);
         await admin((tx) => tx`
           update public.videos set waiting_on = 'youtube_quota', waiting_until = ${until}, error = null,
@@ -203,13 +276,28 @@ export async function postDue(now = new Date(), limit = 10): Promise<string[]> {
         log.push(`YouTube upload quota used up: ${rest.length} waiting until ${until.toISOString()}`);
         break;
       }
-      // outages pass: leave it ready and try next time; anything else needs a person. Either way it's
-      // no longer the quota it's waiting for, so it stops saying so
+      // outages pass: it stays ready and is tried again in half an hour, not every minute, since every try counts against
+      // the day's uploads; anything else needs a person. Either way it's no longer the quota it's waiting for, so it stops
+      // saying so. The half hour isn't a wait it shows (only waiting_on makes one), and TikTok still gets it at its time
       const failed = !!e && !e.retry && e.status !== 401;
+      const again = failed ? null : new Date(now.getTime() + 30 * 60_000);
       await admin((tx) => tx`
-        update public.videos set error = ${msg}, status = ${failed ? "failed" : "ready"}, posting_at = null, waiting_on = null, waiting_until = null where id = ${v.id}`);
+        update public.videos set error = ${msg}, status = ${failed ? "failed" : "ready"}, posting_at = null, waiting_on = null, waiting_until = ${again}
+        where id = ${v.id}`);
       if (failed) await notify(v.user_id, { kind: "failed", title: "YouTube didn't take a Short", body: `${v.title}: ${msg}`, href: `/app/shorts/${v.id}`, key: `youtube-failed:${v.id}:${now.getTime()}` });
       log.push(`${v.id} failed: ${msg}`);
+      // YouTube down, or not reached at all. Once can be that Short's own, so a Short YouTube keeps failing can't hold up the
+      // rest; twice in a row, every upload in line would fail the same way and each try would still count, so the rest of
+      // the line waits the same half hour, and an outage can't use up the day's uploads on tries YouTube never took
+      down = e && (e.status >= 500 || e.status === 0) ? down + 1 : 0;
+      if (again && down >= 2) {
+        const paused = await admin((tx) => tx`
+          update public.videos set waiting_on = null, waiting_until = ${again}
+          where id in (select v.id ${uploadable(tx)} and (v.waiting_until is null or v.waiting_until <= ${now}))
+          returning id`);
+        log.push(`YouTube down or out of reach: ${paused.length} more waiting until ${again.toISOString()}`);
+        break;
+      }
     }
   }
 

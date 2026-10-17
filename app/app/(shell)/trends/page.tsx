@@ -5,11 +5,11 @@ import { LocalTime } from "@/components/app/local-time";
 import { button, Card, CardHead, Empty, NotSetUp, PageHead, Pill } from "@/components/app/ui";
 import { FORMATS } from "@/lib/shorts/formats";
 import type { FormatId } from "@/lib/shorts/types";
-import { NICHES, nicheOf } from "@/lib/trends/niches";
+import { kidsOf, NICHES, nicheOf, staleLines, staleOf } from "@/lib/trends/niches";
 import { account } from "@/lib/server/account";
 import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
-import { followedNiches, leaderboard, postingTimes, rising } from "@/lib/server/trends";
+import { followedNiches, kidsShare, leaderboard, postingTimes, rising, trendChecks } from "@/lib/server/trends";
 import { follow, makeLike } from "./actions";
 
 export const metadata: Metadata = { title: "Trends" };
@@ -23,22 +23,34 @@ function age(d: Date): string {
   return h < 48 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
 }
 
+/** When a rising Short's views were read: niches are checked once a day, so a figure can be up to a day old. */
+function measured(d: Date): string {
+  return Date.now() - d.getTime() < 3600_000 ? "measured in the last hour" : `measured ${age(d)}`;
+}
+
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
 export default async function Trends({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
   const niches = await followedNiches(me.id);
-  const [videos, board, times, [profile]] = await Promise.all([
+  const [videos, board, times, [profile], checks, kids] = await Promise.all([
     rising(me.id, niches),
     leaderboard(me.id),
     postingTimes(me.id),
     asUser(me.id, (tx) => tx<{ text_stories: boolean }[]>`select text_stories from public.profiles where id = ${me.id}`),
+    trendChecks(me.id),
+    kidsShare(me.id, niches),
   ]);
   // text stories are only made once the creator turns them on
   const makes = (f: FormatId) => f !== "texts" || !!profile?.text_stories;
   const ready = configured().youtubeTrends;
   const top = Math.max(...board.rows.map((r) => r.typical ?? 0), 1);
+  // the niches on show (every one, when none are picked), and any of them not checked in over a day, or ever. With nothing
+  // measured yet, the empty state already says when niches are first checked, so only a reason it went wrong is added
+  const shown = niches.length ? NICHES.filter((n) => niches.includes(n.id)) : NICHES;
+  const late = ready ? staleOf(checks, shown.map((n) => n.id), new Date()) : [];
+  const stale = staleLines(videos.length ? late : late.filter((s) => s.checkedAt || s.outcome));
 
   return (
     <>
@@ -47,8 +59,8 @@ export default async function Trends({ searchParams }: { searchParams: Search })
         title="What's taking off"
         line={
           <>
-            Shorts growing fastest right now, in views per hour since they went up, from YouTube.
-            {board.updated && <> Checked <LocalTime iso={board.updated.toISOString()} />.</>}
+            Shorts growing fastest right now, in views per hour since they went up, from YouTube. Each niche is checked once a day
+            {board.updated ? <>, most recently <LocalTime iso={board.updated.toISOString()} />.</> : "."}
           </>
         }
       />
@@ -81,10 +93,15 @@ export default async function Trends({ searchParams }: { searchParams: Search })
 
       <section aria-labelledby="rising" className="mb-12">
         <h2 id="rising" className="mb-4 font-display text-2xl uppercase tracking-wide">Rising now</h2>
+        {stale.length > 0 && (
+          <div role="status" className="mb-4 flex flex-col gap-1 border-2 border-edge-strong bg-card-2 px-4 py-3 text-[14px] leading-relaxed">
+            {stale.map((line) => <p key={line}>{line}</p>)}
+          </div>
+        )}
         {videos.length === 0 ? (
           <Empty
             title="Nothing measured yet"
-            body={ready ? "The first check runs within four hours of the worker starting. Rising Shorts in your niches show up here, fastest-growing first." : "Once a YouTube API key is set, the worker checks each niche every four hours and the fastest-growing Shorts show up here."}
+            body={ready ? "Each niche is checked once a day, starting within half an hour of the worker starting. Rising Shorts in your niches show up here, fastest-growing first." : "Once a YouTube API key is set, the worker checks each niche once a day and the fastest-growing Shorts show up here."}
           />
         ) : (
           <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -100,6 +117,7 @@ export default async function Trends({ searchParams }: { searchParams: Search })
                       <span className="font-display text-3xl leading-none tabular-nums">{compact(v.perHour)}<span className="ml-1 font-mono text-[11px] uppercase tracking-[0.12em] text-muted">/hour</span></span>
                       {n && <Pill>{n.name}</Pill>}
                     </div>
+                    <p className="-mt-2 font-mono text-[11px] text-muted">{measured(v.fetchedAt)}</p>
                     <a href={v.url} target="_blank" rel="noreferrer" className="line-clamp-2 text-[15px] font-semibold leading-snug hover:underline">{v.title}</a>
                     <p className="text-[13px] text-muted">{v.channel} · {compact(v.views)} views · {age(v.publishedAt)}</p>
                     {n?.format && makes(n.format) && (
@@ -196,6 +214,43 @@ export default async function Trends({ searchParams }: { searchParams: Search })
           )}
         </Card>
       </div>
+
+      <Card className="mt-6">
+        <CardHead title="Made for kids, by niche" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Last three days</span>} />
+        <table className="w-full text-left text-[14px]">
+          <caption className="sr-only">For each niche shown, how many of its rising Shorts YouTube marked made for kids, of the ones it said either way about</caption>
+          <thead>
+            <tr className="border-b-2 border-edge font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+              <th scope="col" className="px-5 py-2.5 font-normal">Niche</th>
+              <th scope="col" className="px-5 py-2.5 font-normal">Marked made for kids</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shown.map((n) => {
+              const k = kids.get(n.id);
+              const share = kidsOf(k?.kids ?? 0, k?.of ?? 0);
+              return (
+                <tr key={n.id} className="border-b border-edge last:border-0">
+                  <th scope="row" className="w-[38%] px-5 py-3 font-semibold">{n.name}</th>
+                  <td className="px-5 py-3">
+                    {share.pct === null ? (
+                      <span className="text-muted">{share.text}</span>
+                    ) : (
+                      <span className="flex items-center gap-3">
+                        <span className="h-2.5 flex-1 bg-card-2"><span className="block h-full bg-muted" style={{ width: `${share.pct}%` }} /></span>
+                        <span className="w-20 shrink-0 text-right font-mono text-[12px] tabular-nums">{share.text}</span>
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+        <p className="px-5 pb-4 pt-1 text-[12px] leading-relaxed text-muted">
+          Of the fastest-growing Shorts Hookline found in each niche over the last three days, how many YouTube itself marked made for kids. YouTube turns comments off on those. Shorts YouTube said nothing about aren&rsquo;t counted.
+        </p>
+      </Card>
     </>
   );
 }

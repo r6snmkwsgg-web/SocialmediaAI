@@ -13,6 +13,9 @@ import { FORMATS } from "@/lib/shorts/formats";
 import { validTimezone } from "@/lib/shorts/times";
 import { seconds } from "@/lib/shorts/timing";
 import { markable, STUDIO_UPLOAD } from "@/lib/shorts/youtube";
+import { HeldWords } from "@/components/shorts/held";
+import { uploadCap } from "@/lib/billing/plans";
+import { HELD, heldShown, type Held } from "@/lib/shorts/history";
 import { account } from "@/lib/server/account";
 import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { asUser } from "@/lib/server/db";
@@ -28,12 +31,12 @@ const n = (v: number) => v.toLocaleString("en-US");
 
 type Search = Promise<Record<string, string | string[] | undefined>>;
 
-/** Where a Short is. `auto` is whether Hookline uploads to its channel itself; otherwise the creator posts it. */
-function statusOf(c: Coming, auto: boolean, now: Date): { label: string; tone: "plain" | "good" | "warn" | "signal" } {
+/** Where a Short is. `auto` is whether Hookline uploads to its channel itself; otherwise the creator posts it. `held` is what it's waiting for. */
+function statusOf(c: Coming, auto: boolean, now: Date, held: Held | null): { label: string; tone: "plain" | "good" | "warn" | "signal" } {
   if (c.status === "failed") return { label: "Failed", tone: "signal" };
   // up on YouTube, but only posted once YouTube says so
   if (c.status === "scheduled") return c.scheduledFor && c.scheduledFor > now ? { label: "Scheduled on YouTube", tone: "good" } : { label: "Checking YouTube", tone: "warn" };
-  if (c.status === "ready" && c.heldBack) return { label: "Waiting for quota", tone: "warn" };
+  if (c.status === "ready" && held) return { label: HELD[held.on].pill, tone: "warn" };
   if (c.status === "ready") return { label: c.youtubeId ? "On YouTube" : auto ? "Ready" : "Ready for you to post", tone: "good" };
   if (c.progress !== null && c.status === "rendering") return { label: `Rendering ${Math.round(c.progress * 100)}%`, tone: "warn" };
   return { label: "Waiting to render", tone: "plain" };
@@ -86,6 +89,8 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
   const left = picked ? (unit?.left ?? 0) : allow.account.left;
   const more = picked ? makeMore.bind(null, picked.id) : makeMore;
   const now = new Date();
+  // what a plan wait says: the plan, and the Shorts it uploads a day for the YouTube channels connected
+  const uploads = { name: me.plan.name, cap: uploadCap(me.plan, channels.filter((c) => c.platform === "youtube" && c.status === "connected").length) };
   const working = q.coming.some((c) => c.status === "approved" || c.status === "rendering" || c.cleaning);
   // nothing's rendering at all right now: say so, rather than leave Shorts looking stuck
   const paused = working && (await workerStatus()).running === 0;
@@ -213,7 +218,9 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
               {q.coming.map((c) => {
                 const ch = channelOf(c.channelId);
                 const auto = autoOf(c.channelId);
-                const s = statusOf(c, auto, now);
+                // a plan wait shows only while the plan still uploads
+                const held = heldShown(c.heldBack, uploads.cap);
+                const s = statusOf(c, auto, now, held);
                 // the creator posts it to YouTube themselves, so its time is the best time to, not when it posts
                 const self = !c.youtubeId && !auto;
                 // ready and waiting for them to
@@ -239,9 +246,9 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
                     )}
                     {c.error && <p className="text-[13px] text-signal">{c.error}</p>}
                     {c.youtubeKids && <p className="text-[13px]">YouTube marked this Made for Kids: comments are off.</p>}
-                    {c.heldBack && (
+                    {held && (
                       <p className="text-[13px] text-muted">
-                        Waiting for YouTube upload quota. It goes up when that resets{c.heldBack.until && <>, around <LocalTime iso={c.heldBack.until.toISOString()} /></>}.
+                        <HeldWords text={HELD[held.on].line(uploads)} until={held.until} />
                       </p>
                     )}
                     {c.tiktok && !c.tiktokId && (

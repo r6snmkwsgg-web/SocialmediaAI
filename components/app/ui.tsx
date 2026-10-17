@@ -40,7 +40,7 @@ export function CardHead({ title, action }: { title: string; action?: React.Reac
 }
 
 /** A number that matters, big, with what it is under it. */
-export function Stat({ label, value, sub }: { label: string; value: string; sub?: string }) {
+export function Stat({ label, value, sub }: { label: string; value: string; sub?: React.ReactNode }) {
   return (
     <div className="flex flex-col gap-1">
       <span className="font-mono text-[10px] uppercase tracking-[0.18em] text-muted">{label}</span>

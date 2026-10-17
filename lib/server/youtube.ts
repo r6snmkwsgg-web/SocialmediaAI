@@ -1,14 +1,17 @@
 import "server-only";
-import { atLocal, localParts } from "../shorts/times";
 import { markExpired, tokensOf, updateTokens, type Tokens } from "./channels-store";
 import { uploadStatus, YT_PRIVACY, type VideoState, type YouTubePrivacy } from "../shorts/youtube";
+import type { Kind, Method } from "../shorts/quota";
 import { env } from "./env";
+import { closeForToday, spend } from "./quota";
 
 /**
  * YouTube: connecting a channel with Google, uploading the Shorts someone
  * approved (public ones as private, set to go public at their time, which
  * YouTube then does by itself), checking what YouTube made of them, and
- * reading view counts for the learning loop.
+ * reading view counts for the learning loop. Every Data API call is made
+ * from here, and each is counted in Hookline's quota ledger before it's
+ * made (lib/server/quota.ts), with what it's for.
  */
 
 const AUTH = "https://accounts.google.com/o/oauth2/v2/auth";
@@ -16,12 +19,16 @@ const TOKEN = "https://oauth2.googleapis.com/token";
 const API = "https://www.googleapis.com/youtube/v3";
 const UPLOAD = "https://www.googleapis.com/upload/youtube/v3/videos";
 
-export const YOUTUBE_SCOPES = [
-  "https://www.googleapis.com/auth/youtube.upload",
-  "https://www.googleapis.com/auth/youtube.readonly",
-  "https://www.googleapis.com/auth/yt-analytics.readonly",
-  "https://www.googleapis.com/auth/yt-analytics-monetary.readonly",
-];
+/** What Hookline asks a channel for: uploading, reading the channel and its videos, and its Analytics, revenue included. */
+export const UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload";
+export const READONLY_SCOPE = "https://www.googleapis.com/auth/youtube.readonly";
+export const ANALYTICS_SCOPE = "https://www.googleapis.com/auth/yt-analytics.readonly";
+export const REVENUE_SCOPE = "https://www.googleapis.com/auth/yt-analytics-monetary.readonly";
+
+export const YOUTUBE_SCOPES = [UPLOAD_SCOPE, READONLY_SCOPE, ANALYTICS_SCOPE, REVENUE_SCOPE];
+
+/** When the daily quota comes back: 00:05 Pacific, five minutes after Google resets it. */
+export { quotaResetsAt } from "../shorts/quota";
 
 /** A failure from Google, with whether it's worth trying again later. */
 export class YouTubeError extends Error {
@@ -30,26 +37,21 @@ export class YouTubeError extends Error {
   }
   /** quota and Google's own hiccups pass; a bad request won't */
   get retry(): boolean {
-    return this.status >= 500 || this.status === 429 || this.reason === "quotaExceeded" || this.reason === "rateLimitExceeded" || this.status === 0;
+    return this.status >= 500 || this.status === 429 || this.quota || this.reason === "rateLimitExceeded" || this.status === 0;
   }
-  /** the app's daily quota is used up: nothing more goes up until it resets */
+  /**
+   * One of the app's daily allowances is used up: nothing more of that
+   * kind goes until it resets. YouTube doesn't document its reason for the
+   * allowances it added in June 2026, so any reason naming quota counts,
+   * and so does the older dailyLimitExceeded.
+   */
   get quota(): boolean {
-    return this.reason === "quotaExceeded";
+    return /quota/i.test(this.reason ?? "") || this.reason === "dailyLimitExceeded";
   }
 }
 
-/**
- * When the daily quota comes back: Google resets it at midnight Pacific
- * time. A few minutes after, so the first try isn't early.
- */
-export function quotaResetsAt(now: Date): Date {
-  const tz = "America/Los_Angeles";
-  const p = localParts(now, tz);
-  const next = new Date(Date.UTC(p.y, p.m - 1, p.d + 1));
-  return new Date(atLocal(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), 0, tz).getTime() + 5 * 60_000);
-}
-
-async function fail(res: Response, what: string): Promise<never> {
+/** Google's refusal, as a YouTubeError with its reason when it gave one. */
+export async function fail(res: Response, what: string): Promise<never> {
   let reason: string | null = null;
   let message = `${what}: ${res.status}`;
   try {
@@ -65,6 +67,13 @@ async function fail(res: Response, what: string): Promise<never> {
     // not JSON
   }
   throw new YouTubeError(message, res.status, reason);
+}
+
+/** fail(), for a call the ledger counted: when YouTube says its allowance is used up, that's closed until the reset, whatever Hookline counted. */
+export async function failCounted(res: Response, what: string, kind: Kind, method: Method, now: Date): Promise<never> {
+  const err = await fail(res, what).catch((e: unknown) => e);
+  if (err instanceof YouTubeError && err.quota) await closeForToday(method, kind, now);
+  throw err;
 }
 
 function creds() {
@@ -108,10 +117,53 @@ export async function youtubeExchange(code: string, redirectUri: string): Promis
   return toTokens(await res.json());
 }
 
-export async function youtubeChannel(access: string): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null; madeForKids: boolean | null }> {
-  const res = await fetch(`${API}/channels?part=snippet,status&mine=true`, { headers: { authorization: `Bearer ${access}` } });
-  if (!res.ok) await fail(res, "Reading the channel");
-  const j = (await res.json()) as { items?: { id: string; snippet: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; status?: { madeForKids?: boolean } }[] };
+/** The API key, for a read without a channel's own access. Checked before counting, so a call that can't be made never is. */
+function keyFor(access: string | undefined): string | null {
+  if (access) return null;
+  const key = env().YOUTUBE_API_KEY;
+  if (!key) throw new YouTubeError("Nothing to read YouTube with", 0, "noKey");
+  return key;
+}
+
+/**
+ * A Data API read that's already been counted: as a channel, with its
+ * access, or with the API key, which sees only public and unlisted
+ * videos. With `timeoutMs`, a call YouTube doesn't answer in time is
+ * given up on, and passes like an outage.
+ */
+export async function getCounted<T>(
+  kind: Kind, method: Method, path: string, q: Record<string, string>, o: { access?: string; now: Date; what: string; timeoutMs?: number },
+): Promise<T> {
+  const query = new URLSearchParams(q);
+  const key = keyFor(o.access);
+  if (key) query.set("key", key);
+  try {
+    const res = await fetch(`${API}/${path}?${query}`, {
+      ...(o.access ? { headers: { authorization: `Bearer ${o.access}` } } : {}),
+      ...(o.timeoutMs ? { signal: AbortSignal.timeout(o.timeoutMs) } : {}),
+    });
+    if (!res.ok) await failCounted(res, o.what, kind, method, o.now);
+    return (await res.json()) as T;
+  } catch (err) {
+    if (err instanceof DOMException && err.name === "TimeoutError") throw new YouTubeError(`${o.what}: YouTube didn't answer in time`, 0, "timeout");
+    throw err;
+  }
+}
+
+/** One read, counted and then made: for single calls, like Trends' search and the channel at connect. */
+export async function youtubeGet<T>(
+  kind: Kind, method: Method, path: string, q: Record<string, string>, o: { access?: string; now?: Date; what: string; timeoutMs?: number },
+): Promise<T> {
+  const now = o.now ?? new Date();
+  keyFor(o.access);
+  await spend(kind, method, { now });
+  return getCounted<T>(kind, method, path, q, { ...o, now });
+}
+
+export async function youtubeChannel(access: string, now = new Date()): Promise<{ externalId: string; title: string | null; handle: string | null; avatarUrl: string | null; madeForKids: boolean | null }> {
+  const j = await youtubeGet<{ items?: { id: string; snippet: { title?: string; customUrl?: string; thumbnails?: { default?: { url?: string } } }; status?: { madeForKids?: boolean } }[] }>(
+    "other", "channels.list", "channels", { part: "snippet,status", mine: "true" }, { access, now, what: "Reading the channel" },
+  );
   const c = j.items?.[0];
   if (!c) throw new YouTubeError("That Google account doesn't have a YouTube channel yet.", 404, "noChannel");
   return {
@@ -148,18 +200,31 @@ export async function youtubeAccess(channelId: string): Promise<string> {
   return fresh.access;
 }
 
+/** A call to YouTube that got no answer at all, as a failure that passes like an outage. */
+async function reach(url: string, init: RequestInit, what: string): Promise<Response> {
+  try {
+    return await fetch(url, init);
+  } catch {
+    throw new YouTubeError(`${what}: YouTube couldn't be reached`, 0, "network");
+  }
+}
+
 /**
  * Uploads a Short, as the creator chose: public ones with a time go up
  * private and YouTube makes them public then; the rest go up as they are.
- * Who it's for is always sent, never assumed.
+ * Who it's for is always sent, never assumed. Counted against the day's
+ * uploads first; a token refresh costs no quota, so it comes before that.
+ * One that gets no answer at all passes like an outage.
  */
 export async function youtubeUpload(
   channelId: string,
   bytes: Buffer,
   meta: { title: string; description: string; publishAt: Date | null; categoryId?: string; privacy: YouTubePrivacy; madeForKids: boolean },
+  now = new Date(),
 ): Promise<string> {
   const access = await youtubeAccess(channelId);
-  const init = await fetch(`${UPLOAD}?uploadType=resumable&part=snippet,status`, {
+  await spend("uploads", "videos.insert", { now });
+  const init = await reach(`${UPLOAD}?uploadType=resumable&part=snippet,status`, {
     method: "POST",
     headers: {
       authorization: `Bearer ${access}`,
@@ -171,12 +236,12 @@ export async function youtubeUpload(
       snippet: { title: meta.title.slice(0, 100), description: meta.description.slice(0, 4900), categoryId: meta.categoryId ?? "24" },
       status: uploadStatus(meta),
     }),
-  });
-  if (!init.ok) await fail(init, "Starting the upload");
+  }, "Starting the upload");
+  if (!init.ok) await failCounted(init, "Starting the upload", "uploads", "videos.insert", now);
   const where = init.headers.get("location");
   if (!where) throw new YouTubeError("YouTube didn't say where to upload", 500, null);
-  const put = await fetch(where, { method: "PUT", headers: { "content-type": "video/mp4" }, body: new Uint8Array(bytes) });
-  if (!put.ok) await fail(put, "Uploading");
+  const put = await reach(where, { method: "PUT", headers: { "content-type": "video/mp4" }, body: new Uint8Array(bytes) }, "Uploading");
+  if (!put.ok) await failCounted(put, "Uploading", "uploads", "videos.insert", now);
   const j = (await put.json()) as { id?: string };
   if (!j.id) throw new YouTubeError("YouTube didn't return the video", 500, null);
   return j.id;
@@ -188,22 +253,25 @@ type VideoItem = {
   status?: { uploadStatus?: string; privacyStatus?: string; failureReason?: string; rejectionReason?: string; madeForKids?: boolean };
 };
 
+/** Ids 50 to a call, the most videos.list takes. */
+const pagesOf = (ids: string[]) => Array.from({ length: Math.ceil(ids.length / 50) }, (_, i) => ids.slice(i * 50, i * 50 + 50));
+
 /**
  * Where videos are and what YouTube thinks of them, 50 at a time (1 quota
- * unit each call). With a channel's own access it sees that channel's
- * private videos too; with the API key, only public and unlisted ones.
- * A video YouTube doesn't know is left out.
+ * unit each call), counted as `kind`: posting's own checks after an
+ * upload, or a pasted link's. The whole batch is counted first, so it
+ * never stops halfway. With a channel's own access it sees that channel's
+ * private videos too; with the API key, only public and unlisted ones. A
+ * video YouTube doesn't know is left out.
  */
-export async function youtubeVideoStates(ids: string[], access?: string): Promise<Map<string, VideoState>> {
+export async function youtubeVideoStates(ids: string[], o: { access?: string; kind: "uploads" | "checks"; now?: Date }): Promise<Map<string, VideoState>> {
   const out = new Map<string, VideoState>();
-  const key = env().YOUTUBE_API_KEY;
-  if (!access && !key) throw new YouTubeError("Nothing to read YouTube with", 0, "noKey");
-  for (let i = 0; i < ids.length; i += 50) {
-    const q = new URLSearchParams({ part: "snippet,status", id: ids.slice(i, i + 50).join(",") });
-    if (!access && key) q.set("key", key);
-    const res = await fetch(`${API}/videos?${q}`, access ? { headers: { authorization: `Bearer ${access}` } } : undefined);
-    if (!res.ok) await fail(res, "Checking the video");
-    const j = (await res.json()) as { items?: VideoItem[] };
+  const now = o.now ?? new Date();
+  keyFor(o.access);
+  const pages = pagesOf(ids);
+  await spend(o.kind, "videos.list", { times: pages.length, now });
+  for (const page of pages) {
+    const j = await getCounted<{ items?: VideoItem[] }>(o.kind, "videos.list", "videos", { part: "snippet,status", id: page.join(",") }, { access: o.access, now, what: "Checking the video" });
     for (const it of j.items ?? []) {
       const p = it.status?.privacyStatus;
       out.set(it.id, {
@@ -219,16 +287,17 @@ export async function youtubeVideoStates(ids: string[], access?: string): Promis
   return out;
 }
 
-/** Public view counts, 50 at a time: with the API key if there is one, or a channel's own access. */
-export async function youtubeViews(ids: string[], access?: string): Promise<Map<string, { views: number; likes: number | null; comments: number | null }>> {
+/** Public view counts, 50 at a time, counted as views: with the API key if there is one, or a channel's own access. */
+export async function youtubeViews(ids: string[], o: { access?: string; now?: Date } = {}): Promise<Map<string, { views: number; likes: number | null; comments: number | null }>> {
   const out = new Map<string, { views: number; likes: number | null; comments: number | null }>();
-  const key = env().YOUTUBE_API_KEY;
-  for (let i = 0; i < ids.length; i += 50) {
-    const q = new URLSearchParams({ part: "statistics", id: ids.slice(i, i + 50).join(",") });
-    if (!access && key) q.set("key", key);
-    const res = await fetch(`${API}/videos?${q}`, access ? { headers: { authorization: `Bearer ${access}` } } : undefined);
-    if (!res.ok) await fail(res, "Reading views");
-    const j = (await res.json()) as { items?: { id: string; statistics: { viewCount?: string; likeCount?: string; commentCount?: string } }[] };
+  const now = o.now ?? new Date();
+  keyFor(o.access);
+  const pages = pagesOf(ids);
+  await spend("stats", "videos.list", { times: pages.length, now });
+  for (const page of pages) {
+    const j = await getCounted<{ items?: { id: string; statistics: { viewCount?: string; likeCount?: string; commentCount?: string } }[] }>(
+      "stats", "videos.list", "videos", { part: "statistics", id: page.join(",") }, { access: o.access, now, what: "Reading views" },
+    );
     for (const it of j.items ?? []) {
       out.set(it.id, {
         views: Number(it.statistics.viewCount ?? 0),
