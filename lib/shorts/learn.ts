@@ -83,12 +83,17 @@ export function lift(views: number, typical: number): number {
 
 /**
  * A first day against the channel's usual one, read `hours` after
- * posting. One read late is scaled back to 24 hours, and says it's an
- * estimate.
+ * posting: by engaged views when the Short has its own engaged share and
+ * the channel a usual one (`share` and `usual`), by plays otherwise, and
+ * it says which. One read late is scaled back to 24 hours, and says it's
+ * an estimate.
  */
-export function againstUsual(views: number, hours: number, typical: number): { vs: number; estimated: boolean } {
+export function againstUsual(
+  views: number, hours: number, typical: number, share: number | null = null, usual: number | null = null,
+): { vs: number; estimated: boolean; by: "engaged" | "plays" } {
   const late = !onTime(24, hours);
-  return { vs: lift(late ? at24h(views, hours) : views, typical), estimated: late };
+  const { lift: vs, by } = firstDayLift(late ? at24h(views, hours) : views, share, typical, usual);
+  return { vs, estimated: late, by };
 }
 
 /** The middle of the channel's recent results: what "typical" means. */
@@ -208,9 +213,31 @@ export function formatReason(name: string, w: Weight | undefined): string {
     return `Still learning what works on your channel: ${w?.samples ? `${w.samples} ${name} so far` : `trying ${name}`}`;
   }
   const x = alone(w);
-  const avg = `${w.score.toFixed(1)}× your usual views at 24 hours`;
+  const avg = `${w.score.toFixed(1)}× your usual first day`;
   if (x >= 1.15) return `Your ${name} have averaged ${avg} (${w.samples} posted)`;
   if (x <= 0.87) return `Your ${name} have averaged ${avg}, so fewer of them, but still some to keep checking`;
   if (w.score >= 1.15 || w.score <= 0.87) return `Your ${name} have averaged ${avg}, from ${w.samples}: too few to go on yet`;
   return `${name[0].toUpperCase()}${name.slice(1)} do about as well as your usual Short (${w.samples} posted)`;
+}
+
+/** The share of a Short's plays YouTube counted as engaged: 0 to 1, or null with no plays. */
+export function engagedShare(plays: number, engaged: number): number | null {
+  if (!(plays > 0) || !Number.isFinite(engaged)) return null;
+  return Math.min(1, Math.max(0, engaged / plays));
+}
+
+/** A channel's usual engaged share: the middle of its Shorts' own, once 3 have one. */
+export function usualShare(shares: (number | null)[]): number | null {
+  const known = shares.filter((s): s is number => s !== null);
+  return known.length >= 3 ? median(known) : null;
+}
+
+/**
+ * A first day against the channel's usual one: by engaged views when the
+ * Short has its own share and the channel has a usual one, by plays
+ * otherwise. Nothing stands in for a missing share, so a comparison never
+ * mixes the two.
+ */
+export function firstDayLift(plays: number, share: number | null, typical: number, usual: number | null): { lift: number; by: "engaged" | "plays" } {
+  return share !== null && usual !== null ? { lift: lift(plays * share, typical * usual), by: "engaged" } : { lift: lift(plays, typical), by: "plays" };
 }

@@ -11,12 +11,14 @@ import { EditCopyToggle } from "@/components/shorts/edit-copy";
 import { ShortPlayer } from "@/components/shorts/player";
 import { PostedForm } from "@/components/shorts/posted";
 import { TikTokLater } from "@/components/shorts/tiktok";
+import { VsUsual } from "@/components/shorts/vs-usual";
 import { uploadsTo } from "@/lib/shorts/channels";
 import { formatName } from "@/lib/shorts/formats";
 import { canTryAgain } from "@/lib/live/clip-rules";
 import { historyOf } from "@/lib/shorts/history";
-import { readAfter, times } from "@/lib/shorts/insights";
+import { readAfter } from "@/lib/shorts/insights";
 import { againstUsual } from "@/lib/shorts/learn";
+import { connectAgain, percentOf, readLine, readState, reportedDay, watched } from "@/lib/shorts/proof";
 import { seconds } from "@/lib/shorts/timing";
 import { markable, STUDIO_UPLOAD, whyFor } from "@/lib/shorts/youtube";
 import { HeldWords } from "@/components/shorts/held";
@@ -48,6 +50,58 @@ function stateOf(d: ShortDetail, byHand: boolean, now: Date, held: Held | null):
 const MARK = { done: "border-signal bg-signal text-ink", next: "border-edge-strong text-muted", bad: "border-signal text-signal" } as const;
 
 const linked = "underline decoration-signal decoration-2 underline-offset-4";
+
+/** YouTube's revenue estimate, in US dollars as YouTube gives it; a sliver of a cent says so rather than $0.00. */
+const dollars = (v: number) => (v > 0 && v < 0.005 ? "Under $0.01" : v.toLocaleString("en-US", { style: "currency", currency: "USD" }));
+
+/** Its channel's YouTube Analytics can't be read: not allowed, or access lost. */
+const unreadable = (d: ShortDetail) => !!d.channel && d.channel.status !== "revoked" && ["scope", "access"].includes(readState({ ...d.channel, syncedAt: null }));
+
+/**
+ * What YouTube Analytics has said about a posted Short, up to the day
+ * YouTube has reported: engaged views, plays, how long people watched,
+ * and YouTube's revenue estimate where it estimates revenue for the
+ * channel. Or why there's nothing: no channel known, one disconnected or
+ * one that can't be read (with Google's screen again), or nothing
+ * reported yet.
+ */
+function FromAnalytics({ d, canConnect }: { d: ShortDetail; canConnect: boolean }) {
+  const a = d.analytics, ch = d.channel;
+  const head = (text: string) => <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">{text}</p>;
+  // why there's nothing to show, if there isn't
+  const why = !d.channelId || !ch
+    ? "Hookline doesn't know which of your channels this Short is on, so it can't read its YouTube Analytics."
+    : ch.status === "revoked"
+      ? `${ch.title} is disconnected, so Hookline can't read its YouTube Analytics.`
+      : unreadable(d)
+        ? readLine(readState({ ...ch, syncedAt: null }), null)
+        : !a
+          ? "Engaged views come from YouTube Analytics a few days after a Short goes up."
+          : null;
+  if (why !== null || !a || !ch) {
+    return (
+      <div className="border-t-2 border-edge px-5 py-5">
+        {head("From YouTube Analytics")}
+        <p className="mt-2 text-[14px] leading-relaxed text-muted">
+          {why} {canConnect && ch && unreadable(d) && <a href={connectAgain(ch.id)} className={`text-fg ${linked}`}>Connect again</a>}
+        </p>
+      </div>
+    );
+  }
+  // how long, with how much of the Short under it, which passes 100% when people watch it again; left out when YouTube gave neither
+  const avg = watched(a.avgSeconds, null) ?? watched(null, a.avgPercent);
+  return (
+    <div className="border-t-2 border-edge px-5 py-5">
+      {head(`From YouTube Analytics, up to ${reportedDay(a.through)}`)}
+      <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-6 sm:grid-cols-4">
+        <Stat label="Engaged views" value={n(a.engaged)} />
+        <Stat label="Plays" value={n(a.plays)} />
+        {avg && <Stat label="Average watched" value={avg} sub={a.avgSeconds !== null && a.avgPercent !== null ? `${watched(null, a.avgPercent)} of the Short` : undefined} />}
+        {ch.earns && a.revenue !== null && <Stat label="YouTube's revenue estimate" value={dollars(a.revenue)} sub="In US dollars" />}
+      </div>
+    </div>
+  );
+}
 
 export default async function ShortPage({ params }: { params: Promise<{ id: string }> }) {
   const me = await account();
@@ -97,9 +151,12 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
     heldBack: held,
   });
   const day = d.views["24h"];
-  // a first day read late is scaled back to 24 hours, and says it's an estimate; with several channels, it says whose usual
-  const vs = day !== undefined && d.typical !== null ? againstUsual(day, d.readAt["24h"] ?? 24, d.typical) : null;
-  const against = shown.length > 1 && mine ? `, against ${mine.name}'s usual` : "";
+  // a first day read late is scaled back to 24 hours, and says it's an estimate; with several channels, it says whose usual.
+  // By engaged views once it has its own share and the channel a usual one, as the library and the learning loop go by
+  const vs = day !== undefined && d.typical !== null ? againstUsual(day, d.readAt["24h"] ?? 24, d.typical, d.firstShare, d.usualShare) : null;
+  const whose = shown.length > 1 && mine ? mine.name : undefined;
+  // a posted Short whose link didn't check out, or that isn't public, is never compared, as the notes under its plays say
+  const uncounted = d.status === "posted" && !!d.youtubeId && (!d.verified || (!!d.youtubePrivacy && d.youtubePrivacy !== "public"));
   const editable = ["review", "approved", "rendering", "ready"].includes(d.status);
   const chosen = d.status !== "review" && d.status !== "rejected";
 
@@ -123,9 +180,17 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
               <Pill>{formatName(d.spec)}</Pill>
               <Pill tone={s.tone}>{s.label}</Pill>
               {d.tiktokPublishId && <Pill>{d.tiktok ? "On TikTok" : "In TikTok drafts"}</Pill>}
-              {d.madeForKids && <Pill>Made for kids</Pill>}
+              {d.madeForKids && d.status !== "posted" && <Pill>Made for kids</Pill>}
             </div>
+            {/* once it's posted, who it was for, as the creator chose, YouTube's verdict, and who watches its channel */}
+            {d.status === "posted" && d.madeForKids !== null && <p className="text-[14px]">Made for kids: {d.madeForKids ? "yes" : "no"}, as you chose.</p>}
             {d.youtubeKids && <p className="border-l-4 border-signal pl-3 text-[14px]">YouTube marked this Made for Kids: comments are off.</p>}
+            {d.status === "posted" && d.channel?.status === "connected" && d.channel.largest && !unreadable(d) && (
+              <p className="text-[13px] leading-relaxed text-muted">
+                This channel&rsquo;s biggest group of signed-in viewers: {d.channel.largest.age} ({percentOf(d.channel.largest.percent)}). Nobody under 13 is counted.{" "}
+                <Link href={`/app/earnings#channel-${d.channel.id}`} className={`text-fg ${linked}`}>See who&rsquo;s watching</Link>
+              </p>
+            )}
             <h1 className="text-[26px] font-semibold leading-snug sm:text-[30px]">{d.title}</h1>
             {d.spec.format === "clip" && <p className="-mt-1 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Round {d.spec.params.log.round} of your LIVE, <LocalTime iso={new Date(d.spec.params.log.at).toISOString()} /></p>}
             {d.description && <p className="line-clamp-6 whitespace-pre-line text-[14px] leading-relaxed text-muted">{d.description}</p>}
@@ -196,27 +261,39 @@ export default async function ShortPage({ params }: { params: Promise<{ id: stri
 
           {chosen && (
             <Card>
-              <CardHead title="Views" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">From YouTube</span>} />
-              <div className="grid grid-cols-2 gap-x-6 gap-y-6 px-5 py-5 sm:grid-cols-4">
-                {(["1h", "24h", "72h"] as const).map((k) => (
-                  <Stat
-                    key={k}
-                    label={d.readAt[k] !== undefined ? readAfter(d.readAt[k]!) : k === "1h" ? "After 1 hour" : k === "24h" ? "After 1 day" : "After 3 days"}
-                    value={d.views[k] === undefined ? "—" : n(d.views[k]!)}
-                  />
-                ))}
-                <Stat
-                  label="Vs your usual"
-                  value={vs === null ? "—" : times(vs.vs)}
-                  sub={vs !== null ? (vs.estimated ? `Its first day${against}, estimated from a late reading` : `Its first day${against}`) : d.typical === null ? "Needs 3 Shorts' first days" : "After its first day"}
-                />
+              {/* each row says whose figures it has: YouTube's plays, Hookline's comparison worked out from them, and YouTube Analytics' own */}
+              <CardHead title="Plays and engaged views" />
+              <div className="px-5 py-5">
+                <p className="font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Plays, from YouTube</p>
+                <div className="mt-3 grid grid-cols-2 gap-x-6 gap-y-6 sm:grid-cols-4">
+                  {(["1h", "24h", "72h"] as const).map((k) => (
+                    <Stat
+                      key={k}
+                      label={d.readAt[k] !== undefined ? readAfter(d.readAt[k]!) : k === "1h" ? "After 1 hour" : k === "24h" ? "After 1 day" : "After 3 days"}
+                      value={d.views[k] === undefined ? "—" : n(d.views[k]!)}
+                    />
+                  ))}
+                </div>
               </div>
-              {!d.youtubeId && <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">Views are read from YouTube at 1 hour, 1 day and 3 days after it posts there.</p>}
+              {(vs !== null || !uncounted) && <VsUsual vs={vs} typical={d.typical} waiting={d.waiting} channel={whose} />}
+              {/* YouTube Analytics reads posted Shorts whose link checked out, whoever can see them */}
+              {d.status === "posted" && d.youtubeId && d.verified && <FromAnalytics d={d} canConnect={configured().youtube} />}
+              {d.status === "posted" && d.verified && d.analytics && d.channel && d.channel.status !== "revoked" && !unreadable(d) && (
+                <p className="border-t-2 border-edge px-5 py-3 text-[13px] leading-relaxed text-muted">
+                  Plays are what YouTube now shows as views: every time the Short starts. Engaged views leave out the ones swiped past, and are what YouTube counts for the Partner Program.
+                  {d.analytics.avgPercent !== null && " Average watched can pass 100% when people watch a Short more than once."}
+                </p>
+              )}
+              {!d.youtubeId && (
+                <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">
+                  Plays are read from YouTube at 1 hour, 1 day and 3 days after it posts there. Engaged views come from YouTube Analytics a few days after that.
+                </p>
+              )}
               {d.youtubeId && d.status === "posted" && !d.verified && (
-                <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">Its link couldn&rsquo;t be checked with YouTube, so its views aren&rsquo;t read or counted.</p>
+                <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">Its link couldn&rsquo;t be checked with YouTube, so its plays and engaged views aren&rsquo;t read or counted.</p>
               )}
               {d.youtubeId && d.status === "posted" && d.verified && d.youtubePrivacy && d.youtubePrivacy !== "public" && (
-                <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">It&rsquo;s {d.youtubePrivacy} on YouTube, so its views aren&rsquo;t counted with your public Shorts.</p>
+                <p className="border-t-2 border-edge px-5 py-3 text-[13px] text-muted">It&rsquo;s {d.youtubePrivacy} on YouTube, so its plays aren&rsquo;t read at 1 hour, 1 day and 3 days, or compared with your public Shorts.</p>
               )}
             </Card>
           )}

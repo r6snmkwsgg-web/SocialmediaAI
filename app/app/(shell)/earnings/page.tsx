@@ -3,11 +3,15 @@ import Link from "next/link";
 import { ChannelFilter } from "@/components/app/channel-filter";
 import { ConnectList } from "@/components/app/connect";
 import { DailyBars, say } from "@/components/app/daily-bars";
+import { Audience } from "@/components/app/audience";
+import { PartnerMeter } from "@/components/app/partner-meter";
 import { button, Card, CardHead, Empty, PageHead } from "@/components/app/ui";
 import { account } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
 import { earningsOf, hasStripe, LIVE_COINS, type EarningsChannel, type Series } from "@/lib/server/earnings";
 import { configured } from "@/lib/server/env";
+import { proofOf, type ChannelProof } from "@/lib/server/shorts/proof";
+import { connectAgain, pacificDay, pickedChannel, readLine, readState, reportedDay } from "@/lib/shorts/proof";
 import { addGoal, removeGoal, stripeConnect, stripeDisconnect } from "./actions";
 
 export const metadata: Metadata = { title: "Earnings" };
@@ -16,6 +20,14 @@ const NOTES: Record<string, { text: string; bad?: boolean }> = {
   goal: { text: "That goal didn't save. Pick what to count and a number above zero.", bad: true },
   "stripe-format": { text: "That isn't a restricted key. It starts with rk_live_. Never paste your secret key (sk_live_).", bad: true },
   "stripe-rejected": { text: "Stripe didn't accept that key. Make sure it can read balance transactions.", bad: true },
+  // back from Google's or TikTok's screen, from a channel's Connect again or Add your channels
+  connectedYoutube: { text: "YouTube is connected. Its YouTube Analytics show here once Hookline has read them." },
+  connectedTiktok: { text: "TikTok is connected." },
+  connect: { text: "That didn't connect. Try again, and allow everything Hookline asks for.", bad: true },
+  denied: { text: "Nothing was connected: the permission was turned down.", bad: true },
+  nochannel: { text: "That Google account has no YouTube channel yet. Make one on YouTube, then connect again.", bad: true },
+  channels: { text: "Your plan has no room for another YouTube channel. To connect one of yours again, pick its own account when Google asks.", bad: true },
+  tiktokOne: { text: "Hookline sends Shorts to one TikTok account. Disconnect yours in Settings to connect a different one.", bad: true },
 };
 
 const shortDay = (d: string) => new Date(`${d}T00:00:00Z`).toLocaleDateString("en-US", { month: "short", day: "numeric", timeZone: "UTC" });
@@ -51,19 +63,72 @@ const ACCOUNT_WIDE: Partial<Record<Series["source"], string>> = { tiktok: "TikTo
 
 const listed = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
 
+/** The channels engaged views across all of them can't count, for their card and a goal on them, since YouTube hasn't given them. */
+const notCounted = (names: string[]) =>
+  `${listed(names)} ${names.length === 1 ? "isn't" : "aren't"} counted: YouTube hasn't given Hookline ${names.length === 1 ? "its" : "their"} engaged views.`;
+
+/**
+ * One YouTube channel's YouTube Analytics: how far it is from the Partner
+ * Program and who watches it, once they've been read, and its made-for-kids
+ * answers either way. Where it can't be read, it says why, with Google's
+ * screen again where that's the fix. `today` is the day the Partner
+ * Program's bars are for.
+ */
+function ChannelCard({ c, today, canConnect }: { c: ChannelProof; today: string; canConnect: boolean }) {
+  const state = readState(c);
+  // only a channel read in full, or kept from its last full read, has numbers to show
+  const shown = state === "read" || state === "stale";
+  const line = readLine(state, c.through);
+  const quiet = shown && c.through === null;
+  const fix = canConnect && (state === "scope" || state === "access");
+  return (
+    <Card id={`channel-${c.id}`} className="scroll-mt-24">
+      <CardHead
+        title={c.title}
+        action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{shown && c.through ? `From YouTube Analytics, up to ${reportedDay(c.through)}` : "From YouTube Analytics"}</span>}
+      />
+      {(line || quiet) && (
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-3 border-b-2 border-edge px-5 py-4">
+          <div className="flex min-w-0 flex-1 basis-64 flex-col gap-1 text-[14px] leading-relaxed">
+            {line && <p>{line}</p>}
+            {quiet && <p className="text-muted">YouTube hasn&rsquo;t reported views on this channel in the last 90 days.</p>}
+          </div>
+          {fix && <a href={connectAgain(c.id)} className={button.secondary}>Connect again</a>}
+        </div>
+      )}
+      <div className={`grid gap-px bg-edge ${shown ? "lg:grid-cols-2" : ""}`}>
+        {shown && <div className="min-w-0 bg-card px-5 py-5"><PartnerMeter c={c} today={today} /></div>}
+        <div className="min-w-0 bg-card px-5 py-5"><Audience c={c} shown={shown && c.through !== null} /></div>
+      </div>
+    </Card>
+  );
+}
+
 export default async function Earnings({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
   const days = q.days === "90" ? 90 : 30;
   const [all, channels, stripe] = await Promise.all([earningsOf(me.id, days), channelsOf(me.id), hasStripe(me.id)]);
-  // with more than one YouTube channel with figures, one can be picked to see its own (anything else means all of them)
+  // with more than one YouTube channel with figures, one can be picked to see its own (anything else means all of them,
+  // and so does coming back from connecting one)
   const youtube = all.channels.filter((x) => x.platform === "youtube");
-  const picked = youtube.length > 1 ? (youtube.find((x) => x.id === q.channel) ?? null) : null;
+  const picked = youtube.length > 1 ? (youtube.find((x) => x.id === pickedChannel(q)) ?? null) : null;
   const { series, goals, unverified } = picked ? await earningsOf(me.id, days, picked.id) : all;
+  // each YouTube channel's YouTube Analytics, under the figures: only the picked one's when one is picked
+  const proofs = (await proofOf(me.id)).filter((x) => !picked || x.id === picked.id);
   const hasLive = series.some((s) => s.source === "live");
   const c = configured();
   const has = (p: "youtube" | "tiktok") => channels.some((x) => x.platform === p && x.status === "connected");
-  const note = typeof q.error === "string" ? NOTES[q.error] : q.stripe === "1" ? { text: "Stripe is connected. Your sales show up below once they've synced." } : undefined;
+  // an account connected and not read yet has figures on the way, which isn't nothing connected
+  const coming = has("youtube") || has("tiktok");
+  const note =
+    typeof q.error === "string"
+      ? NOTES[q.error]
+      : q.stripe === "1"
+        ? { text: "Stripe is connected. Your sales show up below once they've synced." }
+        : typeof q.connected === "string"
+          ? NOTES[q.connected === "tiktok" ? "connectedTiktok" : "connectedYoutube"]
+          : undefined;
   // the account's own figures, which one channel on its own leaves out
   const elsewhere = [...new Set(all.series.map((s) => ACCOUNT_WIDE[s.source]).filter((s): s is string => !!s))];
   // all the channels added up: how, and where one's figures start later or stop; or one channel's, and where it stops
@@ -112,6 +177,8 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
           {goals.length === 0 && !picked && <p className="text-[14px] text-muted">A number to aim for, tracked from your real figures. Set one below.</p>}
           {goals.map((g) => {
             const share = Math.min(1, g.progress / g.target);
+            // a goal adds up every channel, so it leaves out what all of them added up do
+            const leftOut = all.series.find((s) => s.id === `${g.source}:${g.metric}`)?.leftOut;
             return (
               <div key={g.id} className="flex flex-col gap-2">
                 <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -120,6 +187,7 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                     {say(g.progress, g.unit, g.currency)} of {say(g.target, g.unit, g.currency)} · {Math.floor(share * 100)}%
                   </span>
                 </div>
+                {leftOut && <p className="-mt-1 text-[12px] text-muted">{notCounted(leftOut)}</p>}
                 <div className="flex items-center gap-3">
                   <div className="h-3 flex-1 bg-card-2" role="progressbar" aria-valuemin={0} aria-valuemax={100} aria-valuenow={Math.floor(share * 100)} aria-label={g.label}>
                     <div className="h-full bg-signal" style={{ width: `${share * 100}%` }} />
@@ -171,8 +239,8 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
 
       {series.length === 0 ? (
         <Empty
-          title="Nothing connected yet"
-          body="Connect YouTube or TikTok, play the LIVE game, or add a Stripe key if you sell something, and your real figures show up here, day by day."
+          title={coming ? "No figures yet" : "Nothing connected yet"}
+          body={coming ? "Your figures show up here once Hookline has read them. It reads them every 6 hours." : "Connect YouTube or TikTok, play the LIVE game, or add a Stripe key if you sell something, and your real figures show up here, day by day."}
         />
       ) : (
         <ul className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
@@ -182,6 +250,7 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                 <p className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{s.label}</p>
                 <p className="mt-1 font-display text-4xl leading-none tabular-nums">{say(s.total, s.unit, s.currency)}</p>
                 <p className="mt-1 text-[12px] text-muted">Last {days} days{s.note ? ` · ${s.note}` : ""}</p>
+                {s.leftOut && <p className="mt-0.5 text-[12px] text-muted">{notCounted(s.leftOut)}</p>}
                 {s.through && s.through < s.points[s.points.length - 1].day && (
                   <p className="mt-0.5 text-[12px] text-muted">
                     Reported up to {shortDay(s.through)}. {picked?.expired ? "Nothing more comes until it's reconnected." : "YouTube adds the days after that later."}
@@ -195,6 +264,15 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
             </li>
           ))}
         </ul>
+      )}
+
+      {proofs.length > 0 && (
+        <section aria-labelledby="youtube-channels" className="mt-10">
+          <h2 id="youtube-channels" className="mb-4 font-display text-2xl uppercase tracking-wide">{proofs.length > 1 ? "Your YouTube channels" : "Your YouTube channel"}</h2>
+          <div className="flex flex-col gap-6">
+            {proofs.map((p) => <ChannelCard key={p.id} c={p} today={pacificDay(new Date())} canConnect={c.youtube} />)}
+          </div>
+        </section>
       )}
 
       {/* connecting, Stripe and the LIVE coins are the account's as a whole, so they show with all its channels */}

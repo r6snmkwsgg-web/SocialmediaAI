@@ -6,6 +6,9 @@ import { localParts, validTimezone } from "../shorts/times";
 import { open, seal } from "./crypto";
 import { admin, asUser } from "./db";
 import { tiktokAccess } from "./tiktok";
+import { byColumn } from "../shorts/proof";
+import { analyticsReport, type Report } from "./youtube-analytics";
+import { YouTubeError } from "./youtube";
 import { youtubeAccess } from "./youtube";
 
 /**
@@ -38,6 +41,8 @@ export type Series = {
   through?: string;
   /** the first day the source has been read back to, for one that can't be read further */
   from?: string;
+  /** for engaged views across channels: the ones YouTube gives views for but hasn't given engaged views for, which the total can't count, by name */
+  leftOut?: string[];
 };
 
 export type Goal = { id: string; source: string; metric: string; target: number; period: "month" | "all"; label: string; progress: number; unit: Series["unit"]; currency?: string };
@@ -134,6 +139,18 @@ export async function earningsOf(userId: string, days: number, channelId?: strin
     const on = channelId === undefined ? undefined : names.get(channelId);
     if (picked(partsOf("youtube:views")).length) {
       add("youtube:views", "youtube", on ? `Views on ${on}` : "Views on YouTube", "count", ...youtube("views"));
+      // the views YouTube counts for the Partner Program, wherever it has reported them. A channel YouTube gives views for
+      // but hasn't given these for can't be in their total, so the total says which, in the order the channels were added
+      const engaged = picked(partsOf("youtube:engaged_views"));
+      if (engaged.length) {
+        const [points, extra] = youtube("engaged_views");
+        const viewed = new Set(picked(partsOf("youtube:views")).map((x) => x.channel));
+        const leftOut = channels.filter((c) => viewed.has(c.id) && !engaged.some((x) => x.channel === c.id)).map((c) => names.get(c.id)!);
+        add("youtube:engaged_views", "youtube", on ? `Engaged views on ${on}` : "Engaged views on YouTube", "count", points, {
+          ...extra, note: "What YouTube counts for the Partner Program. A Shorts view counts every play. These leave out the ones swiped past",
+          ...(leftOut.length ? { leftOut } : {}),
+        });
+      }
       add("youtube:subscribers", "youtube", on ? `New subscribers on ${on}` : "New subscribers", "count", ...youtube("subscribers"));
     }
     if (picked(partsOf("youtube:revenue")).length) {
@@ -189,27 +206,40 @@ async function put(userId: string, channelId: string | null, source: string, met
     on conflict (user_id, source, metric, channel_id, day) do update set value = excluded.value`);
 }
 
-/** YouTube Analytics, by day, for one channel: views and subscribers, and revenue if the channel is monetized. */
+/** What Earnings reads from YouTube Analytics for each day, and what each is kept as. */
+const DAILY = [["views", "views"], ["engagedViews", "engaged_views"], ["subscribersGained", "subscribers"], ["estimatedRevenue", "revenue"]] as const;
+
+/** What each of YouTube's refusals is about: revenue, which channels outside the Partner Program can't read, and engaged views, YouTube's newer measure. */
+const REFUSED: Record<number, string> = { 403: "estimatedRevenue", 400: "engagedViews" };
+
+/**
+ * YouTube Analytics, by day, for one channel: views, engaged views and
+ * subscribers, and revenue if the channel is monetized. Each report is
+ * counted, and its columns are read by name. A refusal drops only what
+ * it's about, in whichever order YouTube refuses them, so views and
+ * subscribers always sync.
+ */
 async function syncYouTube(userId: string, channelId: string, now: Date): Promise<string> {
   const access = await youtubeAccess(channelId);
-  const q = (metrics: string) =>
-    `https://youtubeanalytics.googleapis.com/v2/reports?${new URLSearchParams({ ids: "channel==MINE", startDate: iso(new Date(now.getTime() - 35 * 86400_000)), endDate: iso(now), metrics, dimensions: "day", sort: "day" })}`;
-  let res = await fetch(q("views,subscribersGained,estimatedRevenue"), { headers: { authorization: `Bearer ${access}` } });
-  let money = true;
-  // channels outside the Partner Program can't read revenue: try again without it
-  if (res.status === 403) {
-    money = false;
-    res = await fetch(q("views,subscribersGained"), { headers: { authorization: `Bearer ${access}` } });
+  let metrics: string[] = DAILY.map(([m]) => m);
+  let report: Report | null = null;
+  while (!report) {
+    try {
+      report = await analyticsReport(access, { startDate: iso(new Date(now.getTime() - 35 * 86400_000)), endDate: iso(now), metrics, dimensions: ["day"], sort: "day" }, now);
+    } catch (e) {
+      const drop = e instanceof YouTubeError && !e.quota ? REFUSED[e.status] : undefined;
+      if (!drop || !metrics.includes(drop)) throw e;
+      metrics = metrics.filter((m) => m !== drop);
+    }
   }
-  if (!res.ok) throw new Error(`YouTube Analytics: ${res.status}`);
-  const j = (await res.json()) as { rows?: (string | number)[][] };
-  for (const r of j.rows ?? []) {
-    const day = String(r[0]);
-    await put(userId, channelId, "youtube", "views", day, Number(r[1]));
-    await put(userId, channelId, "youtube", "subscribers", day, Number(r[2]));
-    if (money) await put(userId, channelId, "youtube", "revenue", day, Number(r[3]));
+  const days = byColumn(report).filter((r) => /^\d{4}-\d{2}-\d{2}$/.test(String(r.day)));
+  for (const r of days) {
+    for (const [metric, kept] of DAILY) {
+      const value = r[metric] === undefined ? NaN : Number(r[metric]);
+      if (Number.isFinite(value)) await put(userId, channelId, "youtube", kept, String(r.day), value);
+    }
   }
-  return `youtube ${j.rows?.length ?? 0} days`;
+  return `youtube ${days.length} days`;
 }
 
 /** TikTok gives each video's total views, not daily ones: today's grand total is kept for that TikTok account, and the days are the differences. */

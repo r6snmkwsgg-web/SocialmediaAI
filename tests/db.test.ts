@@ -1750,7 +1750,7 @@ describe.skipIf(!safe)("the database", () => {
       expect(own[0].score).toBeCloseTo(lift, 4);
       // the note says whose usual it beat
       const [note] = (await (await import("@/lib/server/notify")).notificationsOf(l.user)).items.filter((n) => n.kind === "results");
-      expect(note).toMatchObject({ title: "1.9× your usual views", body: "Quiz 4 beat Small's usual Short in its first day. Hookline will make more like it there." });
+      expect(note).toMatchObject({ title: "1.9× your usual first day", body: "Quiz 4 beat Small's usual Short in its first day, by plays. Hookline will make more like it there." });
 
       // a channel with no results of its own starts from the others'; Small goes by its own
       const { weightsFor } = await import("@/lib/server/shorts/weights");
@@ -1827,7 +1827,7 @@ describe.skipIf(!safe)("the database", () => {
         const rows = reports[(new Headers(init?.headers).get("authorization") ?? "").replace("Bearer ", "")];
         // anyone else's channels aren't these tests' to read; and neither of these is in the Partner Program
         if (!u.startsWith("https://youtubeanalytics.googleapis.com/") || !rows) return new Response("{}", { status: 500 });
-        return new URL(u).searchParams.get("metrics")!.includes("estimatedRevenue") ? new Response("{}", { status: 403 }) : { rows };
+        return new URL(u).searchParams.get("metrics")!.includes("estimatedRevenue") ? new Response("{}", { status: 403 }) : { columnHeaders: [{ name: "day" }, { name: "views" }, { name: "subscribersGained" }], rows };
       });
       await earn.syncEarnings(now);
       const kept = await db.admin((tx) => tx<{ channel_id: string; n: number }[]>`select channel_id, count(*)::int as n from public.metrics where user_id = ${e.user} group by channel_id`);
@@ -3999,8 +3999,8 @@ describe.skipIf(!safe)("the database", () => {
       await stats.learn(r.user, quiz, "quiz", "quiz:capitals", 400, 24, ch);
       const notes = await db.admin((tx) => tx<{ href: string; body: string }[]>`select href, body from public.notifications where user_id = ${r.user} and kind = 'results' order by created_at`);
       expect(notes).toEqual([
-        { href: `/app/shorts/${round}`, body: "Round 3 of my LIVE beat your typical Short in its first day." },
-        { href: `/app/shorts/${quiz}`, body: "Quiz 4 beat your typical Short in its first day. Hookline will make more like it." },
+        { href: `/app/shorts/${round}`, body: "Round 3 of my LIVE beat your usual Short in its first day, by plays." },
+        { href: `/app/shorts/${quiz}`, body: "Quiz 4 beat your usual Short in its first day, by plays. Hookline will make more like it." },
       ]);
     });
 
@@ -4039,6 +4039,930 @@ describe.skipIf(!safe)("the database", () => {
   // wave 2: niches
 
   // wave 2: proof
+  describe("proof: YouTube Analytics for each Short and each channel", () => {
+    let proof: typeof import("@/lib/server/shorts/proof");
+    let channels: typeof import("@/lib/server/channels");
+    let store: typeof import("@/lib/server/channels-store");
+    let seal: (s: string) => string;
+    /** every scope Hookline asks Google for, as Google saves them */
+    let scopes: string[] = [];
+    /** everyone the test running now made, deleted once it's done, so none of theirs is due when the next one reads */
+    const made: string[] = [];
+    let count = 0;
+    let shorts = 0;
+    /** A moment in Pacific time in 2036, a year no other test uses, between its clock changes (UTC-7), so these runs' quota days are their own. */
+    const pacific = (date: string, time: string) => new Date(`${date}T${time}:00-07:00`);
+    const days = (at: Date, n: number) => new Date(at.getTime() + n * 86400_000);
+    const dayBefore = (day: string) => new Date(Date.parse(`${day}T00:00:00Z`) - 86400_000).toISOString().slice(0, 10);
+
+    type Has = { scopes?: string | null; expired?: boolean };
+    /**
+     * Someone new on Creator, with YouTube channels Hookline holds tokens
+     * for, connected years before anyone else's, so theirs are read first.
+     * Each channel's access token is `ya29.<email>.<n>` and its refresh
+     * token `refresh.<email>.<n>`.
+     */
+    const someone = async (has: Has[] = [{}]) => {
+      const n = ++count;
+      const email = `w2-proof-${n}@test.local`;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      made.push(user);
+      await db.admin((tx) => tx`insert into public.subscriptions (user_id, plan, status) values (${user}, 'creator', 'active')`);
+      const ids: string[] = [], externals: string[] = [], tokens: string[] = [], titles: string[] = [];
+      for (const [i, h] of has.entries()) {
+        const at = new Date(Date.UTC(2001, 0, 1, 0, n, i));
+        const [c] = await db.admin((tx) => tx<{ id: string }[]>`
+          insert into public.channels (user_id, platform, external_id, title, made_for_kids, connected_at, added_at)
+          values (${user}, 'youtube', ${`UCw2proof${n}x${i}`}, ${`Proof ${n}.${i}`}, false, ${at}, ${at}) returning id`);
+        await db.admin((tx) => tx`
+          insert into public.channel_tokens (channel_id, access_token, refresh_token, expires_at, scopes)
+          values (${c.id}, ${seal(`ya29.${email}.${i}`)}, ${seal(`refresh.${email}.${i}`)}, ${new Date(Date.now() + (h.expired ? -60_000 : 3600_000))},
+            ${h.scopes === undefined ? scopes.join(" ") : h.scopes})`);
+        ids.push(c.id);
+        externals.push(`UCw2proof${n}x${i}`);
+        tokens.push(`ya29.${email}.${i}`);
+        titles.push(`Proof ${n}.${i}`);
+      }
+      return { user, email, channels: ids, externals, tokens, titles };
+    };
+
+    /** Posted Shorts of theirs at these times, checked to be on the channel unless it says otherwise: their ids and YouTube ids, in order. */
+    const posted = async (user: string, channel: string | null, at: Date[], o: { verified?: boolean } = {}) => {
+      const first = shorts;
+      shorts += at.length;
+      return db.admin((tx) => tx<{ id: string; youtube_id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, decided_at, posted_at, youtube_id, youtube_verified, youtube_privacy)
+        select ${user}::uuid, ${channel}::uuid, 'quiz', '{"questions":[]}', 'quiz:capitals', 'Quiz ' || g, 'posted', p - interval '1 day', p,
+          'w2proof' || (${first}::int + g)::text, ${o.verified ?? true}, 'public'
+        from unnest(${at.map((d) => d.toISOString())}::timestamptz[]) with ordinality as t(p, g)
+        order by g
+        returning id, youtube_id`);
+    };
+
+    type Query = "first" | "revenue" | "videos" | "viewers" | "split";
+    /** Which of a read's queries an Analytics call was, by what it asked for. */
+    const queryOf = (u: string): Query => {
+      const dims = new URL(u).searchParams.get("dimensions") ?? "";
+      return dims.includes("video") ? "videos" : dims.includes("ageGroup") ? "viewers" : dims.includes("creatorContentType") ? "split" : dims.includes("day") ? "first" : "revenue";
+    };
+    const bearer = (init?: RequestInit) => (new Headers(init?.headers).get("authorization") ?? "").replace("Bearer ", "");
+    const refusal = (status: number, reason: string) =>
+      new Response(JSON.stringify({ error: { code: status, message: `Refused: ${reason}`, errors: [{ reason }] } }), { status });
+
+    /** One channel as YouTube Analytics has it. */
+    type Fake = {
+      /** the last day YouTube has reported, or null when it's reported no views in 90 days */
+      through: string | null;
+      /** its estimates for the 90 days, or refused, as for a channel outside the Partner Program (the default) */
+      revenue?: { all: number; ads: number } | "refused";
+      /** each Short's totals, by YouTube id */
+      videos?: Record<string, { views: number; engaged: number; seconds?: number; percent?: number; revenue?: number }>;
+      /** age group, gender and percent */
+      viewers?: [string, string, number][];
+      /** engaged views on Shorts and on long videos in 90 days, and minutes watched on long videos in a year; or refused, as when YouTube won't split them */
+      split?: { shorts: number; long: number; minutes: number } | "refused";
+      /** a query YouTube refuses, with its status and Google's reason */
+      fails?: { query: Query; status: number; reason?: string };
+    };
+
+    /**
+     * YouTube's side: each of these channels' Analytics by its access token,
+     * subscriber counts by channel id with the API key, and token refreshes
+     * by refresh token. Anyone else's calls fail, so other tests' channels
+     * are only ever tried. Answers put the dimensions last, the other way
+     * round from YouTube, since only the column names count.
+     */
+    const youtube = (fakes: Record<string, Fake>, o: { subscribers?: Record<string, number | "hidden">; refresh?: Record<string, Response> } = {}) => stubFetch((u, init) => {
+      const url = new URL(u);
+      if (u.startsWith("https://oauth2.googleapis.com/token")) return o.refresh?.[new URLSearchParams(String(init?.body)).get("refresh_token") ?? ""] ?? new Response("{}", { status: 500 });
+      if (url.hostname === "www.googleapis.com" && url.pathname === "/youtube/v3/channels") {
+        const ids = (url.searchParams.get("id") ?? "").split(",").filter((id) => o.subscribers?.[id] !== undefined);
+        return { items: ids.map((id) => ({ id, statistics: o.subscribers![id] === "hidden" ? { hiddenSubscriberCount: true } : { subscriberCount: String(o.subscribers![id]), hiddenSubscriberCount: false } })) };
+      }
+      const f = fakes[bearer(init)];
+      if (url.hostname !== "youtubeanalytics.googleapis.com" || !f) return new Response("{}", { status: 500 });
+      const query = queryOf(u);
+      if (f.fails?.query === query) return refusal(f.fails.status, f.fails.reason ?? "backendError");
+      const metrics = (url.searchParams.get("metrics") ?? "").split(",");
+      const dims = (url.searchParams.get("dimensions") ?? "").split(",").filter(Boolean);
+      const table = (rows: (string | number)[][]) => ({ columnHeaders: [...metrics, ...dims].map((name) => ({ name })), rows });
+      if (query === "first") return table(f.through ? [[12, dayBefore(f.through)], [30, f.through]] : []);
+      if (query === "revenue") {
+        if (!f.revenue || f.revenue === "refused") return refusal(403, "forbidden");
+        const money = f.revenue;
+        return table([metrics.map((m) => (m === "estimatedAdRevenue" ? money.ads : money.all))]);
+      }
+      if (query === "videos") {
+        const ids = (url.searchParams.get("filters") ?? "").replace("video==", "").split(",").filter((id) => f.videos?.[id]);
+        return table(ids.map((id) => {
+          const v = f.videos![id];
+          const of: Record<string, number> = { views: v.views, engagedViews: v.engaged, averageViewDuration: v.seconds ?? 20, averageViewPercentage: v.percent ?? 70, estimatedRevenue: v.revenue ?? 0 };
+          return [...metrics.map((m) => of[m]), id];
+        }));
+      }
+      if (query === "viewers") return table((f.viewers ?? []).map(([age, gender, percent]) => [percent, age, gender]));
+      if (f.split === "refused") return refusal(400, "badRequest");
+      const s = f.split ?? { shorts: 0, long: 0, minutes: 0 };
+      return table(metrics[0] === "engagedViews" ? [[s.shorts, "SHORTS"], [s.long, "VIDEO_ON_DEMAND"], [7, "LIVE_STREAM"]] : [[s.minutes, "VIDEO_ON_DEMAND"], [60, "SHORTS"]]);
+    });
+
+    /** The Analytics queries asked with a channel's access, in order, with what each asked. */
+    const asked = (calls: Call[], token: string) => calls
+      .filter((c) => c.url.startsWith("https://youtubeanalytics.googleapis.com/") && bearer(c.init) === token)
+      .map((c) => ({ query: queryOf(c.url), q: new URL(c.url).searchParams }));
+    const idsIn = (q: URLSearchParams) => q.get("filters")!.replace("video==", "").split(",");
+
+    /** What's kept for a channel, and for an account's Shorts. */
+    const channelRow = async (id: string) => (await db.admin((tx) => tx<Record<string, unknown>[]>`
+      select through::text as through, problem, revenue_readable, revenue_90d::float8 as revenue_90d, ad_revenue_90d::float8 as ad_revenue_90d,
+        subscribers::int as subscribers, subscribers_hidden, shorts_engaged_90d::int as shorts_engaged_90d, long_hours_365d, audience, tried_at, synced_at
+      from public.channel_analytics where channel_id = ${id}`))[0];
+    const shortRows = (user: string) => db.admin((tx) => tx<{
+      video_id: string; channel_id: string; through: string; views: number; engaged_views: number; avg_view_seconds: number | null; avg_view_percent: number | null;
+      revenue: number | null; first_share: number | null; fetched_at: Date;
+    }[]>`
+      select video_id, channel_id, through::text as through, views::int as views, engaged_views::int as engaged_views, avg_view_seconds, avg_view_percent,
+        revenue::float8 as revenue, first_share, fetched_at
+      from public.video_analytics where user_id = ${user} order by fetched_at, video_id`);
+
+    /** A run with room for every channel that's due, as the worker's would be. */
+    const run = (now: Date) => proof.syncAnalytics(now, 100_000, 120_000);
+
+    beforeAll(async () => {
+      if (!safe) return;
+      proof = await import("@/lib/server/shorts/proof");
+      channels = await import("@/lib/server/channels");
+      store = await import("@/lib/server/channels-store");
+      seal = (await import("@/lib/server/crypto")).seal;
+      scopes = (await import("@/lib/server/youtube")).YOUTUBE_SCOPES;
+    });
+
+    afterEach(async () => {
+      if (!safe || !made.length) return;
+      const gone = made.splice(0);
+      await db.admin((tx) => tx`delete from auth.users where id = any(${gone}::uuid[])`);
+    });
+
+    afterAll(async () => {
+      if (!safe) return;
+      // what these runs counted, and their tries at other tests' channels
+      await db.admin(async (tx) => {
+        await tx`delete from public.youtube_quota where day between '2036-01-01' and '2036-12-31'`;
+        await tx`delete from public.channel_analytics where tried_at >= '2036-01-01'`;
+      });
+    });
+
+    it("reads only the Shorts on each channel, as that channel, 200 to a query, and keeps YouTube's totals with the day they run up to", async () => {
+      const a = await someone([{}, {}]);
+      const [x, y] = a.channels;
+      const now = pacific("2036-06-15", "12:00");
+      // 250 on X through the spring, one on Y, one Hookline doesn't know the channel of, one on X too new for YouTube to have
+      // reported, and one whose link was never checked
+      const onX = await posted(a.user, x, Array.from({ length: 250 }, (_, i) => new Date(pacific("2036-03-20", "10:00").getTime() + i * 6 * 3600_000)));
+      const [onY] = await posted(a.user, y, [pacific("2036-06-01", "10:00")]);
+      const [nowhere] = await posted(a.user, null, [pacific("2036-06-01", "11:00")]);
+      const [tooNew] = await posted(a.user, x, [pacific("2036-06-14", "09:00")]);
+      const [unchecked] = await posted(a.user, x, [pacific("2036-06-02", "09:00")], { verified: false });
+      const totals = (vs: { youtube_id: string }[]) => Object.fromEntries(vs.map((v, i) => [v.youtube_id, { views: 100 + i, engaged: 50 + i, seconds: 17, percent: 64.5 }]));
+      const calls = youtube({
+        [a.tokens[0]]: {
+          through: "2036-06-13", videos: totals([...onX, tooNew, unchecked, nowhere]),
+          viewers: [["age18-24", "female", 60], ["age25-34", "male", 40]], split: { shorts: 9000, long: 400, minutes: 6000 },
+        },
+        [a.tokens[1]]: { through: "2036-06-12", videos: totals([onY, nowhere]) },
+      });
+      await run(now);
+
+      // every query was the channel's own, asked as itself
+      const ofX = asked(calls, a.tokens[0]), ofY = asked(calls, a.tokens[1]);
+      expect(ofX.map((c) => c.query)).toEqual(["first", "revenue", "videos", "videos", "viewers", "split", "split"]);
+      for (const c of [...ofX, ...ofY]) expect(c.q.get("ids")).toBe("channel==MINE");
+      // X's own Shorts and nothing else, 200 to a query, up to the last day YouTube has reported
+      const read = ofX.filter((c) => c.query === "videos");
+      expect(read.map((c) => idsIn(c.q).length)).toEqual([200, 50]);
+      expect(new Set(read.flatMap((c) => idsIn(c.q)))).toEqual(new Set(onX.map((v) => v.youtube_id)));
+      expect(read.map((c) => [c.q.get("endDate"), c.q.get("sort"), c.q.get("maxResults")])).toEqual([["2036-06-13", "-views", "200"], ["2036-06-13", "-views", "200"]]);
+      expect(ofY.filter((c) => c.query === "videos").map((c) => idsIn(c.q))).toEqual([[onY.youtube_id]]);
+
+      const kept = new Map((await shortRows(a.user)).map((r) => [r.video_id, r]));
+      expect(kept.size).toBe(251);
+      expect(kept.get(onX[0].id)).toMatchObject({ channel_id: x, through: "2036-06-13", views: 100, engaged_views: 50, avg_view_seconds: 17, avg_view_percent: 64.5, revenue: null, fetched_at: now });
+      expect(kept.get(onY.id)).toMatchObject({ channel_id: y, through: "2036-06-12", views: 100, engaged_views: 50 });
+      for (const v of [nowhere, tooNew, unchecked]) expect(kept.has(v.id)).toBe(false);
+      // and the channel's own, read in full: revenue it can't read is unknown, never $0
+      expect(await channelRow(x)).toEqual({
+        through: "2036-06-13", problem: null, revenue_readable: false, revenue_90d: null, ad_revenue_90d: null, subscribers: null, subscribers_hidden: false,
+        shorts_engaged_90d: 9000, long_hours_365d: 100, audience: [{ age: "age18-24", gender: "female", percent: 60 }, { age: "age25-34", gender: "male", percent: 40 }],
+        tried_at: now, synced_at: now,
+      });
+    });
+
+    it("gives a Short its engaged share from the first reading that covers the day it went up and the day after, and keeps it", async () => {
+      const a = await someone();
+      // 10:30pm Pacific on June 10: its first two days are the 10th and the 11th
+      const [late] = await posted(a.user, a.channels[0], [pacific("2036-06-10", "22:30")]);
+      const reading = async (now: Date, through: string, views: number, engaged: number) => {
+        youtube({ [a.tokens[0]]: { through, videos: { [late.youtube_id]: { views, engaged } } } });
+        await run(now);
+        return (await shortRows(a.user)).map((r) => ({ through: r.through, views: r.views, share: r.first_share }));
+      };
+      // YouTube has only reported its first day: no share yet
+      expect(await reading(pacific("2036-06-12", "12:00"), "2036-06-10", 400, 100)).toEqual([{ through: "2036-06-10", views: 400, share: null }]);
+      // now both: engaged views over plays, as YouTube had counted them by then
+      const [both] = await reading(pacific("2036-06-13", "12:00"), "2036-06-11", 1000, 640);
+      expect(both).toMatchObject({ through: "2036-06-11", views: 1000 });
+      expect(both.share).toBeCloseTo(0.64, 5);
+      // later readings keep YouTube's latest totals, and the share it had
+      const [later] = await reading(pacific("2036-06-14", "12:00"), "2036-06-12", 3000, 900);
+      expect(later).toMatchObject({ through: "2036-06-12", views: 3000 });
+      expect(later.share).toBeCloseTo(0.64, 5);
+    });
+
+    it("gives no engaged share to a Short first read after its first week, as every Short already up was when Hookline started reading them", async () => {
+      const a = await someone();
+      const [x] = a.channels;
+      // one up 60 days before the last day YouTube has reported, and never read; one up 3 days before it
+      const [old, recent] = await posted(a.user, x, [pacific("2036-04-19", "12:00"), pacific("2036-06-15", "12:00")]);
+      youtube({ [a.tokens[0]]: { through: "2036-06-18", videos: { [old.youtube_id]: { views: 9000, engaged: 4000 }, [recent.youtube_id]: { views: 1000, engaged: 600 } } } });
+      await run(pacific("2036-06-20", "12:00"));
+      // both keep YouTube's totals, but only the one in its first week takes them as its share: the old one's are its whole life's
+      const kept = new Map((await shortRows(a.user)).map((r) => [r.video_id, r]));
+      expect(kept.get(old.id)).toMatchObject({ through: "2036-06-18", views: 9000, engaged_views: 4000, first_share: null });
+      expect(kept.get(recent.id)!.first_share).toBeCloseTo(0.6, 5);
+      // and nor does any reading after, so the channel's usual share only ever comes from first weeks
+      youtube({ [a.tokens[0]]: { through: "2036-06-19", videos: { [old.youtube_id]: { views: 9100, engaged: 4050 }, [recent.youtube_id]: { views: 1400, engaged: 700 } } } });
+      await run(pacific("2036-06-21", "12:00"));
+      const again = new Map((await shortRows(a.user)).map((r) => [r.video_id, r]));
+      expect(again.get(old.id)).toMatchObject({ views: 9100, first_share: null });
+      expect(again.get(recent.id)!.first_share).toBeCloseTo(0.6, 5);
+    });
+
+    it("says revenue can't be read when YouTube refuses it, never $0, and reads each Short's revenue only where YouTube estimates some", async () => {
+      const a = await someone([{}, {}, {}, { scopes: scopes.filter((s) => !s.includes("monetary")).join(" ") }]);
+      const [earns, refused, none, unasked] = a.channels;
+      const ss: { youtube_id: string }[] = [];
+      for (const c of a.channels) ss.push((await posted(a.user, c, [pacific("2036-06-01", "12:00")]))[0]);
+      const short = (i: number) => ({ [ss[i].youtube_id]: { views: 100, engaged: 60, revenue: 0.4213 } });
+      const calls = youtube({
+        [a.tokens[0]]: { through: "2036-06-18", revenue: { all: 12.34, ads: 10.5 }, videos: short(0) },
+        [a.tokens[1]]: { through: "2036-06-18", revenue: "refused", videos: short(1) },
+        [a.tokens[2]]: { through: "2036-06-18", revenue: { all: 0, ads: 0 }, videos: short(2) },
+        [a.tokens[3]]: { through: "2036-06-18", revenue: { all: 50, ads: 40 }, videos: short(3) },
+      });
+      await run(pacific("2036-06-20", "12:00"));
+      const money = async (id: string) => {
+        const r = await channelRow(id);
+        return [r.revenue_readable, r.revenue_90d, r.ad_revenue_90d];
+      };
+      expect(await money(earns)).toEqual([true, 12.34, 10.5]);
+      expect(await money(refused)).toEqual([false, null, null]);
+      expect(await money(none)).toEqual([true, 0, 0]);
+      // without the monetary scope it isn't asked at all
+      expect(await money(unasked)).toEqual([false, null, null]);
+      expect(asked(calls, a.tokens[3]).map((c) => c.query)).not.toContain("revenue");
+      // each Short's estimate is asked for, and kept, only on the channel YouTube estimates revenue for
+      expect(a.tokens.map((t) => asked(calls, t).filter((c) => c.query === "videos").map((c) => c.q.get("metrics")!.includes("estimatedRevenue")))).toEqual([[true], [false], [false], [false]]);
+      const kept = new Map((await shortRows(a.user)).map((r) => [r.channel_id, r.revenue]));
+      expect(a.channels.map((c) => kept.get(c))).toEqual([0.4213, null, null, null]);
+    });
+
+    it("asks Google nothing for a channel that didn't allow YouTube Analytics, and says access was lost when Google revoked it", async () => {
+      const a = await someone([{ scopes: scopes.slice(0, 2).join(" ") }, { expired: true }, { scopes: null }]);
+      const [unticked, revoked, unsaved] = a.channels;
+      const calls = youtube({
+        [a.tokens[1]]: { through: "2036-06-23" },
+        // its scopes weren't saved, so it's asked, and YouTube says no
+        [a.tokens[2]]: { through: "2036-06-23", fails: { query: "first", status: 403, reason: "forbidden" } },
+      }, { refresh: { [`refresh.${a.email}.1`]: new Response(JSON.stringify({ error: "invalid_grant", error_description: "Token has been expired or revoked." }), { status: 400 }) } });
+      await run(pacific("2036-06-25", "12:00"));
+      expect(await channelRow(unticked)).toMatchObject({ problem: "scope", synced_at: null });
+      expect(await channelRow(revoked)).toMatchObject({ problem: "access", synced_at: null });
+      expect(await channelRow(unsaved)).toMatchObject({ problem: "scope", synced_at: null });
+      // nothing at all was asked for the first, and the second got no further than its refresh
+      const refreshed = calls.filter((c) => c.url.startsWith("https://oauth2.googleapis.com/token")).map((c) => new URLSearchParams(String(c.init?.body)).get("refresh_token"));
+      expect(refreshed.filter((r) => r?.startsWith(`refresh.${a.email}.`))).toEqual([`refresh.${a.email}.1`]);
+      expect(a.tokens.map((t) => asked(calls, t).map((c) => c.query))).toEqual([[], [], ["first"]]);
+      // and the one Google revoked needs connecting again
+      expect(await db.admin((tx) => tx`select status from public.channels where id = ${revoked}`)).toEqual([{ status: "expired" }]);
+    });
+
+    it("stops at a limit, which is the whole app's, and next time reads that channel first and then the rest", async () => {
+      const a = await someone([{}, {}, {}]);
+      const [one, two, three] = a.channels;
+      const now = pacific("2036-07-01", "12:00");
+      let calls = youtube({
+        [a.tokens[0]]: { through: "2036-06-29" },
+        [a.tokens[1]]: { through: "2036-06-29", fails: { query: "viewers", status: 429, reason: "rateLimitExceeded" } },
+        [a.tokens[2]]: { through: "2036-06-29" },
+      });
+      await run(now);
+      expect(await channelRow(one)).toMatchObject({ problem: null, synced_at: now });
+      expect(await channelRow(two)).toMatchObject({ problem: "quota", tried_at: null, synced_at: null });
+      expect(await channelRow(three)).toBeUndefined();
+      expect(asked(calls, a.tokens[2])).toEqual([]);
+
+      // an hour later the one that met it goes first, then the one that waited; the one read an hour ago isn't due
+      calls = youtube(Object.fromEntries(a.tokens.map((t) => [t, { through: "2036-06-29" }])));
+      const later = new Date(now.getTime() + 3600_000);
+      await run(later);
+      const firsts = calls.filter((c) => c.url.startsWith("https://youtubeanalytics.googleapis.com/") && queryOf(c.url) === "first").map((c) => bearer(c.init));
+      expect(firsts.filter((t) => a.tokens.includes(t))).toEqual([a.tokens[1], a.tokens[2]]);
+      expect(await channelRow(two)).toMatchObject({ problem: null, synced_at: later });
+      expect(await channelRow(three)).toMatchObject({ problem: null, synced_at: later });
+    });
+
+    it("asks nothing more that day once YouTube says the Analytics allowance is used up, and reads again after the reset", async () => {
+      const a = await someone();
+      const now = pacific("2036-07-05", "12:00");
+      youtube({ [a.tokens[0]]: { through: "2036-07-03", fails: { query: "first", status: 403, reason: "quotaExceeded" } } });
+      await run(now);
+      expect(await channelRow(a.channels[0])).toMatchObject({ problem: "quota", tried_at: null });
+      // closed for the day, whatever Hookline counted: the next run waits without asking
+      const calls = youtube({ [a.tokens[0]]: { through: "2036-07-03" } });
+      await run(new Date(now.getTime() + 3600_000));
+      expect(asked(calls, a.tokens[0])).toEqual([]);
+      expect(await channelRow(a.channels[0])).toMatchObject({ problem: "quota", tried_at: null });
+      // after midnight Pacific it's a new day
+      const after = pacific("2036-07-06", "01:00");
+      await run(after);
+      expect(asked(calls, a.tokens[0]).map((c) => c.query)[0]).toBe("first");
+      expect(await channelRow(a.channels[0])).toMatchObject({ problem: null, synced_at: after });
+    });
+
+    it("never reads a channel twice when two runs go at once", async () => {
+      const a = await someone([{}, {}, {}]);
+      const calls = youtube(Object.fromEntries(a.tokens.map((t) => [t, { through: "2036-07-08" }])));
+      const now = pacific("2036-07-10", "12:00");
+      await Promise.all([run(now), run(now)]);
+      for (const t of a.tokens) expect(asked(calls, t).filter((c) => c.query === "first")).toHaveLength(1);
+      for (const c of a.channels) expect(await channelRow(c)).toMatchObject({ problem: null, synced_at: now });
+    });
+
+    it("keeps nothing from a read that fails part way, and the channel keeps what it had", async () => {
+      const a = await someone();
+      const [s] = await posted(a.user, a.channels[0], [pacific("2036-07-01", "12:00")]);
+      const first = pacific("2036-07-12", "12:00");
+      youtube({ [a.tokens[0]]: { through: "2036-07-10", videos: { [s.youtube_id]: { views: 500, engaged: 300 } }, viewers: [["age18-24", "male", 100]] } });
+      await run(first);
+      const before = { shorts: await shortRows(a.user), channel: await channelRow(a.channels[0]) };
+      expect(before.shorts.map((r) => r.views)).toEqual([500]);
+      // a day later its Shorts are read, then asking who's watching fails
+      youtube({ [a.tokens[0]]: { through: "2036-07-11", videos: { [s.youtube_id]: { views: 900, engaged: 400 } }, fails: { query: "viewers", status: 500 } } });
+      const next = days(first, 1);
+      await run(next);
+      expect(await shortRows(a.user)).toEqual(before.shorts);
+      expect(await channelRow(a.channels[0])).toEqual({ ...before.channel, problem: "error", tried_at: next });
+    });
+
+    it("deletes each Short's numbers 30 days after its own last read and a channel's 30 days after its last full read, before reading anything", async () => {
+      const a = await someone([{}, {}]);
+      const [gone, kept] = await posted(a.user, a.channels[0], [pacific("2036-05-01", "12:00"), pacific("2036-05-02", "12:00")]);
+      const now = pacific("2036-08-20", "12:00");
+      const anHourAgo = new Date(now.getTime() - 3600_000);
+      await db.admin(async (tx) => {
+        await tx`
+          insert into public.video_analytics (video_id, user_id, channel_id, through, views, engaged_views, first_share, fetched_at)
+          values (${gone.id}, ${a.user}, ${a.channels[0]}, '2036-07-19', 10, 5, 0.5, ${days(now, -31)}),
+            (${kept.id}, ${a.user}, ${a.channels[0]}, '2036-07-21', 10, 5, 0.5, ${days(now, -29)})`;
+        // both tried an hour ago, so neither is due: the first last read in full 31 days ago, the second 29
+        await tx`
+          insert into public.channel_analytics (channel_id, user_id, through, problem, revenue_readable, revenue_90d, ad_revenue_90d, subscribers,
+            shorts_engaged_90d, long_hours_365d, audience, tried_at, synced_at)
+          values (${a.channels[0]}, ${a.user}, '2036-07-19', 'error', true, 5, 4, 900, 1000, 12, '[{"age":"age18-24","gender":"male","percent":100}]', ${anHourAgo}, ${days(now, -31)}),
+            (${a.channels[1]}, ${a.user}, '2036-07-21', null, true, 5, 4, 900, 1000, 12, '[]', ${anHourAgo}, ${days(now, -29)})`;
+      });
+      // the run stops at its first channel, at YouTube's limit, and the lapsed numbers have gone all the same
+      const b = await someone();
+      youtube({ [b.tokens[0]]: { through: "2036-08-18", fails: { query: "first", status: 429 } } });
+      await run(now);
+      expect(await channelRow(b.channels[0])).toMatchObject({ problem: "quota", tried_at: null });
+      expect((await shortRows(a.user)).map((r) => r.video_id)).toEqual([kept.id]);
+      // the channel's figures go, and why it couldn't be read stays
+      expect(await channelRow(a.channels[0])).toEqual({
+        through: null, problem: "error", revenue_readable: null, revenue_90d: null, ad_revenue_90d: null, subscribers: null, subscribers_hidden: false,
+        shorts_engaged_90d: null, long_hours_365d: null, audience: null, tried_at: anHourAgo, synced_at: null,
+      });
+      expect(await channelRow(a.channels[1])).toMatchObject({ through: "2036-07-21", subscribers: 900, synced_at: days(now, -29) });
+    });
+
+    it("reads a Short over 90 days old again once 20 days have passed since its last read, and one from the last 90 days every time", async () => {
+      const a = await someone();
+      const now = pacific("2036-09-10", "12:00");
+      const [due, notYet, recent] = await posted(a.user, a.channels[0], [days(now, -120), days(now, -121), days(now, -30)]);
+      await db.admin((tx) => tx`
+        insert into public.video_analytics (video_id, user_id, channel_id, through, views, engaged_views, fetched_at)
+        values (${due.id}, ${a.user}, ${a.channels[0]}, '2036-08-20', 10, 5, ${days(now, -20)}), (${notYet.id}, ${a.user}, ${a.channels[0]}, '2036-08-21', 10, 5, ${days(now, -19)}),
+          (${recent.id}, ${a.user}, ${a.channels[0]}, '2036-09-08', 10, 5, ${days(now, -1)})`);
+      const calls = youtube({ [a.tokens[0]]: { through: "2036-09-08", videos: Object.fromEntries([due, notYet, recent].map((v) => [v.youtube_id, { views: 99, engaged: 50 }])) } });
+      await run(now);
+      expect(asked(calls, a.tokens[0]).filter((c) => c.query === "videos").flatMap((c) => idsIn(c.q))).toEqual([due.youtube_id, recent.youtube_id]);
+      const kept = new Map((await shortRows(a.user)).map((r) => [r.video_id, r.fetched_at]));
+      expect([kept.get(due.id), kept.get(notYet.id), kept.get(recent.id)]).toEqual([now, days(now, -19), now]);
+    });
+
+    it("reads 50 channels' subscribers in one Data API call with the API key, and takes a hidden count as unknown", async () => {
+      const a = await someone(Array.from({ length: 51 }, () => ({})));
+      const subscribers = Object.fromEntries(a.externals.map((x, i): [string, number | "hidden"] => [x, i === 3 ? "hidden" : 1000 + i]));
+      const calls = youtube(Object.fromEntries(a.tokens.map((t) => [t, { through: null }])), { subscribers });
+      await run(pacific("2036-09-20", "12:00"));
+      const lists = calls.filter((c) => new URL(c.url).pathname === "/youtube/v3/channels").map((c) => new URL(c.url).searchParams);
+      expect(lists[0].get("id")!.split(",")).toEqual(a.externals.slice(0, 50));
+      expect(lists.filter((q) => q.get("id")!.split(",").some((id) => a.externals.includes(id)))).toHaveLength(2);
+      for (const q of lists) expect([q.get("part"), q.get("key")]).toEqual(["statistics", "test-key"]);
+      // YouTube reported no views on them in 90 days, so their subscribers are all that's kept
+      const kept = await Promise.all(a.channels.map(async (c) => {
+        const r = await channelRow(c);
+        return [r.subscribers, r.subscribers_hidden, r.through, r.problem];
+      }));
+      expect([kept[0], kept[3], kept[50]]).toEqual([[1000, false, null, null], [null, true, null, null], [1050, false, null, null]]);
+    });
+
+    it("lets only the owner read a channel's and its Shorts' numbers, and nobody signed in write them", async () => {
+      const a = await someone();
+      const b = await someone();
+      const [s] = await posted(a.user, a.channels[0], [pacific("2036-09-01", "12:00")]);
+      youtube({ [a.tokens[0]]: { through: "2036-09-28", videos: { [s.youtube_id]: { views: 10, engaged: 6 } } }, [b.tokens[0]]: { through: null } });
+      await run(pacific("2036-09-30", "12:00"));
+      const seen = (user: string) => db.asUser(user, async (tx) => [
+        (await tx`select video_id from public.video_analytics`).length,
+        (await tx<{ channel_id: string }[]>`select channel_id from public.channel_analytics`).map((r) => r.channel_id),
+      ]);
+      expect(await seen(a.user)).toEqual([1, [a.channels[0]]]);
+      expect(await seen(b.user)).toEqual([0, [b.channels[0]]]);
+      const refused: ((tx: import("@/lib/server/db").Tx) => Promise<unknown>)[] = [
+        (tx) => tx`insert into public.video_analytics (video_id, user_id, channel_id, through, views, engaged_views) values (${s.id}, ${a.user}, ${a.channels[0]}, '2036-09-01', 1, 1)`,
+        (tx) => tx`update public.video_analytics set views = 0`,
+        (tx) => tx`delete from public.video_analytics`,
+        (tx) => tx`insert into public.channel_analytics (channel_id, user_id) values (${a.channels[0]}, ${a.user})`,
+        (tx) => tx`update public.channel_analytics set problem = null, synced_at = now()`,
+        (tx) => tx`delete from public.channel_analytics`,
+      ];
+      for (const q of refused) await expect(db.asUser(a.user, q)).rejects.toThrow(/permission denied/);
+      expect((await shortRows(a.user)).map((r) => r.views)).toEqual([10]);
+    });
+
+    it("deletes a channel's numbers the moment it's disconnected, keeps a lost one's until they lapse, and deletes everything with the account", async () => {
+      const a = await someone([{}, {}]);
+      const [x, y] = a.channels;
+      const [sx] = await posted(a.user, x, [pacific("2036-10-01", "12:00")]);
+      const [sy] = await posted(a.user, y, [pacific("2036-10-01", "13:00")]);
+      youtube({
+        [a.tokens[0]]: { through: "2036-10-08", videos: { [sx.youtube_id]: { views: 10, engaged: 6 } } },
+        [a.tokens[1]]: { through: "2036-10-08", videos: { [sy.youtube_id]: { views: 20, engaged: 9 } } },
+      });
+      await run(pacific("2036-10-10", "12:00"));
+      expect((await shortRows(a.user)).map((r) => r.channel_id).sort()).toEqual([x, y].sort());
+      // Google no longer letting Hookline in keeps them, until they lapse
+      await store.markExpired(y);
+      expect(await channelRow(y)).toMatchObject({ through: "2036-10-08" });
+      // disconnecting deletes them at once, the Shorts' and the channel's own
+      expect(await channels.disconnectChannel(a.user, x)).toEqual({ platform: "youtube", cleared: 0 });
+      expect((await shortRows(a.user)).map((r) => r.channel_id)).toEqual([y]);
+      expect(await channelRow(x)).toBeUndefined();
+      expect(await channelRow(y)).toMatchObject({ through: "2036-10-08" });
+      // and deleting the account deletes the rest
+      await db.admin((tx) => tx`delete from auth.users where id = ${a.user}`);
+      expect(await db.admin((tx) => tx`
+        select (select count(*) from public.video_analytics where user_id = ${a.user})::int as shorts,
+          (select count(*) from public.channel_analytics where user_id = ${a.user})::int as channels`)).toEqual([{ shorts: 0, channels: 0 }]);
+    });
+
+    it("gives the owner each YouTube channel's numbers and made-for-kids answers, and says which one needs connecting again", async () => {
+      const a = await someone([{}, {}]);
+      const [x, y] = a.channels;
+      const now = pacific("2036-10-20", "12:00");
+      // YouTube had X as made for kids when it was connected; Y has stopped letting Hookline in, so it isn't read
+      await db.admin((tx) => tx`update public.channels set youtube_kids = true where id = ${x}`);
+      await store.markExpired(y);
+      const vs = await posted(a.user, x, [days(now, -40), days(now, -30), days(now, -20), days(now, -10), days(now, -100)]);
+      // their answers: not made for kids, made for kids (YouTube agreeing), and one with no answer saved
+      await db.admin(async (tx) => {
+        await tx`update public.videos set made_for_kids = false where id in ${tx([vs[0].id, vs[1].id, vs[4].id])}`;
+        await tx`update public.videos set made_for_kids = true, youtube_kids = true where id = ${vs[2].id}`;
+      });
+      youtube({ [a.tokens[0]]: {
+        through: "2036-10-18", revenue: { all: 25, ads: 20 },
+        viewers: [["age18-24", "female", 30], ["age18-24", "male", 41], ["age35-44", "male", 29]], split: { shorts: 9000, long: 400, minutes: 6000 },
+      } }, { subscribers: { [a.externals[0]]: 1200 } });
+      await run(now);
+      const p = await proof.proofOf(a.user, now);
+      expect(p.map((c) => [c.id, c.title, c.status])).toEqual([[x, a.titles[0], "connected"], [y, a.titles[1], "expired"]]);
+      expect(p[0]).toMatchObject({
+        problem: null, syncedAt: now, through: "2036-10-18", revenueReadable: true, earns: true, sharesAds: true,
+        numbers: { subscribers: 1200, uploads90: 4, shortsViews90: 9000, longHours365: 100 }, split: true, subscribersHidden: false,
+        kids: { answer: false, youtubeAtConnect: true, no: 3, yes: 1, unknown: 1, youtubeMarked: 1 },
+      });
+      expect(p[0].audience?.largest).toEqual({ id: "age18-24", label: "18 to 24", percent: 71 });
+      expect(p[1]).toMatchObject({
+        problem: null, syncedAt: null, through: null, revenueReadable: null, earns: false, split: false, audience: null,
+        numbers: { subscribers: null, uploads90: 0, shortsViews90: null, longHours365: null },
+      });
+      // nobody else's
+      const b = await someone([]);
+      expect(await proof.proofOf(b.user, now)).toEqual([]);
+    });
+
+    it("tells /admin how many channels were read in the last day and how many can't be and why, and nothing more", async () => {
+      const now = pacific("2036-11-01", "12:00");
+      // every account's channels are counted, so these are what this test's add to what was there
+      const before = await proof.analyticsHealth(now);
+      const a = await someone([{}, {}, {}, {}, {}, {}, {}, {}]);
+      // read this morning, read a week ago, not allowed, access lost, met a limit, and failing since a read three days ago
+      const tries: [string, string | null, Date | null][] = [
+        [a.channels[0], null, days(now, -0.25)], [a.channels[1], null, days(now, -7)], [a.channels[2], "scope", null],
+        [a.channels[3], "access", null], [a.channels[4], "quota", null], [a.channels[5], "error", days(now, -3)],
+      ];
+      for (const [id, problem, synced] of tries) {
+        await db.admin((tx) => tx`insert into public.channel_analytics (channel_id, user_id, problem, tried_at, synced_at) values (${id}, ${a.user}, ${problem}, ${now}, ${synced})`);
+      }
+      // two that weren't allowed or lost access, and have been connected again since, which Earnings no longer says either
+      for (const [id, problem] of [[a.channels[6], "scope"], [a.channels[7], "access"]]) {
+        await db.admin((tx) => tx`insert into public.channel_analytics (channel_id, user_id, problem, tried_at) values (${id}, ${a.user}, ${problem}, ${new Date("2000-06-01T00:00:00Z")})`);
+      }
+      // and one Google has stopped letting Hookline into, which needs connecting again
+      const b = await someone();
+      await store.markExpired(b.channels[0]);
+      const after = await proof.analyticsHealth(now);
+      expect(Object.fromEntries(Object.entries(after).map(([k, n]) => [k, n - before[k as keyof typeof before]]))).toEqual({ channels: 9, read: 1, scope: 1, access: 2, failing: 2 });
+      expect((await proof.proofOf(a.user, now)).slice(6).map((c) => c.problem)).toEqual([null, null]);
+    });
+
+    it("counts a first day read the way Hookline always has as already learned, on plays", async () => {
+      const a = await someone();
+      const [s] = await posted(a.user, a.channels[0], [pacific("2036-10-01", "12:00")]);
+      await db.admin((tx) => tx`insert into public.video_stats (video_id, checkpoint, views, fetched_at) values (${s.id}, '24h', 500, ${pacific("2036-10-02", "12:00")})`);
+      const [r] = await db.admin((tx) => tx<{ learned_at: Date | null; learned_on: string | null }[]>`select learned_at, learned_on from public.video_stats where video_id = ${s.id}`);
+      expect(r.learned_at).toBeInstanceOf(Date);
+      expect(r.learned_on).toBe("plays");
+      await expect(db.admin((tx) => tx`update public.video_stats set learned_on = 'views' where video_id = ${s.id}`)).rejects.toThrow(/check/);
+    });
+
+    it("syncs Earnings' views, subscribers and revenue whichever of revenue and engaged views YouTube refuses, and shows engaged views where it gives them", async () => {
+      const a = await someone([{}, {}, {}, {}]);
+      const [p, q, r, s] = a.channels;
+      const ago = (n: number) => new Date(Date.now() - n * 86400_000).toISOString().slice(0, 10);
+      const values: Record<string, number> = { views: 100, engagedViews: 60, subscribersGained: 2, estimatedRevenue: 1.5 };
+      const calls = stubFetch((u, init) => {
+        const i = a.tokens.indexOf(bearer(init));
+        if (!u.startsWith("https://youtubeanalytics.googleapis.com/") || i < 0) return new Response("{}", { status: 500 });
+        const metrics = new URL(u).searchParams.get("metrics")!.split(",");
+        const engaged = metrics.includes("engagedViews"), revenue = metrics.includes("estimatedRevenue");
+        // P can't be asked for engaged views and Q isn't in the Partner Program; R and S neither, refused in each order
+        if (i === 0 && engaged) return refusal(400, "badRequest");
+        if (i === 1 && revenue) return refusal(403, "forbidden");
+        if (i === 2 && (revenue || engaged)) return revenue ? refusal(403, "forbidden") : refusal(400, "badRequest");
+        if (i === 3 && (revenue || engaged)) return engaged ? refusal(400, "badRequest") : refusal(403, "forbidden");
+        return { columnHeaders: ["day", ...metrics].map((name) => ({ name })), rows: [ago(5), ago(4)].map((day, k) => [day, ...metrics.map((m) => values[m] * (k + 1))]) };
+      });
+      await earn.syncEarnings(pacific("2036-06-15", "12:00"));
+      // each refusal takes out only what it was about, so it costs one more call at most
+      expect(a.tokens.map((t) => calls.filter((c) => bearer(c.init) === t).length)).toEqual([2, 2, 3, 3]);
+      const kept = await db.admin((tx) => tx<{ channel_id: string; metric: string; total: number }[]>`
+        select channel_id, metric, sum(value)::float8 as total from public.metrics where user_id = ${a.user} group by 1, 2 order by 1, 2`);
+      const of = (c: string) => kept.filter((k) => k.channel_id === c).map((k) => [k.metric, k.total]);
+      expect(of(p)).toEqual([["revenue", 4.5], ["subscribers", 6], ["views", 300]]);
+      expect(of(q)).toEqual([["engaged_views", 180], ["subscribers", 6], ["views", 300]]);
+      expect(of(r)).toEqual([["subscribers", 6], ["views", 300]]);
+      expect(of(s)).toEqual([["subscribers", 6], ["views", 300]]);
+
+      const shown = await earn.earningsOf(a.user, 30);
+      expect(shown.series.map((x) => x.id)).toEqual(["youtube:views", "youtube:engaged_views", "youtube:subscribers", "youtube:revenue"]);
+      const engagedViews = shown.series.find((x) => x.id === "youtube:engaged_views")!;
+      expect(engagedViews).toMatchObject({ label: "Engaged views on YouTube", unit: "count", total: 180, through: ago(4) });
+      expect(engagedViews.note).toBe("What YouTube counts for the Partner Program. A Shorts view counts every play. These leave out the ones swiped past");
+      // which only Q's are in, so the total names the channels it can't count, in the order they were added
+      expect(engagedViews.leftOut).toEqual([a.titles[0], a.titles[2], a.titles[3]]);
+      expect(shown.series.find((x) => x.id === "youtube:views")?.total).toBe(1200);
+      // one channel's own carries its name and leaves nothing out, and one without them has none
+      const mine = (await earn.earningsOf(a.user, 30, q)).series.find((x) => x.id === "youtube:engaged_views")!;
+      expect([mine.label, mine.total, mine.leftOut]).toEqual([`Engaged views on ${a.titles[1]}`, 180, undefined]);
+      expect((await earn.earningsOf(a.user, 30, p)).series.map((x) => x.id)).not.toContain("youtube:engaged_views");
+      // a goal on them counts YouTube's engaged views where it has given them, and the page says which channels that leaves out
+      await db.asUser(a.user, (tx) => tx`
+        insert into public.goals (user_id, source, metric, target, period, label) values (${a.user}, 'youtube', 'engaged_views', 1000, 'all', '1,000 engaged views on YouTube in all')`);
+      expect((await earn.earningsOf(a.user, 30)).goals[0]).toMatchObject({ progress: 180, unit: "count" });
+      // once YouTube gives every channel's, nothing is left out
+      await db.admin((tx) => tx`
+        insert into public.metrics (user_id, channel_id, source, metric, day, value)
+        select ${a.user}, c, 'youtube', 'engaged_views', ${ago(4)}::date, 10 from unnest(${[p, r, s]}::uuid[]) as c`);
+      expect((await earn.earningsOf(a.user, 30)).series.find((x) => x.id === "youtube:engaged_views")?.leftOut).toBeUndefined();
+    });
+
+    const DAY = 86400_000;
+    /** YouTube Analytics' totals for a Short as syncAnalytics keeps them, read at `at`: 1,000 plays, and its first day's engaged share. */
+    const engaged = (user: string, channel: string, id: string, share: number, at: Date, plays = 1000) => db.admin((tx) => tx`
+      insert into public.video_analytics (video_id, user_id, channel_id, through, views, engaged_views, first_share, fetched_at)
+      values (${id}, ${user}, ${channel}, ${at.toISOString().slice(0, 10)}, ${plays}, ${Math.round(plays * share)}, ${share}, ${at})`);
+    /**
+     * Their Shorts from `at`, a minute apart, each with its first day read on
+     * time the way code from before learnDue wrote it, and so counted as
+     * learned; and where one's given, its share of engaged views.
+     */
+    const usual = async (user: string, channel: string | null, at: Date, plays: number[], shares: number[] = []) => {
+      const when = plays.map((_, i) => new Date(at.getTime() + i * 60_000));
+      const vs = await posted(user, channel, when);
+      for (const [i, v] of vs.entries()) {
+        await db.admin((tx) => tx`insert into public.video_stats (video_id, checkpoint, views, fetched_at) values (${v.id}, '24h', ${plays[i]}, ${new Date(when[i].getTime() + DAY)})`);
+        if (channel && shares[i] !== undefined) await engaged(user, channel, v.id, shares[i], new Date(when[i].getTime() + 3 * DAY));
+      }
+      return vs;
+    };
+    /** A Short posted at `at` whose first day collectStats has read on time and not learned yet. */
+    const readNotLearned = async (user: string, channel: string | null, at: Date, plays = 400) => {
+      const [v] = await posted(user, channel, [at]);
+      await db.admin((tx) => tx`
+        insert into public.video_stats (video_id, checkpoint, views, fetched_at, learned_at, learned_on) values (${v.id}, '24h', ${plays}, ${new Date(at.getTime() + DAY)}, null, null)`);
+      return v;
+    };
+    /** When each first day was learned, and by what. */
+    const learning = async (ids: string[]) => new Map((await db.admin((tx) => tx<{ video_id: string; learned_at: Date | null; learned_on: string | null }[]>`
+      select video_id, learned_at, learned_on from public.video_stats where checkpoint = '24h' and video_id = any(${ids}::uuid[])`)).map((r) => [r.video_id, { at: r.learned_at, on: r.learned_on }]));
+    /** What an account has learned about its quizzes, and about them on one channel. */
+    const quizzes = async (user: string) => (await db.admin((tx) => tx<{ score: number; samples: number }[]>`
+      select score, samples from public.weights where user_id = ${user} and kind = 'format' and name = 'quiz'`))[0];
+    const quizzesOn = async (channel: string) => (await db.admin((tx) => tx<{ samples: number }[]>`
+      select samples from public.channel_weights where channel_id = ${channel} and kind = 'format' and name = 'quiz'`))[0];
+    const results = (user: string) => db.admin((tx) => tx<{ title: string; body: string; href: string }[]>`
+      select title, body, href from public.notifications where user_id = ${user} and kind = 'results' order by created_at`);
+    /** YouTube's play counts by YouTube id, for collectStats' readings with the API key. Anything else fails. */
+    const playCounts = (counts: Record<string, number>) => stubFetch((u) => {
+      const url = new URL(u);
+      if (url.pathname !== "/youtube/v3/videos") return new Response("{}", { status: 500 });
+      const ids = (url.searchParams.get("id") ?? "").split(",").filter((id) => counts[id] !== undefined);
+      return { items: ids.map((id) => ({ id, statistics: { viewCount: String(counts[id]) } })) };
+    });
+
+    it("waits for a first day's engaged share, then learns from it once, by engaged views, and says so", async () => {
+      const { at24h, firstDayLift } = await import("@/lib/shorts/learn");
+      const a = await someone();
+      const [x] = a.channels;
+      // X's usual first day: 100 plays, half of them engaged
+      await usual(a.user, x, pacific("2036-04-01", "10:00"), [100, 100, 100], [0.5, 0.5, 0.5]);
+      // a Short that goes up on the 10th, read at 24 hours: 300 plays, and no share yet
+      const at = pacific("2036-04-10", "10:00");
+      const [s] = await posted(a.user, x, [at]);
+      const read = new Date(at.getTime() + DAY + 5 * 60_000);
+      playCounts({ [s.youtube_id]: 300 });
+      await stats.collectStats(read);
+      expect((await learning([s.id])).get(s.id)).toEqual({ at: null, on: null });
+      expect(await quizzes(a.user)).toBeUndefined();
+      // three days on, YouTube Analytics has its first two days: 800 of the 1,000 plays it had by then were engaged
+      youtube({ [a.tokens[0]]: { through: "2036-04-11", videos: { [s.youtube_id]: { views: 1000, engaged: 800 } } } });
+      await run(days(at, 3));
+      // and the next run learns it, against X's usual first day by engaged views
+      const next = new Date(days(at, 3).getTime() + 15 * 60_000);
+      playCounts({ [s.youtube_id]: 900 });
+      await stats.collectStats(next);
+      expect((await learning([s.id])).get(s.id)).toEqual({ at: next, on: "engaged" });
+      const l = firstDayLift(at24h(300, (read.getTime() - at.getTime()) / 3600_000), 0.8, 100, 0.5).lift;
+      expect((await quizzes(a.user)).score).toBeCloseTo(l, 4);
+      expect(await quizzesOn(x)).toEqual({ samples: 1 });
+      expect(await results(a.user)).toEqual([{
+        title: `${l.toFixed(1)}× your usual first day`,
+        body: "Quiz 1 beat your usual Short in its first day, by engaged views. Hookline will make more like it.",
+        href: `/app/shorts/${s.id}`,
+      }]);
+      // only once, however often collectStats runs after
+      await stats.collectStats(days(next, 1));
+      expect(await quizzes(a.user)).toMatchObject({ samples: 1 });
+      expect(await results(a.user)).toHaveLength(1);
+    });
+
+    it("learns by plays when no share is coming: after 6 days, and at once with no channel, or one that isn't connected, can't be read or keeps failing", async () => {
+      const a = await someone(Array.from({ length: 7 }, () => ({})));
+      const [read, blip, failing, unticked, refused, expired, gone] = a.channels;
+      const now = pacific("2036-04-20", "12:00");
+      for (const c of [...a.channels, null]) await usual(a.user, c, days(now, -30), [100, 100, 100]);
+      // YouTube Analytics, each tried an hour ago: read in full; failing for a day; failing since a full read 3 days ago;
+      // not allowed; access lost
+      const hour = days(now, -1 / 24);
+      const tries: [string, string | null, Date | null][] = [[read, null, hour], [blip, "error", days(now, -1)], [failing, "error", days(now, -3)], [unticked, "scope", null], [refused, "access", days(now, -1)]];
+      for (const [c, problem, synced] of tries) {
+        await db.admin((tx) => tx`insert into public.channel_analytics (channel_id, user_id, problem, tried_at, synced_at) values (${c}, ${a.user}, ${problem}, ${hour}, ${synced})`);
+      }
+      // first days read and not learned yet, none with a share: one on X a week old, and one two days old on each channel and on none
+      const old = await readNotLearned(a.user, read, days(now, -7));
+      const on: { id: string }[] = [];
+      for (const c of [...a.channels, null]) on.push(await readNotLearned(a.user, c, days(now, -2)));
+      // and two channels Hookline can't read any more: Google stopped letting it in, and the creator disconnected one
+      await store.markExpired(expired);
+      await channels.disconnectChannel(a.user, gone);
+      await stats.learnDue(now);
+      const got = await learning([old, ...on].map((v) => v.id));
+      const by = (v: { id: string }) => got.get(v.id)!.on;
+      // still waiting: the two days old on the channel read an hour ago, and on the one failing for only a day
+      expect([on[0], on[1]].map((v) => got.get(v.id))).toEqual([{ at: null, on: null }, { at: null, on: null }]);
+      // learned by plays: a week old, and on every channel a share can't come from, or with none
+      expect([old, ...on.slice(2)].map(by)).toEqual(Array(7).fill("plays"));
+      expect(await quizzes(a.user)).toMatchObject({ samples: 7 });
+    });
+
+    it("learns on a run with nothing to read, learns each first day once however many runs go at once, and an account's first days one at a time", async () => {
+      const a = await someone([{}, {}]);
+      const [x, y] = a.channels;
+      const now = pacific("2036-04-28", "12:00");
+      await usual(a.user, x, days(now, -30), [100, 100, 100], [0.5, 0.5, 0.5]);
+      // two first days on X whose shares are in, and too old for any reading to be due: three quarters of 200 plays engaged
+      const s = await readNotLearned(a.user, x, days(now, -5.5), 200);
+      const t = await readNotLearned(a.user, x, days(now, -5.4), 200);
+      for (const v of [s, t]) await engaged(a.user, x, v.id, 0.75, days(now, -1));
+      const calls = stubFetch(() => new Response("{}", { status: 500 }));
+      const logs = (await Promise.all([stats.collectStats(now), stats.collectStats(now)])).flat();
+      // nothing was read, and between them the two runs learned each first day once
+      expect(calls).toEqual([]);
+      for (const v of [s, t]) expect(logs.filter((line) => line.startsWith(v.id))).toEqual([`${v.id}: first day learned, by engaged views`]);
+      expect(await quizzes(a.user)).toMatchObject({ samples: 2 });
+      expect(await quizzesOn(x)).toEqual({ samples: 2 });
+      expect((await results(a.user)).map((n) => n.href).sort()).toEqual([s, t].map((v) => `/app/shorts/${v.id}`).sort());
+
+      // two of an account's first days learned at the same moment take turns, so both count; with two channels, the note
+      // says whose usual it beat
+      await usual(a.user, y, days(now, -30), [100, 100, 100], [0.5, 0.5, 0.5]);
+      const [u, w] = await posted(a.user, y, [days(now, -2), days(now, -2)]);
+      await Promise.all([u, w].map((v) => stats.learn(a.user, v.id, "quiz", "quiz:capitals", 300, 24, y, 0.8)));
+      expect(await quizzes(a.user)).toMatchObject({ samples: 4 });
+      expect(await quizzesOn(y)).toEqual({ samples: 2 });
+      expect((await results(a.user)).find((n) => n.href === `/app/shorts/${u.id}`)?.body)
+        .toBe(`Quiz 1 beat ${a.titles[1]}'s usual Short in its first day, by engaged views. Hookline will make more like it there.`);
+    });
+
+    it("never learns again a first day read before this, or one that code from before it writes during a deploy", async () => {
+      const a = await someone();
+      const [x] = a.channels;
+      const now = pacific("2036-05-06", "12:00");
+      // read the way Hookline always read them, and their shares in since, as a waiting one's would be
+      const vs = await usual(a.user, x, days(now, -3), [100, 400, 900], [0.5, 0.6, 0.9]);
+      const log = await stats.learnDue(now);
+      expect(log.filter((line) => vs.some((v) => line.startsWith(v.id)))).toEqual([]);
+      expect(await quizzes(a.user)).toBeUndefined();
+      expect(await results(a.user)).toEqual([]);
+      expect([...(await learning(vs.map((v) => v.id))).values()].map((r) => r.on)).toEqual(["plays", "plays", "plays"]);
+    });
+
+    it("compares the library's first days by engaged views where YouTube gave a share and by plays where it hasn't, and says how What's working's went", async () => {
+      const lib = await import("@/lib/server/shorts/library");
+      const { hourResults } = await import("@/lib/server/shorts/hours");
+      const { lift, usualShare } = await import("@/lib/shorts/learn");
+      const { measureLine } = await import("@/lib/shorts/insights");
+      const a = await someone();
+      const [x] = a.channels;
+      const now = pacific("2036-05-12", "12:00");
+      // three first days with their shares, then two of 400 plays: one learned by engaged views, one waiting for its share
+      await usual(a.user, x, days(now, -20), [100, 200, 300], [0.5, 0.6, 0.7]);
+      const [e, p] = await posted(a.user, x, [days(now, -4), days(now, -2)]);
+      await db.admin((tx) => tx`
+        insert into public.video_stats (video_id, checkpoint, views, fetched_at, learned_at, learned_on)
+        values (${e.id}, '24h', 400, ${days(now, -3)}, ${days(now, -1)}, 'engaged'), (${p.id}, '24h', 400, ${days(now, -1)}, null, null)`);
+      await engaged(a.user, x, e.id, 0.9, days(now, -1), 2000);
+      // who watches X, read in full today, and YouTube estimating revenue for it
+      const viewers = [{ age: "age18-24", gender: "female", percent: 35 }, { age: "age18-24", gender: "male", percent: 25 }, { age: "age25-34", gender: "male", percent: 40 }];
+      await db.admin((tx) => tx`
+        insert into public.channel_analytics (channel_id, user_id, through, revenue_readable, revenue_90d, ad_revenue_90d, audience, tried_at, synced_at)
+        values (${x}, ${a.user}, '2036-05-10', true, 3.5, 3, ${tx.json(viewers)}, ${now}, ${now})`);
+
+      // the library's usual is the middle of the five first days, 300 plays, with the middle of the four shares
+      const items = new Map((await lib.libraryOf(a.user)).items.map((i) => [i.id, i]));
+      expect(items.get(e.id)).toMatchObject({ vsBy: "engaged", vsEstimated: false, analytics: { plays: 2000, engaged: 1800, through: days(now, -1).toISOString().slice(0, 10) } });
+      expect(items.get(e.id)!.vsUsual).toBeCloseTo(lift(400 * 0.9, 300 * usualShare([0.5, 0.6, 0.7, 0.9])!), 5);
+      expect(items.get(p.id)).toMatchObject({ vsBy: "plays", analytics: null });
+      expect(items.get(p.id)!.vsUsual).toBeCloseTo(lift(400, 300), 6);
+
+      // a Short's page leaves it out of its usual: 250 plays, and the middle of the three other shares
+      const page = (await lib.shortOf(a.user, e.id, now))!;
+      expect(page).toMatchObject({
+        typical: 250, learnedOn: "engaged", waiting: false, analytics: { plays: 2000, engaged: 1800, avgSeconds: null, avgPercent: null, revenue: null },
+        channel: { id: x, title: a.titles[0], status: "connected", problem: null, earns: true, largest: { age: "18 to 24", percent: 60 } },
+      });
+      expect(page.usualShare).toBeCloseTo(0.6, 5);
+      expect(page.firstShare).toBeCloseTo(0.9, 5);
+      // the one waiting for its share says so, until one can't come any more
+      expect(await lib.shortOf(a.user, p.id, now)).toMatchObject({ typical: 250, learnedOn: null, waiting: true, firstShare: null, analytics: null });
+      expect(await lib.shortOf(a.user, p.id, days(now, 5))).toMatchObject({ waiting: false });
+
+      // What's working: one first day compared by engaged views, and the three read before this by plays
+      const learned = await lib.insightsFor(a.user, x);
+      expect(learned).toMatchObject({ typical: 300, measure: { engaged: 1, plays: 3 } });
+      expect(measureLine(learned.measure)).toBe("Compared by engaged views where YouTube has reported them, and by plays before that. The comparisons are Hookline's.");
+      expect((await lib.insightsFor(a.user)).measure).toEqual({ engaged: 1, plays: 3 });
+      // and the hours Shorts post at, and Trends' best times, still go by plays at 24 hours
+      const hours = await db.asUser(a.user, (tx) => hourResults(tx, "UTC", x));
+      expect(hours.map((h) => h.lift).sort((m, n) => m - n)).toEqual([100, 200, 300, 400, 400].map((v) => lift(v, 300)));
+      const best = await trends.postingTimes(a.user);
+      expect(best.posts).toBe(5);
+      // the two of 400 plays went up on days of their own, two days apart: each square is theirs alone
+      expect(best.map.cells.flat().filter((c) => c !== null && Math.abs(c - lift(400, 300)) < 1e-9)).toHaveLength(2);
+    });
+
+    it("reads a channel again at the next run once it's connected again after a try that couldn't read it, and stops saying why it couldn't", async () => {
+      const lib = await import("@/lib/server/shorts/library");
+      // one that didn't allow YouTube Analytics, and one Hookline lost access to an hour ago
+      const a = await someone([{ scopes: scopes.slice(0, 2).join(" ") }, {}]);
+      const [unticked, lost] = a.channels;
+      const now = pacific("2036-11-05", "12:00");
+      await db.admin((tx) => tx`insert into public.channel_analytics (channel_id, user_id, problem, tried_at) values (${lost}, ${a.user}, 'access', ${days(now, -1 / 24)})`);
+      // a first day on each, read at 24 hours and not learned yet
+      const u = await readNotLearned(a.user, unticked, days(now, -2));
+      const l = await readNotLearned(a.user, lost, days(now, -2));
+      youtube({});
+      await run(now);
+      const problems = async (at: Date) => (await proof.proofOf(a.user, at)).map((c) => c.problem);
+      const page = async (v: { id: string }, at: Date) => {
+        const d = (await lib.shortOf(a.user, v.id, at))!;
+        return { problem: d.channel?.problem, waiting: d.waiting };
+      };
+      expect(await problems(now)).toEqual(["scope", "access"]);
+      // their first days can't wait for engaged shares that can't come
+      expect(await page(u, now)).toEqual({ problem: "scope", waiting: false });
+      expect(await page(l, now)).toEqual({ problem: "access", waiting: false });
+
+      // half an hour later both are connected again, the first allowing YouTube Analytics this time: neither is called
+      // unreadable any more, and their first days wait for their shares again
+      await db.admin(async (tx) => {
+        await tx`update public.channels set connected_at = ${new Date(now.getTime() + 30 * 60_000)} where id in ${tx([unticked, lost])}`;
+        await tx`update public.channel_tokens set scopes = ${scopes.join(" ")} where channel_id = ${unticked}`;
+      });
+      const later = new Date(now.getTime() + 3600_000);
+      expect(await problems(later)).toEqual([null, null]);
+      expect(await page(u, later)).toEqual({ problem: null, waiting: true });
+      expect(await page(l, later)).toEqual({ problem: null, waiting: true });
+
+      // the next run reads both, though each was tried within the day, and the run after that reads neither
+      let calls = youtube(Object.fromEntries(a.tokens.map((t) => [t, { through: "2036-11-03" }])));
+      await run(later);
+      for (const t of a.tokens) expect(asked(calls, t).map((c) => c.query)[0]).toBe("first");
+      for (const c of a.channels) expect(await channelRow(c)).toMatchObject({ problem: null, tried_at: later, synced_at: later });
+      calls = youtube(Object.fromEntries(a.tokens.map((t) => [t, { through: "2036-11-03" }])));
+      await run(new Date(later.getTime() + 3600_000));
+      for (const t of a.tokens) expect(asked(calls, t)).toEqual([]);
+    });
+
+    it("gives /admin the typical account from Hookline's own records: each week's middle account, only Shorts YouTube confirmed, and Not yet for weeks under 4 weeks old", async () => {
+      const { cohorts } = await import("@/lib/server/cohorts");
+      const { cohortView } = await import("@/lib/app/cohorts");
+      // a Wednesday in 2041, a year no other test signs anyone up in, so its 12 weeks hold only these
+      const now = new Date("2041-04-17T12:00:00Z");
+      const later = (at: Date, days: number) => new Date(at.getTime() + days * 86400_000);
+      /** Someone who signed up at `at`, with a YouTube channel connected or disconnected if it says so. */
+      const joined = async (at: Date, channel?: "connected" | "revoked") => {
+        const n = ++count;
+        const [{ id }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email, created_at) values (${`w2-proof-${n}@test.local`}, ${at}) returning id`);
+        made.push(id);
+        if (channel) await db.admin((tx) => tx`insert into public.channels (user_id, platform, external_id, title, status) values (${id}, 'youtube', ${`UCw2proofweek${n}`}, ${`Proof ${n}`}, ${channel})`);
+        return id;
+      };
+      /** One Short of theirs that isn't on YouTube with YouTube's word for it, decided `days` after `from` unless it's still waiting for a swipe. */
+      const other = (user: string, from: Date, days: number, status: string, tiktok: "drafts" | "posted" | null = null) => db.admin((tx) => tx`
+        insert into public.videos (user_id, format, params, key, title, status, decided_at, posted_at, tiktok_publish_id, tiktok_posted_at)
+        values (${user}, 'quiz', '{"questions":[]}', 'quiz:capitals', 'Quiz', ${status}, ${status === "review" ? null : later(from, days)},
+          ${tiktok === "posted" ? later(from, days + 1) : null}, ${tiktok ? `w2proof-tiktok-${user}-${days}` : null}, ${tiktok === "posted" ? later(from, days + 1) : null})`);
+
+      // five who signed up six weeks ago, all over 4 weeks old now, posting 0, 1, 2, 3 and 50 Shorts YouTube confirmed in their first 4 weeks
+      const signed = [0, 1, 2, 3, 4].map((i) => new Date(Date.parse("2041-03-05T09:00:00Z") + i * 3600_000));
+      const old = await Promise.all(signed.map((at, i) => joined(at, i === 3 ? "connected" : i === 4 ? "revoked" : undefined)));
+      const on = (i: number, days: number[]) => days.map((d) => later(signed[i], d));
+      // never said yes: one waiting, one swiped away
+      await other(old[0], signed[0], 0, "review");
+      await other(old[0], signed[0], 2, "rejected");
+      // one in time; one after their first 4 weeks; one whose link never checked out; one only sent to TikTok's drafts
+      await posted(old[1], null, on(1, [5, 30]));
+      await posted(old[1], null, on(1, [6]), { verified: false });
+      await other(old[1], signed[1], 7, "ready", "drafts");
+      // two, and one posted straight to TikTok, which counts as sent there but not as on YouTube
+      await posted(old[2], null, on(2, [2, 3]));
+      await other(old[2], signed[2], 3, "posted", "posted");
+      // three, and still saying yes in their fourth week
+      await posted(old[3], null, on(3, [8, 9, 10]));
+      await other(old[3], signed[3], 22, "scheduled");
+      // fifty, the last of them said yes to in their fourth week
+      await posted(old[4], null, on(4, Array.from({ length: 50 }, (_, i) => 1 + i / 2)));
+
+      // five who signed up last week, under 4 weeks old, one with a channel and a Short up already
+      const young = await Promise.all([0, 1, 2, 3, 4].map((i) => joined(new Date(Date.parse("2041-04-08T10:00:00Z") + i * 3600_000), i === 0 ? "connected" : undefined)));
+      await posted(young[0], null, [new Date("2041-04-09T10:00:00Z")]);
+      // two in the week before last but one, too few to show
+      await joined(new Date("2041-03-26T10:00:00Z"));
+      await joined(new Date("2041-03-27T10:00:00Z"));
+      // and two just outside the 12 weeks: before the first Monday, and this week
+      await joined(new Date("2041-01-20T23:59:59Z"));
+      await joined(new Date("2041-04-15T00:00:00Z"));
+
+      const rows = await cohorts(now);
+      const sixWeeks = { week: "2041-03-04", accounts: 5, complete: 5, connected: 1, kept: 4, postedAny: 4, posted: { low: 1, median: 2, high: 3 }, tiktok: 1, week4: 2 };
+      expect(rows).toEqual([
+        // every week together first: the young ones count for what they've done, but not in the first 4 weeks' figures
+        { ...sixWeeks, week: null, accounts: 12, connected: 2, kept: 5 },
+        { week: "2041-04-08", accounts: 5, complete: 0, connected: 1, kept: 1, postedAny: 0, posted: null, tiktok: 0, week4: 0 },
+        { week: "2041-03-25", accounts: 2, complete: 0, connected: 0, kept: 0, postedAny: 0, posted: null, tiktok: 0, week4: 0 },
+        sixWeeks,
+      ]);
+      // as /admin shows them: the middle account and the middle half, never the best; Not yet for a young week; nothing for a small one
+      const [all, last, small, six] = rows.map((r) => cohortView(r));
+      expect(all).toMatchObject({ label: "All 12 weeks", cells: { accounts: "12", postedAny: "4 of 5", posted: "2 (1 to 3)" } });
+      expect(last.cells).toMatchObject({ accounts: "5", connected: "1", kept: "1", postedAny: "Not yet", posted: "Not yet", tiktok: "Not yet", week4: "Not yet" });
+      expect(small).toMatchObject({ label: "Mar 25", cells: null });
+      expect(six.cells).toEqual({ accounts: "5", connected: "1", kept: "4", postedAny: "4 of 5", posted: "2 (1 to 3)", tiktok: "1 of 5", week4: "2 of 5" });
+    });
+  });
 
   // wave 2: ytlive
 });

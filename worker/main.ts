@@ -6,8 +6,8 @@
  * It renders approved Shorts with Remotion (one at a time per worker; run
  * more workers for more at once), keeps them in storage, posts what's due,
  * makes each channel's Shorts every morning, collects views for the
- * learning loop, checks Trends and syncs Earnings. It reads the same
- * environment variables as the app.
+ * learning loop, checks Trends, syncs Earnings and reads each channel's
+ * YouTube Analytics. It reads the same environment variables as the app.
  */
 import "./server-only";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
@@ -21,6 +21,7 @@ import { runDailyShorts } from "../lib/server/shorts/generate";
 import { postDue } from "../lib/server/shorts/post";
 import { collectStats } from "../lib/server/shorts/stats";
 import { syncEarnings } from "../lib/server/earnings";
+import { syncAnalytics } from "../lib/server/shorts/proof";
 import { refreshTrends } from "../lib/server/trends";
 import { recapLives } from "../lib/server/live";
 import { tidyClips } from "../lib/server/clips";
@@ -179,6 +180,8 @@ async function main() {
   // each niche is checked once a day: every half hour this checks only the ones whose day has come
   every(30 * 60_000, "trends", () => refreshTrends());
   every(6 * 3600_000, "earnings", () => syncEarnings());
+  // each YouTube channel's Analytics once a day: every hour this reads the ones whose day has come, up to 200
+  every(3600_000, "analytics", () => syncAnalytics(new Date(), 200, 20 * 60_000));
   every(5 * 60_000, "live recaps", () => recapLives());
   every(3600_000, "clips", () => tidyClips());
   every(5 * 60_000, "daily shorts", () => runDailyShorts());

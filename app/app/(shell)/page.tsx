@@ -52,7 +52,7 @@ export default async function Home() {
             <CardHead title="This week" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Last 7 days</span>} />
             <div className="grid grid-cols-2 gap-x-6 gap-y-7 px-5 py-6 sm:grid-cols-4">
               <Stat label="Shorts posted" value={n(d.week.posted)} sub={d.posted ? undefined : "None yet"} />
-              <Stat label="Views" value={d.week.views === null ? "—" : n(d.week.views)} sub={d.week.views === null ? (d.youtube ? "After your first post" : "Connect YouTube") : "On this week's Shorts"} />
+              <Stat label="Plays" value={d.week.views === null ? "—" : n(d.week.views)} sub={d.week.views === null ? (d.youtube ? "After your first post" : "Connect YouTube") : "On this week's Shorts"} />
               <Stat label="LIVE rounds" value={n(d.week.rounds)} sub={d.week.lives ? `${d.week.lives} LIVE${d.week.lives === 1 ? "" : "s"}` : "No LIVEs yet"} />
               <Stat label="Gift coins seen" value={n(d.week.coins)} sub={d.week.unverified ? `On your own LIVEs. ${n(d.week.unverified)} more not verified` : "On your own LIVEs. Not cash"} />
             </div>
@@ -90,7 +90,7 @@ export default async function Home() {
               </ul>
             ) : (
               <p className="px-5 py-5 text-[15px] leading-relaxed text-muted">
-                Once three Shorts have had their first day on YouTube, this shows which formats beat your usual Short, and Hookline makes more of them. {learned.measured ? `${learned.measured} of 3 so far.` : ""}
+                Once three Shorts have their first day measured, this shows which formats beat your usual Short, and Hookline makes more of them. YouTube reports engaged views a few days after a Short goes up. {learned.measured ? `${learned.measured} of 3 so far.` : ""}
               </p>
             )}
           </Card>

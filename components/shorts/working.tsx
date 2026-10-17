@@ -1,12 +1,14 @@
-import { times, type FormatInsight, type KindInsight } from "@/lib/shorts/insights";
+import { measureLine, times, type FormatInsight, type KindInsight, type Measure } from "@/lib/shorts/insights";
 
 /**
  * What's working, as one measure: each format's first day against the
  * channel's usual Short. Bars grow right of the middle line when a
  * format beats usual and left when it doesn't, on a scale where 2× and
- * half are the same distance from it. Each row also says it in words.
+ * half are the same distance from it. Each row also says it in words, and
+ * a line under the bars says what the first days were compared by, and
+ * that the comparisons are Hookline's.
  */
-export function Working({ formats, kinds }: { formats: FormatInsight[]; kinds: KindInsight[] }) {
+export function Working({ formats, kinds, measure }: { formats: FormatInsight[]; kinds: KindInsight[]; measure: Measure }) {
   const reach = Math.log(4);
   return (
     <div className="flex flex-col gap-6">
@@ -43,6 +45,7 @@ export function Working({ formats, kinds }: { formats: FormatInsight[]; kinds: K
         <span>Usual</span>
         <span>4× usual</span>
       </div>
+      <p className="-mt-2 text-[12px] leading-relaxed text-muted">{measureLine(measure)}</p>
       {kinds.length > 0 && (
         <div>
           <p className="mb-2 font-mono text-[11px] uppercase tracking-[0.18em] text-muted">Standing out</p>

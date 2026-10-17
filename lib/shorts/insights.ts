@@ -15,7 +15,7 @@ import { FORMAT_IDS, type ShortFormat } from "./types";
 
 export type FormatInsight = { format: ShortFormat; name: string; plural: string; score: number; samples: number; share: number };
 export type KindInsight = { group: string; name: string; score: number; samples: number };
-export type Insights = { formats: FormatInsight[]; kinds: KindInsight[]; measured: number };
+export type Insights = { formats: FormatInsight[]; kinds: KindInsight[]; measured: number; measure: Measure };
 
 const QUIZ: Record<string, string> = { capitals: "Capital city quizzes", science: "Science quizzes", mixed: "Mixed quizzes" };
 const TONE: Record<string, string> = { funny: "Funny stories", sweet: "Sweet stories", twist: "Stories with a twist" };
@@ -40,7 +40,7 @@ export function kindName(group: string): string | null {
  */
 const STANDS_OUT = 1.15;
 
-export function insights(weights: Weight[]): Insights {
+export function insights(weights: Weight[], measure: Measure = { engaged: 0, plays: 0 }): Insights {
   const share = odds(weights);
   const row = (f: ShortFormat): FormatInsight => {
     const w = weights.find((x) => x.kind === "format" && x.name === f);
@@ -53,7 +53,7 @@ export function insights(weights: Weight[]): Insights {
     .map((w) => ({ group: w.name, name: kindName(w.name), score: w.score, samples: w.samples }))
     .filter((k): k is KindInsight => k.name !== null)
     .sort((a, b) => b.score - a.score);
-  return { formats, kinds, measured: formats.reduce((s, f) => s + f.samples, 0) };
+  return { formats, kinds, measured: formats.reduce((s, f) => s + f.samples, 0), measure };
 }
 
 /** "2.1×", "0.6×": how a result compares with usual. */
@@ -72,4 +72,19 @@ export function readAfter(hours: number): string {
   if (d >= 1 && h - d * 24 < 2) return `After ${d} day${d === 1 ? "" : "s"}`;
   if (h < 72) return `After ${h} hour${h === 1 ? "" : "s"}`;
   return `After ${d} days`;
+}
+
+/** How many of the first days the learning loop compared went by engaged views, and how many by plays. */
+export type Measure = { engaged: number; plays: number };
+
+/**
+ * What What's working's bars are compared by, in words: engaged views,
+ * engaged views where YouTube has reported them and plays before that, or
+ * plays until YouTube Analytics has reported any. The comparisons are
+ * Hookline's own, whichever they went by, so the words always say so.
+ */
+export function measureLine(m: Measure): string {
+  if (m.engaged > 0 && m.plays === 0) return "Compared by engaged views, the plays YouTube counts for the Partner Program, not the ones swiped past. The comparisons are Hookline's.";
+  if (m.engaged > 0) return "Compared by engaged views where YouTube has reported them, and by plays before that. The comparisons are Hookline's.";
+  return "Compared by plays until YouTube Analytics reports engaged views for your Shorts. The comparisons are Hookline's.";
 }

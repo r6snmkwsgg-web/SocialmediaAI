@@ -3,13 +3,17 @@ import { AutoRefresh } from "@/components/app/client-bits";
 import { DailyBars } from "@/components/app/daily-bars";
 import { Icons } from "@/components/app/icons";
 import { LocalTime } from "@/components/app/local-time";
+import { TypicalAccount } from "@/components/app/typical-account";
 import { Card, CardHead, PageHead, Pill, Stat } from "@/components/app/ui";
 import { PLANS } from "@/lib/billing/plans";
 import { fill, lastDays } from "@/lib/earnings/series";
+import { healthLine } from "@/lib/shorts/proof";
 import { KIND_NAMES, type Bucket } from "@/lib/shorts/quota";
 import { overview } from "@/lib/server/admin";
+import { cohorts } from "@/lib/server/cohorts";
 import { configured } from "@/lib/server/env";
 import { quotaToday, type QuotaToday } from "@/lib/server/quota";
+import { analyticsHealth } from "@/lib/server/shorts/proof";
 
 export const metadata: Metadata = { title: "Today" };
 
@@ -143,7 +147,7 @@ function YouTubeQuota({ q }: { q: QuotaToday }) {
 }
 
 export default async function Admin() {
-  const [o, quota] = await Promise.all([overview(), quotaToday()]);
+  const [o, quota, typical, health] = await Promise.all([overview(), quotaToday(), cohorts(), analyticsHealth()]);
   const c = configured();
   const now = new Date();
   const signups = fill(lastDays(now.toISOString().slice(0, 10), 30), o.signups, 0);
@@ -218,6 +222,8 @@ export default async function Admin() {
               <Stat label="TikTok" value={n(o.connected.tiktok)} />
               <Stat label="Need reconnecting" value={n(o.connected.lost)} />
             </div>
+            {/* how many channels' YouTube Analytics were read, and why the rest can't be: counts only, never anyone's numbers */}
+            <p className="border-t border-edge px-5 py-3 text-[13px] leading-relaxed text-muted">{healthLine(health)}</p>
           </Card>
 
           <Card>
@@ -239,6 +245,8 @@ export default async function Admin() {
       </div>
 
       <YouTubeQuota q={quota} />
+
+      <TypicalAccount rows={typical} />
 
       <Card className="mt-6">
         <CardHead title="Newest accounts" />

@@ -7,6 +7,7 @@ import { Working } from "@/components/shorts/working";
 import { isActive } from "@/lib/shorts/channels";
 import { formatName } from "@/lib/shorts/formats";
 import { times } from "@/lib/shorts/insights";
+import { reportedDay } from "@/lib/shorts/proof";
 import { SHORT_FORMATS, type ShortFormat } from "@/lib/shorts/types";
 import { account } from "@/lib/server/account";
 import { shortsChannelsOf } from "@/lib/server/channels";
@@ -61,10 +62,10 @@ export default async function Library({ searchParams }: { searchParams: Search }
   // what's working on the channel picked, against its own usual; or across them all, each Short against its own channel's
   const day = learned.typical === null ? null : n(Math.round(learned.typical));
   const working = picked
-    ? { title: `What's working on ${picked.name}`, note: day === null ? `First day vs ${picked.name}'s usual` : `${picked.name}'s usual: ${day} views on day one` }
+    ? { title: `What's working on ${picked.name}`, note: day === null ? `First day vs ${picked.name}'s usual` : `${picked.name}'s usual first day: ${day} plays` }
     : several
       ? { title: "What's working across your channels", note: "Each Short against its own channel's usual" }
-      : { title: "What's working", note: day === null ? "First day vs your usual" : `Your usual: ${day} views on day one` };
+      : { title: "What's working", note: day === null ? "First day vs your usual" : `Your usual first day: ${day} plays` };
 
   return (
     <>
@@ -80,14 +81,20 @@ export default async function Library({ searchParams }: { searchParams: Search }
           {learned.measured < 3 ? (
             <p className="max-w-2xl text-[15px] leading-relaxed text-muted">
               {picked
-                ? `Hookline compares the first day of each Short on ${picked.name} with its usual Short, and makes more of what wins there. Once three of them have been up a day on YouTube, this shows which formats beat its usual and by how much.`
+                ? `Hookline compares the first day of each Short on ${picked.name} with its usual Short, and makes more of what wins there.`
                 : several
-                  ? "Hookline compares each Short's first day with its own channel's usual Short, and makes more of what wins. Once three Shorts have been up a day on YouTube, this shows which formats beat their channel's usual and by how much."
-                  : "Hookline compares each Short's first day with your usual Short, and makes more of what wins. Once three Shorts have been up a day on YouTube, this shows which formats beat your usual and by how much."}{" "}
+                  ? "Hookline compares each Short's first day with its own channel's usual Short, and makes more of what wins."
+                  : "Hookline compares each Short's first day with your usual Short, and makes more of what wins."}{" "}
+              YouTube reports engaged views a few days after a Short goes up, so each result comes in then.{" "}
+              {picked
+                ? "Once three are in, this shows which formats beat its usual and by how much."
+                : several
+                  ? "Once three are in, this shows which formats beat their channel's usual and by how much."
+                  : "Once three are in, this shows which formats beat your usual and by how much."}{" "}
               {learned.measured > 0 ? `${learned.measured} of 3 so far.` : "None yet."}
             </p>
           ) : (
-            <Working formats={learned.formats} kinds={learned.kinds} />
+            <Working formats={learned.formats} kinds={learned.kinds} measure={learned.measure} />
           )}
         </div>
       </Card>
@@ -135,12 +142,14 @@ export default async function Library({ searchParams }: { searchParams: Search }
         narrowed ? (
           <Empty title="Nothing matches" body={several ? "Try another channel or format, or fewer words." : "Try another format or fewer words."} action={{ href: "/app/shorts/library", label: "Show everything" }} />
         ) : (
-          <Empty title="Nothing here yet" body="Every Short you swipe right on lands here: being made, scheduled, posted, with its views once it's up." action={{ href: "/app/shorts", label: "Go to your queue" }} />
+          <Empty title="Nothing here yet" body="Every Short you swipe right on lands here: being made, scheduled, posted, with its plays and engaged views once it's up." action={{ href: "/app/shorts", label: "Go to your queue" }} />
         )
       ) : (
         <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
           {lib.items.map((it) => {
             const s = state(it);
+            // its first day against the usual one, "about" when a late reading was scaled back
+            const usual = it.vsUsual !== null && <> · <span className={it.vsUsual >= 1 ? "text-fg" : ""}>{it.vsEstimated ? "about " : ""}{times(it.vsUsual)} usual</span></>;
             return (
               <li key={it.id}>
                 <Link href={`/app/shorts/${it.id}`} className="group flex h-full flex-col border-2 border-edge bg-card transition hover:border-fg">
@@ -152,11 +161,18 @@ export default async function Library({ searchParams }: { searchParams: Search }
                       <Pill tone={s.tone}>{s.label}</Pill>
                       <span className="font-mono text-[10px] uppercase tracking-[0.12em] text-muted"><LocalTime iso={it.at.toISOString()} style="day" /></span>
                     </div>
-                    {it.views !== null && (
-                      <p className="text-[13px] tabular-nums text-muted">
-                        <b className="font-semibold text-fg">{n(it.views)}</b> views
-                        {it.vsUsual !== null && <> · <span className={it.vsUsual >= 1 ? "text-fg" : ""}>{it.vsEstimated ? "about " : ""}{times(it.vsUsual)} usual</span></>}
-                      </p>
+                    {/* YouTube Analytics' engaged views and plays, up to the day YouTube has reported, once it's read; plays from the latest reading before that */}
+                    {it.analytics ? (
+                      <div className="text-[13px] tabular-nums text-muted">
+                        <p><b className="font-semibold text-fg">{n(it.analytics.engaged)}</b> engaged views · {n(it.analytics.plays)} plays</p>
+                        <p className="mt-0.5 text-[12px]">Up to {reportedDay(it.analytics.through)}{usual}</p>
+                      </div>
+                    ) : (
+                      it.views !== null && (
+                        <p className="text-[13px] tabular-nums text-muted">
+                          <b className="font-semibold text-fg">{n(it.views)}</b> plays{usual}
+                        </p>
+                      )
                     )}
                   </div>
                 </Link>

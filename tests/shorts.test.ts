@@ -277,15 +277,15 @@ describe("the learning loop", () => {
     expect([1.1, 24.2, 72.3].map(readAfter)).toEqual(["After 1 hour", "After 1 day", "After 3 days"]);
     // late ones say so, rounded down so it's always true
     expect([5.9, 30.6, 48.5, 50, 100].map(readAfter)).toEqual(["After 5 hours", "After 30 hours", "After 2 days", "After 50 hours", "After 4 days"]);
-    expect(againstUsual(500, 24.3, 240)).toEqual({ vs: lift(500, 240), estimated: false });
-    expect(againstUsual(500, 48, 240)).toEqual({ vs: lift(at24h(500, 48), 240), estimated: true });
+    expect(againstUsual(500, 24.3, 240)).toEqual({ vs: lift(500, 240), estimated: false, by: "plays" });
+    expect(againstUsual(500, 48, 240)).toEqual({ vs: lift(at24h(500, 48), 240), estimated: true, by: "plays" });
   });
 
   it("says what a format really averaged, and only calls it a pattern once there's enough", () => {
     expect(formatReason("quizzes", undefined)).toBe("Still learning what works on your channel: trying quizzes");
     expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 3, samples: 2 })).toMatch(/2 quizzes so far/);
-    expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 1.4, samples: 3 })).toBe("Your quizzes have averaged 1.4× your usual views at 24 hours, from 3: too few to go on yet");
-    expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 2.4, samples: 10 })).toBe("Your quizzes have averaged 2.4× your usual views at 24 hours (10 posted)");
+    expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 1.4, samples: 3 })).toBe("Your quizzes have averaged 1.4× your usual first day, from 3: too few to go on yet");
+    expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 2.4, samples: 10 })).toBe("Your quizzes have averaged 2.4× your usual first day (10 posted)");
     expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 0.5, samples: 10 })).toMatch(/^Your quizzes have averaged 0\.5× .*fewer of them/);
     expect(formatReason("quizzes", { kind: "format", name: "quiz", score: 1.05, samples: 10 })).toBe("Quizzes do about as well as your usual Short (10 posted)");
   });

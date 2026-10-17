@@ -295,7 +295,7 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
     // a kind that clearly stands out says so, with what its Shorts really averaged
     const s = standout(c.key, weights);
     const name = s && kindName(s.name);
-    const kindWhy = s && name ? [`${name} have averaged ${timesUsual(s.score)} your usual views (${s.samples} posted)`] : [];
+    const kindWhy = s && name ? [`${name} have averaged ${timesUsual(s.score)} your usual first day (${s.samples} posted)`] : [];
     made.push({ c, formatWhy: [formatReason(formatPlural(c), weights.find((w) => w.kind === "format" && w.name === c.format)), ...kindWhy] });
   }
   // the day's Shorts: the LIVE round first, so it goes out soonest after its LIVE, then the made ones

@@ -7,7 +7,7 @@ Hookline is one place to make money from short video and TikTok LIVE, in four se
 - **Shorts**: every morning, a few faceless Shorts drawn by code (ball battles, quizzes, would you rather, text stories, rankings, bar-chart races), for each YouTube channel you connect in its own look and at its own times (up to five channels on Creator). Swipe right to keep one, left to bin it. Kept ones are rendered, titled by Claude and posted to YouTube and TikTok at the channel's best times, and whatever does well on a channel gets made more there.
 - **Live**: games for a TikTok LIVE that viewers play with chat and gifts (a ball battle, Rivals, Ball Race, Last One Standing), with a vote for the next round, settings per account and each session's real numbers. In Rivals the sides are a new rivalry every round, like Messi vs Ronaldo, and each side has its own gifts.
 - **Trends**: the Shorts growing fastest right now in the niches you follow, from YouTube's official API, the hours your own Shorts do best, and which formats are working.
-- **Earnings**: real figures from YouTube, TikTok, the LIVE games and Stripe, one chart per measure, with goals.
+- **Earnings**: real figures from YouTube, TikTok, the LIVE games and Stripe, one chart per measure, with goals, and for each YouTube channel, its engaged views, who's watching and how far it is from the Partner Program, by YouTube Analytics.
 
 Why things are the way they are is in [DECISIONS.md](DECISIONS.md). What's waiting on someone else (app reviews, accounts to create) is in [NEXT.md](NEXT.md). Screenshots of every screen are in [docs/screens](docs/screens).
 
@@ -128,13 +128,14 @@ An API key from the Anthropic Console in `ANTHROPIC_API_KEY`, and the ID of the 
 - makes each channel's Shorts for the day, from 6am in its timezone
 - reads views 1 hour, 1 day and 3 days after posting, for the learning loop
 - refreshes Trends (each niche once a day) and syncs Earnings every 6 hours
+- reads each YouTube channel's YouTube Analytics once a day (its Shorts' plays, engaged views and watch time, who's watching and Partner Program progress), and deletes any of those figures not read again in 30 days
 - sends each LIVE's recap once it's been quiet for 20 minutes
 - every hour, lets LIVE rounds go three days after they came, and empties gifters' names from clip Shorts that don't show them (`/api/cron/live` does this too)
 - checks in every 30 seconds, so the app can say when rendering has stopped and `/admin` can show the workers
 
 Run more workers for more renders at once; each one claims its own job. A failed render is tried 3 times. The worker finds Chrome by itself, or uses `CHROME_PATH` (Chrome or Chrome Headless Shell).
 
-A scheduler can run the periodic jobs instead: `GET /api/cron/post`, `/api/cron/stats`, `/api/cron/shorts`, `/api/cron/trends`, `/api/cron/earnings` and `/api/cron/live`, with `Authorization: Bearer <CRON_SECRET>`. Rendering always needs the worker. Running both is safe, since each job locks what it works on.
+A scheduler can run the periodic jobs instead: `GET /api/cron/post`, `/api/cron/stats`, `/api/cron/shorts`, `/api/cron/trends`, `/api/cron/earnings`, `/api/cron/analytics` and `/api/cron/live`, with `Authorization: Bearer <CRON_SECRET>`. Rendering always needs the worker. Running both is safe, since each job locks what it works on.
 
 ## The LIVE bridge
 

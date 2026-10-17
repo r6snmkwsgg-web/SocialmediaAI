@@ -10,6 +10,7 @@ import { connectStripe, disconnectStripe } from "@/lib/server/earnings";
 const TARGETS: Record<string, { source: string; metric: string; noun: string }> = {
   "youtube:views": { source: "youtube", metric: "views", noun: "YouTube views" },
   "youtube:subscribers": { source: "youtube", metric: "subscribers", noun: "new subscribers" },
+  "youtube:engaged_views": { source: "youtube", metric: "engaged_views", noun: "engaged views on YouTube" },
   "youtube:revenue": { source: "youtube", metric: "revenue", noun: "in YouTube revenue" },
   "tiktok:views": { source: "tiktok", metric: "views_total", noun: "TikTok views" },
   "live:coins": { source: "live", metric: "coins", noun: "gift coins seen on your LIVEs" },

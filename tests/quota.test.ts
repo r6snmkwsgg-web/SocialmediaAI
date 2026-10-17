@@ -398,4 +398,9 @@ describe("every YouTube call is counted", () => {
     const calling = sources().filter((f) => /googleapis\.com\/(youtube\/v3|upload\/youtube)/.test(readFileSync(f, "utf8")));
     expect(calling).toEqual([join("lib", "server", "youtube.ts")]);
   });
+
+  it("asks every YouTube Analytics report from lib/server/youtube-analytics.ts, where each is counted before it's made", () => {
+    const calling = sources().filter((f) => /youtubeanalytics\.googleapis\.com/.test(readFileSync(f, "utf8")));
+    expect(calling).toEqual([join("lib", "server", "youtube-analytics.ts")]);
+  });
 });

@@ -172,14 +172,14 @@ export default async function Trends({ searchParams }: { searchParams: Search })
               ))}
             </tbody>
           </table>
-          <p className="px-5 pb-4 pt-1 text-[12px] leading-relaxed text-muted">The middle of the rising Shorts measured in each format over the last three days. Your channel&rsquo;s column compares your Shorts at 24 hours with your usual one.</p>
+          <p className="px-5 pb-4 pt-1 text-[12px] leading-relaxed text-muted">The middle of the rising Shorts measured in each format over the last three days. Your channel&rsquo;s column compares your Shorts&rsquo; first days with your usual one, by engaged views where YouTube has reported them.</p>
         </Card>
 
         <Card>
           <CardHead title="Your best times" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">{times.posts} posts</span>} />
           {times.posts === 0 ? (
             <p className="px-5 py-5 text-[14px] leading-relaxed text-muted">
-              When your posts did best, by day and time, from your own Shorts&rsquo; views at 24 hours. It fills in as you post. Until there&rsquo;s enough to go on, Shorts post at a starting guess, and about one in five at another hour to learn from.
+              When your posts did best, by day and time, from your own Shorts&rsquo; plays at 24 hours. It fills in as you post. Until there&rsquo;s enough to go on, Shorts post at a starting guess, and about one in five at another hour to learn from.
             </p>
           ) : (
             <div className="overflow-x-auto px-5 py-5">
@@ -209,7 +209,7 @@ export default async function Trends({ searchParams }: { searchParams: Search })
                   ))}
                 </tbody>
               </table>
-              <p className="mt-3 text-[12px] text-muted">Each square: how Shorts posted then did at 24 hours, against your usual. Darker is better; blank means no posts there yet.</p>
+              <p className="mt-3 text-[12px] text-muted">Each square: how Shorts posted then did by plays at 24 hours, against your usual. Darker is better; blank means no posts there yet.</p>
             </div>
           )}
         </Card>

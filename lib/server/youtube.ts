@@ -176,6 +176,27 @@ export async function youtubeChannel(access: string, now = new Date()): Promise<
   };
 }
 
+/**
+ * Channels' public subscriber counts, rounded down as YouTube rounds them,
+ * or hidden when a channel hides its count: up to 50 channels a call with
+ * the API key, or with a channel's own access, that channel's. Each call
+ * is counted with the views the learning loop reads.
+ */
+export async function youtubeSubscribers(externalIds: string[], access?: string, now = new Date()): Promise<Map<string, { subscribers: number | null; hidden: boolean }>> {
+  const out = new Map<string, { subscribers: number | null; hidden: boolean }>();
+  for (const page of access ? [externalIds.slice(0, 1)] : pagesOf(externalIds)) {
+    const j = await youtubeGet<{ items?: { id: string; statistics?: { subscriberCount?: string; hiddenSubscriberCount?: boolean } }[] }>(
+      "stats", "channels.list", "channels", access ? { part: "statistics", mine: "true" } : { part: "statistics", id: page.join(",") }, { access, now, what: "Reading subscribers" },
+    );
+    for (const it of j.items ?? []) {
+      const hidden = it.statistics?.hiddenSubscriberCount === true;
+      const count = it.statistics?.subscriberCount === undefined ? NaN : Number(it.statistics.subscriberCount);
+      out.set(it.id, { subscribers: hidden || !Number.isFinite(count) ? null : count, hidden });
+    }
+  }
+  return out;
+}
+
 /** A working access token for a channel, refreshed when it's run out. */
 export async function youtubeAccess(channelId: string): Promise<string> {
   const t = await tokensOf(channelId);

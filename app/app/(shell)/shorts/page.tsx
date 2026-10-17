@@ -304,10 +304,10 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
         </Card>
 
         <Card>
-          <CardHead title="Posted" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Views at 1h · 24h · 72h</span>} />
+          <CardHead title="Posted" action={<span className="font-mono text-[10px] uppercase tracking-[0.16em] text-muted">Plays at 1h · 24h · 72h</span>} />
           {q.posted.length === 0 ? (
             <p className="px-5 py-5 text-[14px] text-muted">
-              Once a Short is up, its views show here at 1 hour, 24 hours and 3 days. That&rsquo;s what Hookline learns from: formats that beat your usual get picked more.
+              Once a Short is up, its plays show here at 1 hour, 24 hours and 3 days. Hookline learns from its first day, by engaged views once YouTube reports them: formats that beat your usual get picked more.
             </p>
           ) : (
             <ul className="divide-y-2 divide-edge">
