@@ -1,4 +1,4 @@
-import type { LiveEvent } from "./events";
+import type { LiveEvent, LivePlatform } from "./events";
 import type { Show } from "./show";
 
 /**
@@ -13,6 +13,10 @@ import type { Show } from "./show";
  *
  * The coins are what viewers sent, never what TikTok pays the streamer,
  * so they're always "gift coins seen", never earnings.
+ *
+ * On YouTube the server finds the stream itself, on the account's own
+ * channel, so the game only says which streams it heard real viewers on,
+ * and the server checks each is one its own reader heard.
  */
 
 /** The most LIVEs one session reports; more than this and something's wrong anyway. */
@@ -22,9 +26,13 @@ export const HEARD_MAX = 10;
  * What a session reports about whose LIVE it heard: the LIVEs its source
  * named, and whether any of it came from a source that didn't say. The
  * server can't tell "didn't say" from "nothing new" in a list, so it's
- * said out loud, and once said it sticks.
+ * said out loud, and once said it sticks. On YouTube, the streams it
+ * heard, by video id.
  */
-export type Heard = { heard: string[]; unknown: boolean };
+export type Heard = { heard: string[]; unknown: boolean; broadcasts: string[] };
+
+/** a YouTube video id, as the stream Hookline's reader found has one */
+const VIDEO_ID = /^[A-Za-z0-9_-]{11}$/;
 
 /**
  * The LIVEs each session heard real viewers on, by session id: noted as
@@ -32,19 +40,34 @@ export type Heard = { heard: string[]; unknown: boolean };
  * that moment, or none when it didn't say.
  */
 export class HeardLog {
-  private readonly by = new Map<string, { users: Set<string>; unknown: boolean }>();
+  private readonly by = new Map<string, { users: Set<string>; unknown: boolean; broadcasts: Set<string> }>();
+
+  private entry(sessionId: string) {
+    let h = this.by.get(sessionId);
+    if (!h) this.by.set(sessionId, (h = { users: new Set(), unknown: false, broadcasts: new Set() }));
+    return h;
+  }
 
   note(sessionId: string, user: string | null) {
-    let h = this.by.get(sessionId);
-    if (!h) this.by.set(sessionId, (h = { users: new Set(), unknown: false }));
+    const h = this.entry(sessionId);
     if (user) h.users.add(user);
     else h.unknown = true;
   }
 
-  /** What to report for a session: the LIVEs it heard, and whether any of it came from a source that didn't say whose LIVE it was. */
+  /**
+   * A YouTube stream a session heard real viewers on. Hookline found it on
+   * the account's own channel, so it never makes a session unknown; an
+   * event from before the stream was known is just not noted.
+   */
+  noteYouTube(sessionId: string, broadcastId: string | null) {
+    const h = this.entry(sessionId);
+    if (broadcastId && VIDEO_ID.test(broadcastId)) h.broadcasts.add(broadcastId);
+  }
+
+  /** What to report for a session: the LIVEs it heard, whether any of it came from a source that didn't say whose LIVE it was, and the YouTube streams it heard. */
   of(sessionId: string): Heard {
     const h = this.by.get(sessionId);
-    return { heard: h ? [...h.users].slice(0, HEARD_MAX) : [], unknown: !!h?.unknown };
+    return { heard: h ? [...h.users].slice(0, HEARD_MAX) : [], unknown: !!h?.unknown, broadcasts: h ? [...h.broadcasts].slice(0, HEARD_MAX) : [] };
   }
 }
 
@@ -80,12 +103,21 @@ const at = (users: string[]) => users.map((u) => `@${u}`).join(", ");
 export const NO_USERNAMES = "Hookline can't check TikTok usernames yet, so no LIVE counts in Earnings for now.";
 
 /**
+ * Why a YouTube session isn't theirs: it names a stream Hookline has no
+ * record of its own reader hearing, which is the only way the game hears
+ * YouTube. That's one it never heard, or one whose channel was
+ * disconnected, which takes the record with it.
+ */
+export const NOT_HEARD_ON_YOUTUBE = "Hookline has no record of hearing this stream's chat, so it can't say it was yours.";
+
+/**
  * Why a session doesn't count, in a sentence, or null when it does.
  * `checking` is false while Hookline doesn't ask TikTok for usernames yet
  * (TIKTOK_PROFILE), when connecting TikTok wouldn't make anything count.
  */
-export function whyNotCounted(s: { verified: boolean; heard: string[]; unknown?: boolean }, mine: string[], checking = true): string | null {
+export function whyNotCounted(s: { verified: boolean; heard: string[]; unknown?: boolean; platform?: LivePlatform }, mine: string[], checking = true): string | null {
   if (s.verified) return null;
+  if (s.platform === "youtube") return NOT_HEARD_ON_YOUTUBE;
   if (!checking && !mine.length) return `${s.heard.length ? `The game heard ${at(s.heard)}, but ` : ""}Hookline can't check TikTok usernames yet.`;
   if (!s.heard.length) return "The game couldn't tell whose LIVE this was. TikFinity doesn't say; Hookline Bridge does.";
   const others = s.heard.filter((u) => !mine.includes(u));

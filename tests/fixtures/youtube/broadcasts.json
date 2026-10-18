@@ -1,0 +1,37 @@
+{
+  "kind": "youtube#liveBroadcastListResponse",
+  "etag": "w2-ytlive-broadcasts",
+  "pageInfo": { "totalResults": 2, "resultsPerPage": 5 },
+  "items": [
+    {
+      "kind": "youtube#liveBroadcast",
+      "etag": "w2-ytlive-broadcast-1",
+      "id": "w2ytBcast01",
+      "snippet": {
+        "publishedAt": "2037-04-06T18:50:00Z",
+        "channelId": "UCw2ytliveChannel0000001",
+        "title": "Ball Battle all night",
+        "description": "",
+        "scheduledStartTime": "2037-04-06T19:00:00Z",
+        "actualStartTime": "2037-04-06T19:00:12Z",
+        "isDefaultBroadcast": false,
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx"
+      },
+      "status": { "lifeCycleStatus": "live", "privacyStatus": "public", "recordingStatus": "recording", "madeForKids": false, "selfDeclaredMadeForKids": false }
+    },
+    {
+      "kind": "youtube#liveBroadcast",
+      "etag": "w2-ytlive-broadcast-2",
+      "id": "w2ytBcast02",
+      "snippet": {
+        "publishedAt": "2037-04-06T19:10:00Z",
+        "channelId": "UCw2ytliveChannel0000001",
+        "title": "Test stream with chat off",
+        "description": "",
+        "actualStartTime": "2037-04-06T19:15:00Z",
+        "isDefaultBroadcast": false
+      },
+      "status": { "lifeCycleStatus": "live", "privacyStatus": "unlisted", "recordingStatus": "recording", "madeForKids": false, "selfDeclaredMadeForKids": false }
+    }
+  ]
+}

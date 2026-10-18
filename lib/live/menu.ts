@@ -25,6 +25,10 @@ export type Tier = {
   icon: Icon;
   /** the big ones get a banner when they go off, the rest a line */
   big?: boolean;
+  /** on YouTube: set off by any Jewels gifts worth `min` or more, or by a Super Chat of one colour; none means TikTok coins */
+  unit?: "jewels" | "super";
+  /** a Super Chat item's colour, for its chip */
+  chip?: string;
 };
 
 /** The item a single gift of this price gets: the best one its price reaches. */

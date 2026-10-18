@@ -9,6 +9,13 @@ import { sessionPayload, sessionSchema } from "@/lib/live/session";
 import { DEFAULT_SETTINGS } from "@/lib/live/settings";
 import { Show } from "@/lib/live/show";
 import { lookUp } from "@/lib/server/live";
+import { clockTime } from "@/lib/live/connection";
+import { heardIn } from "@/lib/live/proof";
+import { OLD_ADDRESS } from "@/lib/live/last-good";
+import type { YouTubeStatus } from "@/lib/live/youtube";
+import { parseYtLiveCheck, ytLiveFit, type YtLiveCheck } from "@/lib/live/eligibility";
+import { NOT_HEARD_ON_YOUTUBE } from "@/lib/live/proof";
+import { youtubeSetupLine } from "@/lib/live/connection";
 
 const bridge = (state: string, user: string | null = "kayla.live", extra: Record<string, unknown> = {}) => JSON.stringify({ event: "bridge", data: { state, user, error: null, version: "1.1.0", ...extra } });
 
@@ -252,15 +259,15 @@ describe("whose LIVE a session heard", () => {
     const log = new HeardLog();
     log.note("s1", "kayla.live");
     log.note("s1", "kayla.live");
-    expect(log.of("s1")).toEqual({ heard: ["kayla.live"], unknown: false });
+    expect(log.of("s1")).toEqual({ heard: ["kayla.live"], unknown: false, broadcasts: [] });
     log.note("s1", "famous.one");
-    expect(log.of("s1")).toEqual({ heard: ["kayla.live", "famous.one"], unknown: false });
+    expect(log.of("s1")).toEqual({ heard: ["kayla.live", "famous.one"], unknown: false, broadcasts: [] });
     // the bridge, then TikFinity (after the bridge was switched off), then the bridge again: still unknown
     log.note("s2", "kayla.live");
     log.note("s2", null);
     log.note("s2", "kayla.live");
-    expect(log.of("s2")).toEqual({ heard: ["kayla.live"], unknown: true });
-    expect(log.of("never")).toEqual({ heard: [], unknown: false });
+    expect(log.of("s2")).toEqual({ heard: ["kayla.live"], unknown: true, broadcasts: [] });
+    expect(log.of("never")).toEqual({ heard: [], unknown: false, broadcasts: [] });
   });
 
   it("counts a session only when every LIVE it heard is theirs", () => {
@@ -309,10 +316,10 @@ describe("whose LIVE a session heard", () => {
   it("sends the LIVEs it heard with the session's numbers", () => {
     const s = new Show({ seed: 41, settings: { game: "royale", vote: false } });
     s.handle({ kind: "chat", viewer: { id: "a", name: "a" }, text: "go" });
-    const p = sessionPayload(s, "k".repeat(32), { heard: ["kayla.live"], unknown: false })!;
+    const p = sessionPayload(s, "k".repeat(32), { heard: ["kayla.live"], unknown: false, broadcasts: [] })!;
     expect(p.heard).toEqual(["kayla.live"]);
     expect(sessionSchema.parse(p)).toMatchObject({ heard: ["kayla.live"], unknown: false });
-    expect(sessionPayload(s, "k".repeat(32), { heard: ["kayla.live"], unknown: true })!.unknown).toBe(true);
+    expect(sessionPayload(s, "k".repeat(32), { heard: ["kayla.live"], unknown: true, broadcasts: [] })!.unknown).toBe(true);
     // an older game sends no LIVEs at all: it just doesn't count
     const { heard: _, unknown: __, ...old } = p;
     void _;
@@ -351,6 +358,101 @@ describe("who can earn from the LIVE games", () => {
     expect(parseLiveCheck({ adult: true, canGoLive: false, computer: true })).toEqual({ adult: true, canGoLive: false, computer: true });
     expect(parseLiveCheck({ adult: "yes" })).toBeNull();
     expect(parseLiveCheck(null)).toBeNull();
+  });
+});
+
+describe("who can play on YouTube Live", () => {
+  const all: YtLiveCheck = { adult: true, canGoLive: true, computer: true, superChat: true };
+
+  it("lets everyone with all four play, and says why not, in order: under 18, a channel that can't go live, no computer, no Super Chat", () => {
+    expect(ytLiveFit(null)).toEqual({ asked: false });
+    expect(ytLiveFit(all)).toEqual({ asked: true, ok: true, reasons: [] });
+    const starts = (f: ReturnType<typeof ytLiveFit>) => f.asked && f.reasons.map((r) => r.split(" ").slice(0, 3).join(" "));
+    expect(starts(ytLiveFit({ adult: true, canGoLive: false, computer: false, superChat: false }))).toEqual(["Your channel needs", "The games go", "The games run"]);
+    // Super Chat is only for 18 and over, so someone younger is never told to switch it on
+    expect(starts(ytLiveFit({ adult: false, canGoLive: false, computer: false, superChat: false }))).toEqual(["YouTube only lets", "Your channel needs", "The games go"]);
+    expect(ytLiveFit({ ...all, adult: false })).toMatchObject({ ok: false, reasons: ["YouTube only lets people 18 and over get Super Chats, and the games run on them."] });
+    expect(ytLiveFit({ ...all, canGoLive: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/verified channel/)] });
+    expect(ytLiveFit({ ...all, computer: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/OBS/)] });
+    expect(ytLiveFit({ ...all, superChat: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/Partner Program/)] });
+  });
+
+  it("offers the paid games to someone who can get TikTok gifts or YouTube Super Chats, or hasn't answered TikTok's questions, and only reads YouTube's while YouTube Live is on", () => {
+    const tiktokYes = { adult: true, canGoLive: true, computer: true };
+    const tiktokNo = { adult: true, canGoLive: false, computer: true };
+    const youtubeNo = { ...all, superChat: false };
+    expect(sellLive(null, null, true)).toBe(true);
+    expect(sellLive(tiktokYes, youtubeNo, true)).toBe(true);
+    expect(sellLive(tiktokNo, all, true)).toBe(true);
+    expect(sellLive(tiktokNo, youtubeNo, true)).toBe(false);
+    expect(sellLive(tiktokNo, null, true)).toBe(false);
+    // while YouTube Live is off, only TikTok's answers count
+    expect(sellLive(tiktokNo, all, false)).toBe(false);
+    expect(sellLive(tiktokNo, all)).toBe(false);
+  });
+
+  it("says what YouTube needs for Super Chats under the plans while YouTube Live is on, and never promises anything", () => {
+    expect(giftsLine(null, null, false)).toBe(giftsLine(null));
+    expect(giftsLine(null, null, true)).toMatch(/Super Chats on YouTube Live need you to be 18 or older and in the YouTube Partner Program\.$/);
+    expect(giftsLine(null, { ...all, superChat: false }, true)).toMatch(/You told us you can't get Super Chats on YouTube yet, so the LIVE games can't bring you any there for now\.$/);
+    expect(giftsLine(null, { ...all, superChat: false }, false)).not.toMatch(/Super Chat/);
+    const lines = [
+      giftsLine(null, all, true), giftsLine(null, { ...all, adult: false }, true),
+      ...(["adult", "canGoLive", "computer", "superChat"] as const).flatMap((k) => (ytLiveFit({ ...all, [k]: false }) as { reasons: string[] }).reasons),
+    ];
+    for (const l of lines) expect(l).not.toMatch(/\$|\bwill\b|earn|income|money|—/i);
+  });
+
+  it("reads saved YouTube answers, and nothing else", () => {
+    expect(parseYtLiveCheck(all)).toEqual(all);
+    expect(parseYtLiveCheck({ adult: true, canGoLive: true, computer: true })).toBeNull();
+    expect(parseYtLiveCheck("yes")).toBeNull();
+  });
+
+  it("says why a YouTube LIVE isn't theirs in a sentence of its own, and nothing for one that is", () => {
+    expect(whyNotCounted({ verified: false, heard: [], platform: "youtube" }, [], false)).toBe(NOT_HEARD_ON_YOUTUBE);
+    expect(whyNotCounted({ verified: true, heard: [], platform: "youtube" }, [])).toBeNull();
+    // a TikTok one still says what it always did
+    expect(whyNotCounted({ verified: false, heard: [], platform: "tiktok" }, [])).toMatch(/TikFinity/);
+  });
+
+  it("puts the LIVE page's line about the stream in plain words, with a pause ending at the browser's own time", () => {
+    const at = "2037-04-11T07:05:00.000Z";
+    const line = (y: Parameters<typeof youtubeSetupLine>[0]) => youtubeSetupLine(y);
+    expect(line({ state: "idle" })).toEqual({ tone: "none", text: "Not checked yet" });
+    expect(line({ state: "not_live", channel: "Ball Battle TV" })).toEqual({ tone: "wait", text: "Not live on Ball Battle TV right now" });
+    expect(line({ state: "ended", channel: null })).toEqual({ tone: "wait", text: "Not live on your channel right now" });
+    expect(line({ state: "live", title: "Friday fights" })).toEqual({ tone: "good", text: "Live: Friday fights" });
+    expect(line({ state: "chat_off" })).toEqual({ tone: "bad", text: "Live, but chat is off on this stream" });
+    expect(line({ state: "paused", until: at, who: "account" })).toEqual({ tone: "bad", text: `Paused until ${clockTime(at)}: today's YouTube LIVE time is used` });
+    expect(line({ state: "paused", until: at, who: "everyone" }).text).toBe(`Paused until ${clockTime(at)}: Hookline's YouTube allowance for today is used`);
+    expect(line({ state: "reconnect" })).toEqual({ tone: "bad", text: "Needs connecting again" });
+    expect(line({ state: "error", detail: "YouTube isn't answering." }).text).toBe("YouTube isn't answering. Hookline tries again by itself.");
+    expect(line({ state: "gone" }).tone).toBe("bad");
+    for (const state of ["idle", "off", "setup", "reconnect", "not_live", "live", "chat_off", "ended", "paused", "error", "gone"] as const) {
+      expect(line({ state }).text).not.toMatch(/—|\$/);
+    }
+  });
+
+  it("says the server's first paint of a pause without a time, since only the browser knows its own", () => {
+    const at = "2037-04-11T07:05:00.000Z";
+    // what the server renders, and the browser's first render must match it
+    expect(youtubeSetupLine({ state: "paused", until: at, who: "account" }, { local: false })).toEqual({ tone: "bad", text: "Paused until after midnight Pacific time: today's YouTube LIVE time is used" });
+    expect(youtubeSetupLine({ state: "paused", until: at, who: "account" }, { local: false }).text).not.toContain(clockTime(at));
+    // then the browser fills in its own time
+    expect(youtubeSetupLine({ state: "paused", until: at, who: "account" }, { local: true }).text).toBe(`Paused until ${clockTime(at)}: today's YouTube LIVE time is used`);
+  });
+
+  it("says Hookline can't be reached while Check now listens and gets no answer, rather than what it last knew", () => {
+    expect(youtubeSetupLine({ state: "idle" }, { reached: false })).toEqual({ tone: "bad", text: "Hookline can't be reached right now. It keeps trying." });
+    expect(youtubeSetupLine({ state: "live", title: "Friday fights" }, { reached: false }).text).toBe("Hookline can't be reached right now. It keeps trying.");
+    expect(youtubeSetupLine({ state: "live", title: "Friday fights" }, { reached: true }).text).toBe("Live: Friday fights");
+  });
+
+  it("says a stream YouTube has as made for kids has no chat, as YouTube's fact, with nothing to change", () => {
+    const kids = youtubeSetupLine({ state: "chat_off", kids: true });
+    expect(kids).toEqual({ tone: "bad", text: "Live, but YouTube has this stream as made for kids, so it has no chat" });
+    expect(kids.text).not.toMatch(/turn on|switch|change|set|studio/i);
   });
 });
 
@@ -421,5 +523,117 @@ describe("asking TikTok for usernames", () => {
     expect(asked[0]).not.toMatch(/username/);
     expect((await t.tiktokUser("tok", "user.info.basic,user.info.profile")).handle).toBe("kayla.live");
     expect(asked[1]).toMatch(/fields=.*,username/);
+  });
+});
+
+describe("whether the game can hear a YouTube LIVE", () => {
+  const now = 10_000_000;
+  const until = "2037-04-07T07:05:00.000Z";
+  const status = (o: Partial<Exclude<YouTubeStatus, { state: "gone" }>> = {}): YouTubeStatus => ({
+    state: "live", channel: "Ball Battle TV", title: "Ball Battle all night", broadcast: "w2ytBcast01", until: null, who: null, detail: null, kids: false, ...o,
+  });
+  const at = (h: Partial<Hearing>): Hearing => ({ name: "Hookline", socket: "open", since: now - 60_000, bridge: null, heardAt: now - 1000, now, youtube: status(), ...h });
+  /** what shows on the stream: the grey line and the orange bar */
+  const top = (h: Partial<Hearing>) => {
+    const v = connectionView(at(h));
+    return { status: v.status, notice: v.notice };
+  };
+  const hint = (h: Partial<Hearing>) => connectionView(at(h)).hint;
+
+  it("waits a moment for Hookline, then says plainly it can't be reached, and keeps trying", () => {
+    expect(top({ socket: "connecting", youtube: null, since: now - 5000 })).toEqual({ status: "WAITING FOR HOOKLINE…", notice: undefined });
+    expect(hint({ socket: "connecting", youtube: null, since: now - 5000 })).toBe("Asking Hookline for your YouTube chat…");
+    // a stream it heard a moment ago doesn't count once Hookline stops answering
+    expect(top({ socket: "closed", since: now - GRACE_MS })).toEqual({ status: undefined, notice: `${NOT_CONNECTED} · RECONNECTING` });
+    expect(hint({ socket: "closed", since: now - GRACE_MS })).toMatch(/keeps trying by itself/);
+  });
+
+  it("puts anything that stops chat reaching the game in the orange bar", () => {
+    expect(top({ youtube: status({ state: "off" }) })).toEqual({ status: undefined, notice: `${NOT_CONNECTED} · YOUTUBE IS OFF ON HOOKLINE` });
+    expect(top({ youtube: status({ state: "setup", channel: null }) })).toEqual({ status: undefined, notice: `${NOT_CONNECTED} · CONNECT YOUTUBE ON HOOKLINE` });
+    expect(top({ youtube: status({ state: "reconnect" }) })).toEqual({ status: undefined, notice: `${NOT_CONNECTED} · RECONNECT YOUTUBE` });
+    expect(top({ youtube: status({ state: "chat_off" }) })).toEqual({ status: undefined, notice: "YOUTUBE CHAT IS OFF ON THIS STREAM" });
+    expect(top({ youtube: { state: "gone" } })).toEqual({ status: undefined, notice: OLD_ADDRESS });
+    // paused until the reset, in the browser's own time, whoever's YouTube LIVE time ran out
+    const time = clockTime(until);
+    expect(time).toMatch(/^\d{1,2}:\d{2} [AP]M$/);
+    for (const who of ["account", "everyone"] as const) {
+      expect(top({ youtube: status({ state: "paused", until, who }) })).toEqual({ status: undefined, notice: `YOUTUBE CHAT PAUSED UNTIL ${time}` });
+      expect(hint({ youtube: status({ state: "paused", until, who }) })).toMatch(new RegExp(`reach the game again at ${time}\\.$`));
+    }
+    expect(hint({ youtube: status({ state: "paused", until, who: "account" }) })).toMatch(/^You've used today's YouTube LIVE time on Hookline\./);
+    expect(hint({ youtube: status({ state: "paused", until, who: "everyone" }) })).toMatch(/^Hookline has asked YouTube as often as it can today\./);
+  });
+
+  it("keeps waiting for the stream, a stream that ended, a quiet chat and YouTube's own trouble to the grey line", () => {
+    expect(top({ youtube: status({ state: "not_live", title: null, broadcast: null }) })).toEqual({ status: "WAITING FOR YOUR YOUTUBE LIVE…", notice: undefined });
+    expect(top({ youtube: status({ state: "ended" }) })).toEqual({ status: "YOUR YOUTUBE LIVE ENDED", notice: undefined });
+    expect(top({ youtube: status({ state: "error", detail: "YouTube isn't answering." }) })).toEqual({ status: "YOUTUBE ISN'T ANSWERING · TRYING AGAIN", notice: undefined });
+    expect(top({})).toEqual({ status: undefined, notice: undefined });
+    expect(top({ heardAt: now - QUIET_MS - 60_000 })).toEqual({ status: "NOTHING HEARD IN 6 MIN", notice: undefined });
+  });
+
+  it("tells the streamer beside the game what's happening and what to do, by name", () => {
+    expect(hint({})).toBe('Hearing the chat on "Ball Battle all night".');
+    expect(hint({ youtube: status({ title: null }) })).toBe("Hearing the chat on your stream.");
+    expect(hint({ youtube: status({ state: "not_live" }) })).toMatch(/^Go live on Ball Battle TV\. The game looks for your stream every minute for 10 minutes, then every 5, then every 30 after 3 hours\./);
+    expect(hint({ youtube: status({ state: "reconnect", channel: null }) })).toMatch(/^Hookline lost access to your YouTube channel\. Connect it again in Hookline's Settings/);
+    expect(hint({ heardAt: now - QUIET_MS })).toBe("No chat in 5 minutes. If people are chatting, check live chat is on for this stream.");
+    expect(hint({ youtube: status({ state: "error", detail: "YouTube didn't let Hookline read this chat." }) })).toBe("YouTube didn't let Hookline read this chat.");
+    // chat that's off can be turned on; a stream YouTube has as made for kids is only said to be so, with nothing to change about it
+    expect(hint({ youtube: status({ state: "chat_off", detail: "Live chat is off on this stream." }) })).toBe("The game plays with your chat. Turn on live chat for this stream in YouTube Studio.");
+    const kids = connectionView(at({ youtube: status({ state: "chat_off", kids: true, detail: "YouTube has this stream as made for kids, so it has no live chat." }) }));
+    expect(kids).toEqual({ notice: "YOUTUBE CHAT IS OFF ON THIS STREAM", hint: "YouTube has this stream as made for kids, so it has no live chat, and the game can't hear anyone." });
+    expect(kids.hint).not.toMatch(/turn on|switch|change|set|studio/i);
+    // nothing on YouTube's side talks of TikTok's tools, likes or gifts' prices, and none of it uses a dash for a pause
+    const all = (["off", "setup", "reconnect", "not_live", "live", "chat_off", "ended", "paused", "error"] as const).flatMap((state) => {
+      const v = connectionView(at({ youtube: status({ state, until }) }));
+      return [v.hint, v.status ?? "", v.notice ?? ""];
+    });
+    for (const s of all) expect(s).not.toMatch(/TikFinity|bridge|like|coin|—/i);
+  });
+
+  it("leaves TikTok's sources as they were", () => {
+    expect(connectionView(at({ name: "TikFinity", youtube: undefined })).hint).toBe("TikFinity is connected.");
+  });
+});
+
+describe("whose YouTube LIVE a session heard", () => {
+  const KEY = "k".repeat(32);
+
+  it("sends the streams it heard, with no gift coins and nothing about TikTok, and never makes a session unknown", () => {
+    const s = new Show({ seed: 41, settings: { game: "battle", vote: false }, platform: "youtube" });
+    const log = new HeardLog();
+    const marco = { id: "yt:UCmarco00000000000000001", name: "Marco" };
+    // as the game does it: the show takes the event first, then it's noted under the stream Hookline named
+    const hear = (e: Parameters<Show["handle"]>[0], stream: string | null) => {
+      s.handle(e);
+      const id = heardIn(s, e);
+      if (id) log.noteYouTube(id, stream);
+    };
+    hear({ kind: "chat", viewer: marco, text: "2" }, "w2ytBcast01");
+    hear({ kind: "gift", viewer: marco, gift: "Yellow Super Chat", coins: 1000, count: 1 }, "w2ytBcast01");
+    // a stream not known yet, or something that isn't a video id, isn't noted, and makes nothing unknown
+    hear({ kind: "chat", viewer: marco, text: "hi" }, null);
+    hear({ kind: "chat", viewer: marco, text: "hi" }, "not a stream");
+    hear({ kind: "chat", viewer: marco, text: "again" }, "w2ytBcast02");
+    expect(log.of(s.stats.id)).toEqual({ heard: [], unknown: false, broadcasts: ["w2ytBcast01", "w2ytBcast02"] });
+    const p = sessionPayload(s, KEY, log.of(s.stats.id))!;
+    expect(p).toMatchObject({ platform: "youtube", broadcasts: ["w2ytBcast01", "w2ytBcast02"], heard: [], unknown: false, coins: 0, topGifters: [{ id: marco.id, name: "Marco", coins: 0 }] });
+    expect(sessionSchema.parse(p)).toMatchObject({ platform: "youtube", broadcasts: ["w2ytBcast01", "w2ytBcast02"] });
+    // the game's power never leaves the game
+    expect(s.stats.coins).toBe(1000);
+    expect(sessionSchema.safeParse({ ...p, broadcasts: ["not a stream"] }).success).toBe(false);
+    expect(sessionSchema.safeParse({ ...p, broadcasts: Array.from({ length: 11 }, () => "w2ytBcast01") }).success).toBe(false);
+    expect(sessionSchema.safeParse({ ...p, platform: "twitch" }).success).toBe(false);
+    // a game from before YouTube sends neither, and was on TikTok
+    const { platform: _p, broadcasts: _b, ...old } = p;
+    void _p;
+    void _b;
+    expect(sessionSchema.parse(old)).toMatchObject({ platform: "tiktok", broadcasts: [] });
+    // and a TikTok session still sends its coins and its LIVEs
+    const tt = new Show({ seed: 41, settings: { game: "battle", vote: false } });
+    tt.handle({ kind: "gift", viewer: { id: "7001", name: "kai" }, gift: "Rose", coins: 1, count: 3 });
+    expect(sessionPayload(tt, KEY, { heard: ["kayla.live"], unknown: false, broadcasts: [] })).toMatchObject({ platform: "tiktok", coins: 3, heard: ["kayla.live"], broadcasts: [], topGifters: [{ coins: 3 }] });
   });
 });

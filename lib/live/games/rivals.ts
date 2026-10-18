@@ -1,7 +1,9 @@
 import type { Team } from "../../battle/sim";
+import type { LivePlatform } from "../events";
 import type { Tier } from "../menu";
-import { DEFAULT_SIDE_GIFTS, RIVAL_HEAL, rivalryLabel, rotation, routeGift, sideMenu, type Rivalry, type SideGifts } from "../rivals";
+import { DEFAULT_SIDE_GIFTS, rivalryLabel, rotation, routeGift, sideMenu, type Rivalry, type SideGifts } from "../rivals";
 import type { GameId, LiveSettings } from "../settings";
+import { YT_SIDE_MENU } from "../youtube";
 import { BattleGame } from "./battle";
 import type { RoundStart, VoteOption } from "./types";
 import type { RoundTape } from "../tape";
@@ -13,22 +15,31 @@ import type { RoundTape } from "../tape";
  * three gifts for the same three powers. Any other gift helps the side
  * the giver is on, by its price. Between rounds, the chat votes the next
  * rivalry.
+ *
+ * On YouTube nothing anyone sends says which side it's for, so both
+ * sides have the same menu, by Super Chat colour, and the chat picks the
+ * side, a Super Chat's own comment included.
  */
 export class RivalsGame extends BattleGame {
   readonly id: GameId = "rivals";
   /** for a gift from someone on neither side, which the show never sends: it heals */
-  readonly menu: Tier[] = [RIVAL_HEAL];
+  readonly menu: Tier[];
   readonly gifts: SideGifts;
   readonly rivalries: Rivalry[];
   rivalry: Rivalry;
   private readonly menus: [Tier[], Tier[]];
+  /** a gift's name picks its side only on TikTok */
+  private readonly byGift: boolean;
 
-  constructor(s: LiveSettings) {
-    super(s);
+  constructor(s: LiveSettings, platform: LivePlatform = "tiktok") {
+    super(s, platform);
     this.gifts = s.rivals.gifts ?? DEFAULT_SIDE_GIFTS;
     this.rivalries = rotation(s.rivals.groups, s.rivals.own);
     this.rivalry = this.rivalries[0];
-    this.menus = [sideMenu(this.gifts.red), sideMenu(this.gifts.blue)];
+    this.byGift = platform === "tiktok";
+    this.menus = this.byGift ? [sideMenu(this.gifts.red), sideMenu(this.gifts.blue)] : [YT_SIDE_MENU, YT_SIDE_MENU];
+    // the heal at the bottom of a side's menu
+    this.menu = [this.menus[0][0]];
   }
 
   start({ round, option, rand }: RoundStart) {
@@ -58,7 +69,7 @@ export class RivalsGame extends BattleGame {
   }
 
   route(gift: string): { side: Team; tier: Tier } | null {
-    return routeGift(this.gifts, gift);
+    return this.byGift ? routeGift(this.gifts, gift) : null;
   }
 
   sideMenu(side: Team): Tier[] {

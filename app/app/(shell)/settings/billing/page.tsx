@@ -107,7 +107,7 @@ export default async function Billing({ searchParams }: { searchParams: Search }
       </ul>
       <p className="mt-5 max-w-2xl text-[13px] leading-relaxed text-muted">
         Prices in US dollars. Cancel any time from Manage billing and keep your plan to the end of what you paid for. Hookline makes the videos and the games; what they earn depends on you, your niche and the platforms.
-        {` ${giftsLine(me.profile.liveCheck)}`}
+        {` ${giftsLine(me.profile.liveCheck, me.profile.ytLiveCheck, configured().youtubeLive)}`}
       </p>
     </>
   );

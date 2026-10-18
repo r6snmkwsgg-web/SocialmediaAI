@@ -76,6 +76,15 @@ export const KIND_NAMES: Record<Kind, string> = {
 /** Links one account can have checked in a day: above any plan's Shorts, so it only stops abuse. */
 export const LINK_CHECKS_A_DAY = 50;
 
+/** YouTube Live's units one account can use in a day: about 50 minutes of busy chat, so one streamer can't use everyone's. */
+export const ACCOUNT_LIVE_UNITS = 1500;
+
+/** The most one account's LIVE games may use of a day's units: ACCOUNT_LIVE_UNITS, or all of YouTube Live's share when that's less. */
+export function accountLiveUnits(limit: number | null): number {
+  const share = capOf("units", "live", limit);
+  return share === null ? ACCOUNT_LIVE_UNITS : Math.min(ACCOUNT_LIVE_UNITS, share);
+}
+
 /** What connecting a channel says when there's no quota left today to read it with, in Settings and on the welcome page. */
 export const CONNECT_WAIT = "Hookline has used today's YouTube allowance for connecting channels. Try again after midnight Pacific time.";
 

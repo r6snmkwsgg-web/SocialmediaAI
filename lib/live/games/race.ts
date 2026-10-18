@@ -1,7 +1,9 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
-import type { Viewer } from "../events";
+import type { LivePlatform, Viewer } from "../events";
 import { DEFAULT_GIFTS, DEFAULT_PRICES, timesOver, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
+import { words } from "../words";
+import { youtubeMenu } from "../youtube";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
 /**
@@ -116,6 +118,8 @@ export class RaceGame implements Game {
   readonly id = "race" as const;
   readonly teams = false;
   readonly liveInIntro = true;
+  /** free entries wait in the gate and close as the race starts */
+  readonly gate = true;
   readonly menu: Tier[];
   readonly events: BattleEvent[] = [];
   clock = 0;
@@ -133,10 +137,13 @@ export class RaceGame implements Game {
   private readonly hitAt = new Map<string, number>();
   /** free entries that came in after the start, for the next race */
   private readonly waiting = new Map<string, Viewer>();
+  /** what a free entry hears when the race is full: how to get in anyway, in the platform's words */
+  private readonly full: string;
 
-  constructor(s: LiveSettings) {
-    this.menu = withGifts(RACE_MENU, s.gifts);
+  constructor(s: LiveSettings, platform: LivePlatform = "tiktok") {
+    this.menu = platform === "youtube" ? youtubeMenu(RACE_MENU) : withGifts(RACE_MENU, s.gifts);
     this.maxSeconds = Math.min(s.roundSeconds, 75);
+    this.full = words(platform).raceFull;
   }
 
   private get f(): number {
@@ -221,7 +228,7 @@ export class RaceGame implements Game {
       this.waiting.set(viewer.id, viewer);
       return { toast: "is in the next race" };
     }
-    if (this.racers.length >= MAX_RACERS) return { toast: "race is full · send a gift to get in" };
+    if (this.racers.length >= MAX_RACERS) return { toast: this.full };
     this.add({ id: viewer.id, name: viewer.name, avatar: viewer.avatar }, 1, true);
     return { toast: "joined the race" };
   }

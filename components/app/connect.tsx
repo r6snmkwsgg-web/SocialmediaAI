@@ -16,12 +16,14 @@ import { button, Pill } from "./ui";
  * one account.
  */
 
-const ABOUT: Record<Platform, { name: string; why: string; whyBeforeAudit?: string; whySelf?: string; whyNoProfile?: string }> = {
+const ABOUT: Record<Platform, { name: string; why: string; whyBeforeAudit?: string; whySelf?: string; whyNoProfile?: string; whyLive?: string }> = {
   youtube: {
     name: "YouTube",
     why: "Posts the Shorts you approve and reads how they do.",
     whyBeforeAudit: "Checks the Shorts you post and reads how they do. Posting for you comes once YouTube approves Hookline.",
     whySelf: "Checks the Shorts you post and reads how they do.",
+    // with YouTube Live on, it's also how the LIVE game hears the creator's own stream
+    whyLive: "It also plays your LIVE game with your stream's chat.",
   },
   tiktok: {
     name: "TikTok",
@@ -248,6 +250,7 @@ export function ConnectList({
   youtubeApi = false,
   posts = false,
   tiktokProfile = false,
+  live = false,
 }: {
   platforms: Platform[];
   /** the accounts to list, first connected first; a disconnected YouTube channel is listed as given, so pass one only while it has Shorts */
@@ -271,6 +274,8 @@ export function ConnectList({
   posts?: boolean;
   /** TikTok tells Hookline the account's username, so a LIVE can be shown to be theirs */
   tiktokProfile?: boolean;
+  /** YouTube Live is on: the LIVE game hears a stream through the YouTube channel it's on */
+  live?: boolean;
 }) {
   const connectTo = (p: Platform, again?: string) => `/api/connect/${p}?next=${encodeURIComponent(next)}${again ? `&channel=${again}` : ""}`;
   return (
@@ -282,13 +287,14 @@ export function ConnectList({
         const active = mine.filter(isActive).length;
         const why =
           p === "tiktok" ? (tiktokProfile ? ABOUT[p].why : ABOUT[p].whyNoProfile!) : !posts ? ABOUT[p].whySelf! : youtubeApi ? ABOUT[p].why : ABOUT[p].whyBeforeAudit!;
+        const also = p === "youtube" && live ? ` ${ABOUT[p].whyLive}` : "";
         return (
           <li key={p} className="border-2 border-edge bg-card">
             <div className="flex flex-wrap items-center gap-4 px-4 py-4 sm:flex-nowrap">
               <PlatformMark platform={p} />
               <div className="min-w-0 flex-1">
                 <p className="font-display text-xl uppercase tracking-wide">{ABOUT[p].name}</p>
-                <p className="text-[14px] leading-snug text-muted">{why}</p>
+                <p className="text-[14px] leading-snug text-muted">{why}{also}</p>
               </div>
               {listed.length === 0 && (ready[p] ? <a href={connectTo(p)} className={connectButton}>Connect</a> : <Pill>Not set up yet</Pill>)}
             </div>

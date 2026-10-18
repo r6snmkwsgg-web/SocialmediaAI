@@ -1,6 +1,7 @@
 import { FPS } from "@/lib/battle/sim";
 import { BOARD, FINISH, type Racer, type RaceGame } from "@/lib/live/games/race";
 import type { Show } from "@/lib/live/show";
+import { words } from "@/lib/live/words";
 import { crownLine, drawEffects, ruleLines } from "./battle";
 import {
   AX, AY, circle, CPU, crown, ease, face, GOLD, HEAD, icon, INK, M, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, STRIP, text,
@@ -108,7 +109,7 @@ export const raceDraw: GameDraw = {
     const { y, h } = HEAD;
     roundRect(ctx, M, y, SIDE, h, 18, GOLD);
     text(ctx, "TYPE GO", M + 28, y + 82, { size: 78, color: INK, spacing: 1 });
-    text(ctx, "TO RACE FOR FREE · GIFTS MAKE YOUR BALL HEAVIER", M + 28, y + 124, { size: 28, color: INK, spacing: 1.5, alpha: 0.8, max: SIDE - 260 });
+    text(ctx, words(show.platform).raceHeader, M + 28, y + 124, { size: 28, color: INK, spacing: 1.5, alpha: 0.8, max: SIDE - 260 });
     const n = g.racers.filter((r) => !r.cpu).length;
     text(ctx, String(n), M + SIDE - 28, y + 104, { size: 96, color: INK, align: "right" });
     text(ctx, n === 1 ? "RACER" : "RACERS", M + SIDE - 28, y + 142, { size: 26, color: INK, align: "right", spacing: 3, alpha: 0.75 });
@@ -157,7 +158,7 @@ export const raceDraw: GameDraw = {
 
   rules(ctx, show, view) {
     ruleLines(ctx, [
-      { s: "LIKES MAKE YOUR BALL HEAVIER", size: 40, color: PAPER, pic: (x, y) => icon(ctx, "weight", x, y, 38, PAPER) },
+      { s: words(show.platform).raceRules, size: 40, color: PAPER, pic: (x, y) => icon(ctx, "weight", x, y, 38, PAPER) },
       { ...crownLine(show, view), pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },

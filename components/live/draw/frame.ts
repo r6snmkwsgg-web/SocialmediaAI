@@ -1,11 +1,11 @@
 import type { Show } from "@/lib/live/show";
 import { LETTERS } from "@/lib/live/show";
-import { INTRO, KO_HOLD, WELCOME_FOR } from "@/lib/live/show";
-import { welcomeLine } from "@/lib/live/supporters";
-import { giftLevel as blastLevel } from "@/lib/live/menu";
+import { KO_HOLD, WELCOME_FOR } from "@/lib/live/show";
+import { giftLevel as blastLevel, type Tier } from "@/lib/live/menu";
+import { words } from "@/lib/live/words";
 import { battleDraw } from "./battle";
 import {
-  AX, AY, coin, crown, DIM, ease, face, GOLD, H, icon, INK, M, measure, MENU_Y, nameOf, outline, PAPER, pop, roundRect, SIDE, SIGNAL, text, TOP3, W,
+  AX, AY, chip, coin, crown, DIM, ease, face, GOLD, H, icon, INK, jewel, M, measure, MENU_Y, nameOf, outline, PAPER, pop, roundRect, SIDE, SIGNAL, text, TOP3, W,
   type Ctx, type View,
 } from "./kit";
 import { raceDraw } from "./race";
@@ -60,6 +60,29 @@ function drawTop(ctx: Ctx, show: Show, view: View) {
 }
 
 /**
+ * What sets a menu item off, under its name, from `x` with `room` to go:
+ * the gift and what it costs on TikTok. On YouTube, a Super Chat's chip in
+ * its own colour, never an amount, or a jewel and the Jewels from which
+ * any gifts do it, since no one gift is claimed to cost that.
+ */
+function drawCost(ctx: Ctx, t: Tier, x: number, y: number, room: number) {
+  const g = t.gift.toUpperCase();
+  if (t.unit === "super") {
+    chip(ctx, g, x, y, t.chip ?? PAPER, { size: 20, max: room - 28 });
+    return;
+  }
+  const gw = Math.min(room - 68, measure(ctx, g, 22, 1.5));
+  text(ctx, g, x, y, { size: 22, color: PAPER, spacing: 1.5, alpha: 0.8, max: room - 68 });
+  if (t.unit === "jewels") {
+    jewel(ctx, x + gw + 15, y - 8, 9);
+    text(ctx, `${t.min.toLocaleString("en-US")}+`, x + gw + 29, y, { size: 22, color: DIM, spacing: 1 });
+    return;
+  }
+  coin(ctx, x + gw + 14, y - 8, 7);
+  text(ctx, (t.price ?? t.min).toLocaleString("en-US"), x + gw + 26, y, { size: 22, color: DIM, spacing: 1 });
+}
+
+/**
  * The gift menu: six things a gift can do, by the gift viewers know. An
  * item lights up when someone sends it, and the ones that last show who
  * has them and for how long.
@@ -83,13 +106,7 @@ function drawMenu(ctx: Ctx, show: Show, view: View, d: GameDraw) {
     icon(ctx, t.icon, x + 42, y + h / 2, 44, t.color);
     text(ctx, t.name.toUpperCase(), x + 82, y + 41, { size: 36, color: t.color, spacing: 1, max: cw - 96 });
     if (on) text(ctx, on.text, x + 82, y + 67, { size: 22, color: on.color, spacing: 2, max: cw - 96 });
-    else {
-      const g = t.gift.toUpperCase();
-      const gw = Math.min(cw - 150, measure(ctx, g, 22, 1.5));
-      text(ctx, g, x + 82, y + 67, { size: 22, color: PAPER, spacing: 1.5, alpha: 0.8, max: cw - 150 });
-      coin(ctx, x + 82 + gw + 14, y + 59, 7);
-      text(ctx, (t.price ?? t.min).toLocaleString("en-US"), x + 82 + gw + 26, y + 67, { size: 22, color: DIM, spacing: 1 });
-    }
+    else drawCost(ctx, t, x + 82, y + 67, cw - 82);
   });
 }
 
@@ -136,7 +153,8 @@ function drawBlast(ctx: Ctx, show: Show, view: View, d: GameDraw): boolean {
     outline(ctx, x, y, bw, h, 24, t.color, 6);
     const ring = b.side === null ? GOLD : show.teams[b.side].color;
     face(ctx, view, b.viewer.name, b.viewer.avatar, x + 96, y + h / 2, 62, ring, 7);
-    text(ctx, `${nameOf(view, b.viewer.name)} sent ${b.count > 1 ? `${b.count}x ` : ""}${t.gift}`, x + 188, y + 54, { size: 32, max: bw - 340 });
+    // what they sent, as it came: a gift bigger than the menu's top item, or another colour of Super Chat, is named for what it is
+    text(ctx, `${nameOf(view, b.viewer.name)} sent ${b.gift}`, x + 188, y + 54, { size: 32, max: bw - 340 });
     text(ctx, `${t.name.toUpperCase()}${b.many ? ` ×${b.many}` : ""}!`, x + 188, y + 144, { size: 84, color: t.color, spacing: 3, max: bw - 340 });
     text(ctx, d.blastLine(show, b, view), x + 188, y + 180, { size: 26, color: DIM, spacing: 2, max: bw - 340 });
     icon(ctx, t.icon, x + bw - 86, y + h / 2, 92, t.color);
@@ -181,7 +199,7 @@ function drawWelcome(ctx: Ctx, show: Show, view: View): boolean {
   const age = w ? show.now - w.at : -1;
   if (!w || age < 0 || age >= WELCOME_FOR) return false;
   const k = Math.min(ease(age / 0.18), ease((WELCOME_FOR - age) / 0.18));
-  const msg = `WELCOME BACK, ${nameOf(view, w.viewer.name).toUpperCase()}: ${welcomeLine(w.rank)}`;
+  const msg = `WELCOME BACK, ${nameOf(view, w.viewer.name).toUpperCase()}: ${words(show.platform).welcome(w.rank)}`;
   const pw = Math.min(760, measure(ctx, msg, 32, 1)) + 106;
   const x = W / 2 - pw / 2, y = AY + 20 - (1 - k) * 20;
   ctx.save();
@@ -209,9 +227,10 @@ function drawIntro(ctx: Ctx, show: Show, d: GameDraw) {
       roundRect(ctx, cx - w / 2, AY + gate + 138, w, 58, 29, GOLD);
       text(ctx, s, cx, AY + gate + 180, { size: 38, color: INK, align: "center", spacing: 2 });
     }
-    const left = Math.ceil(INTRO - t);
+    const intro = show.introFor;
+    const left = Math.ceil(intro - t);
     if (left <= 3) {
-      const k = 1 - (INTRO - t - (left - 1));
+      const k = 1 - (intro - t - (left - 1));
       const s = 1.4 - 0.4 * ease(k * 3);
       ctx.save();
       ctx.translate(cx, cy + 110);
@@ -219,7 +238,8 @@ function drawIntro(ctx: Ctx, show: Show, d: GameDraw) {
       text(ctx, String(left), 0, 0, { size: 320, align: "center", stroke: 14 });
       ctx.restore();
     } else d.prompt(ctx, show, cx, cy + gate * 0.4);
-    const foot = show.game.liveInIntro ? "GIFT NOW TO START AHEAD" : "GIFTS SENT NOW LAND WHEN IT STARTS";
+    const say = words(show.platform);
+    const foot = show.game.liveInIntro ? say.footNow : say.footLater;
     text(ctx, foot, cx, AY + SIDE - 80, { size: 34, color: DIM, align: "center", spacing: 2 });
   } else if (show.phase === "play" && t < 0.9) {
     const k = t / 0.9;
@@ -293,7 +313,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
   const left = Math.max(1, Math.ceil(show.winFor - t));
   if (vote) {
     text(ctx, `VOTE THE NEXT ${NEXT[show.game.id]}`, cx, 860, { size: 60, align: "center", spacing: 3 });
-    text(ctx, "TYPE A, B OR C · GIFTS ADD VOTES", cx, 916, { size: 34, color: GOLD, align: "center", spacing: 2 });
+    text(ctx, words(show.platform).vote, cx, 916, { size: 34, color: GOLD, align: "center", spacing: 2 });
     const tally = show.tally();
     const total = tally.reduce((a, b) => a + b, 0);
     const best = Math.max(...tally);
@@ -331,7 +351,7 @@ function drawWin(ctx: Ctx, show: Show, view: View, d: GameDraw) {
   if (show.mvp) {
     const m = show.mvp;
     const y = vote ? 1560 : 1250;
-    const label = `${nameOf(view, m.viewer.name)}  ·  ${m.coins.toLocaleString("en-US")} COINS`;
+    const label = `${nameOf(view, m.viewer.name)}  ·  ${m.coins.toLocaleString("en-US")} ${words(show.platform).worth}`;
     const w = measure(ctx, label, 40, 2);
     crown(ctx, cx - w / 2 - 82, y - 14, 44);
     face(ctx, view, m.viewer.name, m.viewer.avatar, cx - w / 2 - 34, y - 14, 26, GOLD, 4);

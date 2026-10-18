@@ -1,11 +1,12 @@
 import { ABILITIES, type AbilityId } from "../../battle/abilities";
 import { ARENA, World, type BattleEvent, type Team } from "../../battle/sim";
-import type { Viewer } from "../events";
+import type { LivePlatform, Viewer } from "../events";
 import { DEFAULT_GIFTS, DEFAULT_PRICES, RAGE_SECONDS, tierIn, withGifts, worth, type Tier } from "../menu";
 import type { GameId, LiveSettings } from "../settings";
 import type { Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 import type { WorldOptions } from "../../battle/sim";
 import { fingerprint, RecordedWorld, type RoundTape } from "../tape";
+import { youtubeMenu } from "../youtube";
 
 /**
  * Ball Battle: RED against BLUE. Each team has a champion ball with an
@@ -157,12 +158,14 @@ export class BattleGame implements Game {
   private readonly record: boolean;
   protected teamNames: [string, string];
 
-  constructor(s: LiveSettings) {
-    this.menu = withGifts(BATTLE_MENU, s.gifts);
+  constructor(s: LiveSettings, platform: LivePlatform = "tiktok") {
+    // on YouTube the menu goes by Jewels gifts and Super Chat colours, and a streamer's own TikTok gifts don't apply
+    this.menu = platform === "youtube" ? youtubeMenu(BATTLE_MENU) : withGifts(BATTLE_MENU, s.gifts);
     this.pool = s.abilities.length >= 2 ? s.abilities : ["spike", "sword"];
     this.fightMax = s.roundSeconds;
     this.rules = liveOptions(s.roundSeconds);
-    this.record = s.clips;
+    // rounds become clips only from TikTok LIVEs, so they're only written down there
+    this.record = s.clips && platform === "tiktok";
     this.teamNames = [s.teams[0].name, s.teams[1].name];
   }
 

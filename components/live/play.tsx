@@ -36,10 +36,10 @@ function keep(key: string, g: LastGood) {
 
 /**
  * The game as a streamer runs it from their own address: it saves the
- * session's numbers to their account as it goes, with the TikTok LIVEs it
- * heard, so Hookline can tell whether they were the streamer's own, and
- * sends each round it keeps for a Short as it's decided. Without a key
- * it's the plain game, and saves nothing.
+ * session's numbers to their account as it goes, with the TikTok LIVEs or
+ * YouTube streams it heard, so Hookline can tell whether they were the
+ * streamer's own, and sends each round it keeps for a Short as it's
+ * decided. Without a key it's the plain game, and saves nothing.
  *
  * Each time its settings load, it keeps them. If Hookline can't be reached
  * when it opens, it plays with the ones it kept; with none kept, it plays
@@ -141,6 +141,7 @@ export function Play({ overlayKey, unsure = false, settings, tag, notice: given,
     <LiveGame
       key={round}
       {...props}
+      overlayKey={key}
       settings={game.settings}
       tag={game.tag}
       hideNames={hideNames}

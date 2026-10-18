@@ -330,6 +330,92 @@ export async function youtubeViews(ids: string[], o: { access?: string; now?: Da
   return out;
 }
 
+/**
+ * YouTube Live: the streamer's own stream, its live chat, and the
+ * channel's Super Chats. Each is read with youtube.readonly, which Hookline
+ * already asks for, counted as YouTube Live's, and given up on after 8
+ * seconds, so a game's request never waits long on YouTube.
+ */
+const LIVE_WAIT = 8000;
+
+/** A stream that's live now: its video id, its chat's id while chat is on, and what YouTube says about it. */
+export type LiveBroadcast = { id: string; chatId: string | null; title: string | null; privacy: string | null; madeForKids: boolean | null; startedAt: Date | null };
+
+type BroadcastItem = {
+  id?: string;
+  snippet?: { title?: string; liveChatId?: string; actualStartTime?: string };
+  status?: { privacyStatus?: string; madeForKids?: boolean; selfDeclaredMadeForKids?: boolean };
+};
+
+/** A stream as liveBroadcasts.list describes it. Whether it's made for kids is only read, to say why its chat is off. */
+function broadcastOf(b: BroadcastItem & { id: string }): LiveBroadcast {
+  const started = b.snippet?.actualStartTime ? new Date(b.snippet.actualStartTime) : null;
+  const kids = [b.status?.madeForKids, b.status?.selfDeclaredMadeForKids].filter((v): v is boolean => typeof v === "boolean");
+  return {
+    id: b.id,
+    chatId: b.snippet?.liveChatId || null,
+    title: b.snippet?.title ?? null,
+    privacy: b.status?.privacyStatus ?? null,
+    madeForKids: kids.length ? kids.some(Boolean) : null,
+    startedAt: started && !Number.isNaN(started.getTime()) ? started : null,
+  };
+}
+
+/**
+ * The channel's stream that's live now, or null: only ever the channel's
+ * own, since the access is its own. Every kind of stream counts
+ * (broadcastType=all, as YouTube's default leaves some out). With several
+ * live at once, the latest started that has a chat wins.
+ */
+export async function youtubeActiveBroadcast(access: string, now = new Date()): Promise<LiveBroadcast | null> {
+  const j = await youtubeGet<{ items?: BroadcastItem[] }>(
+    "live", "liveBroadcasts.list", "liveBroadcasts", { part: "snippet,status", broadcastStatus: "active", broadcastType: "all", maxResults: "5" },
+    { access, now, what: "Finding the stream", timeoutMs: LIVE_WAIT },
+  );
+  const live = (j.items ?? []).filter((b): b is BroadcastItem & { id: string } => /^[\w-]{11}$/.test(b.id ?? "")).map(broadcastOf);
+  live.sort((a, b) => Number(!!b.chatId) - Number(!!a.chatId) || (b.startedAt?.getTime() ?? 0) - (a.startedAt?.getTime() ?? 0));
+  return live[0] ?? null;
+}
+
+/**
+ * One page of a stream's live chat: the messages as YouTube sent them,
+ * where the next page starts, how long YouTube asks to be left before the
+ * next read (0 when it doesn't say), and whether the stream has gone
+ * offline.
+ */
+export async function youtubeChatPage(
+  access: string, chatId: string, pageToken: string | null, now = new Date(),
+): Promise<{ items: unknown[]; next: string | null; waitMs: number; offline: boolean }> {
+  const j = await youtubeGet<{ items?: unknown[]; nextPageToken?: string; pollingIntervalMillis?: number; offlineAt?: string }>(
+    "live", "liveChatMessages.list", "liveChat/messages",
+    { liveChatId: chatId, part: "snippet,authorDetails", maxResults: "2000", profileImageSize: "88", ...(pageToken ? { pageToken } : {}) },
+    { access, now, what: "Reading the chat", timeoutMs: LIVE_WAIT },
+  );
+  return { items: Array.isArray(j.items) ? j.items : [], next: j.nextPageToken || null, waitMs: Number(j.pollingIntervalMillis) || 0, offline: !!j.offlineAt };
+}
+
+/**
+ * One page of the channel's Super Chats and Super Stickers from the last
+ * 30 days, newest first: what each viewer paid, in its own currency,
+ * before YouTube's share. Anything that doesn't read as an amount, a
+ * currency and a time is left out.
+ */
+export async function youtubeSuperChats(
+  access: string, pageToken: string | null, now = new Date(),
+): Promise<{ items: { amountMicros: number; currency: string; createdAt: Date }[]; next: string | null }> {
+  const j = await youtubeGet<{ items?: { snippet?: { amountMicros?: string | number; currency?: string; createdAt?: string } }[]; nextPageToken?: string }>(
+    "live", "superChatEvents.list", "superChatEvents", { part: "snippet", maxResults: "50", ...(pageToken ? { pageToken } : {}) },
+    { access, now, what: "Reading Super Chats", timeoutMs: LIVE_WAIT },
+  );
+  const items = (j.items ?? []).flatMap((it) => {
+    const amount = Number(it.snippet?.amountMicros);
+    const currency = (it.snippet?.currency ?? "").toUpperCase();
+    const at = new Date(it.snippet?.createdAt ?? "");
+    return Number.isFinite(amount) && amount >= 0 && /^[A-Z]{3}$/.test(currency) && !Number.isNaN(at.getTime()) ? [{ amountMicros: amount, currency, createdAt: at }] : [];
+  });
+  return { items, next: j.nextPageToken || null };
+}
+
 /** The video's id from a link someone pastes: youtube.com/shorts/ID, watch?v=ID, youtu.be/ID. */
 export function youtubeIdFrom(link: string): string | null {
   const m = link.trim().match(/(?:youtube\.com\/(?:shorts\/|watch\?(?:.*&)?v=|embed\/)|youtu\.be\/)([\w-]{11})/);

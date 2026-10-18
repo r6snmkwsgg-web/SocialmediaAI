@@ -1,15 +1,17 @@
 import type { Team } from "@/lib/battle/sim";
 import type { RivalsGame } from "@/lib/live/games/rivals";
 import type { Show } from "@/lib/live/show";
-import { battleDraw, crownLine, ruleLines } from "./battle";
-import { circle, coin, crown, DIM, HEAD, heart, icon, INK, M, measure, MENU_Y, outline, PAPER, roundRect, SIDE, STRIP, text, W } from "./kit";
+import { words } from "@/lib/live/words";
+import { battleDraw, crownLine, helpPic, ruleLines } from "./battle";
+import { chip, circle, coin, crown, DIM, HEAD, icon, INK, M, measure, MENU_Y, outline, PAPER, roundRect, SIDE, STRIP, text, W } from "./kit";
 import type { GameDraw } from "./types";
 
 /**
  * Rivals' screen: the battle's arena under two named sides, red against
  * blue, with VS between them, and each side's own three gifts in a column
  * under its card, so a viewer reads straight down from the side they like
- * to the gift that backs it.
+ * to the gift that backs it. On YouTube both columns are the same Super
+ * Chats, by colour, and the chat picks the side.
  */
 
 const game = (show: Show) => show.game as RivalsGame;
@@ -93,6 +95,11 @@ export const rivalsDraw: GameDraw = {
             text(ctx, on.text, r, y + 34, { size: 24, color: on.color, align: "right", spacing: 2 });
             return;
           }
+          // a Super Chat by its colour, never an amount
+          if (t.unit === "super") {
+            chip(ctx, t.gift.toUpperCase(), r, y + 34, t.chip ?? PAPER, { size: 22, max: cw - 260, right: true });
+            return;
+          }
           const price = (t.price ?? t.min).toLocaleString("en-US");
           const pw = measure(ctx, price, 24, 1);
           text(ctx, price, r, y + 34, { size: 24, color: DIM, align: "right", spacing: 1 });
@@ -107,7 +114,7 @@ export const rivalsDraw: GameDraw = {
   rules(ctx, show, view) {
     const c = crownLine(show, view);
     ruleLines(ctx, [
-      { s: "LIKES AND OTHER GIFTS HELP YOUR SIDE", size: 36, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 32, "#FF6FB5") },
+      { s: words(show.platform).rivalsRules, size: 36, color: PAPER, pic: helpPic(ctx, show, 32) },
       { ...c, pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },
@@ -128,7 +135,7 @@ export const rivalsDraw: GameDraw = {
       text(ctx, show.teams[side].name.toUpperCase(), px + pw / 2, py + 72, { size: 58, color: "#fff", align: "center", spacing: 1, max: pw - 40 });
       text(ctx, `TYPE ${side + 1}`, px + pw / 2, py + 132, { size: 46, color: "#fff", align: "center", spacing: 2, alpha: 0.9 });
     });
-    text(ctx, "OR SEND YOUR SIDE'S GIFT", cx, cy + 236, { size: 40, color: PAPER, align: "center", spacing: 3 });
+    text(ctx, words(show.platform).rivalsPick, cx, cy + 236, { size: 40, color: PAPER, align: "center", spacing: 3 });
   },
 
   winner(show) {

@@ -357,13 +357,13 @@ describe("whose LIVE a session heard", () => {
     for (const e of quiet) hear(e, null);
     // none of it started a session, and none of it went on the last one, so the game has nothing new to send for it
     expect(s.stats.id).toBe(last);
-    expect(log.of(last)).toEqual({ heard: ["k.streams"], unknown: false });
+    expect(log.of(last)).toEqual({ heard: ["k.streams"], unknown: false, broadcasts: [] });
     expect(JSON.stringify(sessionPayload(s, KEY, log.of(last)))).toBe(sent);
     // the first thing that takes part starts the next session, and is noted there, and so is a hello while it's going
     hear({ kind: "like", viewer: viewer("8001"), count: 3 }, null);
     expect(s.stats.id).not.toBe(last);
     hear({ kind: "chat", viewer: viewer("8003"), text: "hi" }, "friend.live");
-    expect(log.of(s.stats.id)).toEqual({ heard: ["friend.live"], unknown: true });
-    expect(log.of(last)).toEqual({ heard: ["k.streams"], unknown: false });
+    expect(log.of(s.stats.id)).toEqual({ heard: ["friend.live"], unknown: true, broadcasts: [] });
+    expect(log.of(last)).toEqual({ heard: ["k.streams"], unknown: false, broadcasts: [] });
   });
 });

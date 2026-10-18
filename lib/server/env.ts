@@ -53,6 +53,8 @@ const schema = z.object({
   YOUTUBE_DAILY_SEARCHES: optional,
   /** YouTube Analytics reports a day: no limit until it's set */
   YOUTUBE_DAILY_ANALYTICS: optional,
+  /** "1" puts the LIVE games on YouTube Live: the game reads the creator's own stream's chat through their connected channel */
+  YOUTUBE_LIVE: optional,
 
   TIKTOK_CLIENT_KEY: optional,
   TIKTOK_CLIENT_SECRET: optional,
@@ -86,6 +88,7 @@ export function configured() {
     youtube: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET),
     youtubeTrends: !!e.YOUTUBE_API_KEY,
     youtubeAudited: e.YOUTUBE_AUDITED === "1",
+    youtubeLive: !!(e.GOOGLE_CLIENT_ID && e.GOOGLE_CLIENT_SECRET) && e.YOUTUBE_LIVE === "1",
     tiktok: !!(e.TIKTOK_CLIENT_KEY && e.TIKTOK_CLIENT_SECRET),
     tiktokDirect: e.TIKTOK_DIRECT_POST === "1",
     tiktokProfile: e.TIKTOK_PROFILE === "1",

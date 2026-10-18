@@ -23,7 +23,9 @@ export default async function Home() {
   const best = learned.formats.filter((f) => f.samples > 0).slice(0, 3);
   // someone who can't earn gifts on a LIVE yet is pointed at Shorts first, and
   // posting is only promised where Hookline posts: a paid plan, once YouTube's audit has passed
-  const steps = checklist(sellLive(me.profile.liveCheck) ? me.profile.goal : "shorts", d, me.plan.scheduling && configured().youtubeAudited);
+  const steps = checklist(sellLive(me.profile.liveCheck, me.profile.ytLiveCheck, configured().youtubeLive) ? me.profile.goal : "shorts", d, me.plan.scheduling && configured().youtubeAudited);
+  // gift coins are TikTok's: with YouTube Live on, the stat says whose LIVEs they're from
+  const own = configured().youtubeLive ? "On your own TikTok LIVEs" : "On your own LIVEs";
   const next = nextStep(steps);
   const done = steps.filter((s) => s.done).length;
   const today = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: "UTC" });
@@ -54,7 +56,7 @@ export default async function Home() {
               <Stat label="Shorts posted" value={n(d.week.posted)} sub={d.posted ? undefined : "None yet"} />
               <Stat label="Plays" value={d.week.views === null ? "—" : n(d.week.views)} sub={d.week.views === null ? (d.youtube ? "After your first post" : "Connect YouTube") : "On this week's Shorts"} />
               <Stat label="LIVE rounds" value={n(d.week.rounds)} sub={d.week.lives ? `${d.week.lives} LIVE${d.week.lives === 1 ? "" : "s"}` : "No LIVEs yet"} />
-              <Stat label="Gift coins seen" value={n(d.week.coins)} sub={d.week.unverified ? `On your own LIVEs. ${n(d.week.unverified)} more not verified` : "On your own LIVEs. Not cash"} />
+              <Stat label="Gift coins seen" value={n(d.week.coins)} sub={d.week.unverified ? `${own}. ${n(d.week.unverified)} more not verified` : `${own}. Not cash`} />
             </div>
           </Card>
 

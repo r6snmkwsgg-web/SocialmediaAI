@@ -1,7 +1,9 @@
 import { FPS, TICK, type BattleEvent, type Team } from "../../battle/sim";
-import type { Viewer } from "../events";
+import type { LivePlatform, Viewer } from "../events";
 import { DEFAULT_GIFTS, DEFAULT_PRICES, timesOver, withGifts, type Tier } from "../menu";
 import type { LiveSettings } from "../settings";
+import { words } from "../words";
+import { youtubeMenu } from "../youtube";
 import type { Entrant, Game, GiftAct, Result, RoundStart, Said, VoteOption } from "./types";
 
 /**
@@ -88,10 +90,15 @@ export class RoyaleGame implements Game {
   private readonly hitAt = new Map<string, number>();
   private readonly waiting = new Map<string, Viewer>();
   private nextId = 1;
+  /** how far into this round free entries get in: longer behind a stream whose chat reaches the game late */
+  private late = LATE_ENTRY;
+  /** what a free entry hears when it's full: how to get in anyway, in the platform's words */
+  private readonly full: string;
 
-  constructor(s: LiveSettings) {
-    this.menu = withGifts(ROYALE_MENU, s.gifts);
+  constructor(s: LiveSettings, platform: LivePlatform = "tiktok") {
+    this.menu = platform === "youtube" ? youtubeMenu(ROYALE_MENU) : withGifts(ROYALE_MENU, s.gifts);
     this.maxSeconds = s.roundSeconds;
+    this.full = words(platform).royaleFull;
   }
 
   private get f(): number {
@@ -110,8 +117,9 @@ export class RoyaleGame implements Game {
     return { lo: (ARENA - size) / 2, size };
   }
 
-  start({ option, rand }: RoundStart) {
+  start({ option, rand, lag = 0 }: RoundStart) {
     this.rand = rand;
+    this.late = LATE_ENTRY + lag;
     this.arena = option && ARENAS.some((a) => a.key === option.key) ? option.key : "big";
     this.speedMul = this.arena === "fast" ? 1.4 : 1;
     this.startSize = this.arena === "tiny" ? 580 : ARENA;
@@ -159,11 +167,11 @@ export class RoyaleGame implements Game {
 
   enter(viewer: Viewer): Said | null {
     if (this.find(viewer.id)) return null;
-    if (this.clock > LATE_ENTRY) {
+    if (this.clock > this.late) {
       this.waiting.set(viewer.id, viewer);
       return { toast: "is in the next round" };
     }
-    if (this.alive().length >= MAX_FIGHTERS) return { toast: "it's full · send a gift to get in" };
+    if (this.alive().length >= MAX_FIGHTERS) return { toast: this.full };
     this.add({ id: viewer.id, name: viewer.name, avatar: viewer.avatar }, 3);
     return { toast: "joined the fight" };
   }

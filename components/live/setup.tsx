@@ -2,13 +2,13 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { bridgeStatusOf, newer, versionOf, type BridgeStatus } from "@/lib/live/bridge";
-import type { LiveEvent } from "@/lib/live/events";
+import type { LivePlatform } from "@/lib/live/events";
 import { GAMES } from "@/lib/live/games";
 import { NO_USERNAMES } from "@/lib/live/proof";
 import type { GameId } from "@/lib/live/settings";
+import { AddressBox, HearingLog, saveLog, type Heard } from "./setup-parts";
 import { LiveSource, SOURCES, type SourceId, type SourceState } from "./source";
-
-type Heard = { at: number; e: LiveEvent };
+import { YouTubeSetup, type YouTubeSetupProps } from "./youtube-setup";
 
 /** where the bridge's downloads live: the latest GitHub release */
 const BRIDGE_REPO = process.env.NEXT_PUBLIC_BRIDGE_REPO || "r6snmkwsgg-web/hookline-bridge";
@@ -23,23 +23,6 @@ const DOWNLOADS = [
 const LATEST = `https://api.github.com/repos/${BRIDGE_REPO}/releases/latest`;
 /** remembered once someone has asked the page to look, so it looks straight away next time */
 const LOOKED = "hookline:setup-looked";
-
-function describe(e: LiveEvent): string {
-  switch (e.kind) {
-    case "gift":
-      return `sent ${e.count > 1 ? `${e.count}× ` : ""}${e.gift} (${(e.coins * e.count).toLocaleString("en-US")} ${e.coins * e.count === 1 ? "coin" : "coins"})`;
-    case "chat":
-      return `said “${e.text}”`;
-    case "like":
-      return `liked ×${e.count}`;
-    case "follow":
-      return "followed";
-    case "share":
-      return "shared";
-    case "join":
-      return "came in";
-  }
-}
 
 const dot: Record<SourceState, string> = { open: "bg-[#34C759]", connecting: "bg-[#FFD60A] animate-blink", closed: "bg-muted" };
 const word: Record<SourceState, string> = { open: "Connected", connecting: "Looking…", closed: "Not running" };
@@ -62,19 +45,32 @@ type Props = {
   checking?: boolean;
   /** Hookline has switched the bridge off: TikFinity only */
   bridgeOff?: boolean;
+  /** where they go live: on YouTube, Hookline hears the stream itself, so there's nothing to find on the computer */
+  platform?: LivePlatform;
+  /** what the YouTube setup needs, with a key */
+  youtube?: YouTubeSetupProps;
 };
 
 /**
- * The setup page's working parts: pick a game, hear the LIVE (TikFinity
- * or Hookline Bridge, which it can point at the streamer's account), get
- * the address for OBS or LIVE Studio, and see what's coming in.
+ * The setup page's working parts, for a TikTok LIVE or, with the
+ * streamer's key, a YouTube one.
+ */
+export function Setup(props: Props = {}) {
+  const { platform, youtube, overlayKey } = props;
+  return platform === "youtube" && youtube && overlayKey ? <YouTubeSetup overlayKey={overlayKey} game={props.game ?? "battle"} {...youtube} /> : <TikTokSetup {...props} />;
+}
+
+/**
+ * On TikTok: pick a game, hear the LIVE (TikFinity or Hookline Bridge,
+ * which it can point at the streamer's account), get the address for OBS
+ * or LIVE Studio, and see what's coming in.
  *
  * It only looks for TikFinity and the bridge on this computer once asked
  * to (or once it has been before): looking makes the browser ask whether
  * the page may use apps on the device, which nobody just reading about the
  * games should be asked.
  */
-export function Setup({ overlayKey, game: initial = "battle", locked = [], accounts, checking = true, bridgeOff = false }: Props = {}) {
+function TikTokSetup({ overlayKey, game: initial = "battle", locked = [], accounts, checking = true, bridgeOff = false }: Props) {
   const [game, setGame] = useState<GameId>(initial);
   const [pick, setPick] = useState<SourceId>("tikfinity");
   const [looking, setLooking] = useState(false);
@@ -85,9 +81,7 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [], accou
   const [heard, setHeard] = useState<Heard[]>([]);
   const [raw, setRaw] = useState<string[]>([]);
   const allRaw = useRef<{ at: string; text: string }[]>([]);
-  const [showRaw, setShowRaw] = useState(false);
   const [clean, setClean] = useState(true);
-  const [copied, setCopied] = useState(false);
   const [origin, setOrigin] = useState("");
   const sources = useRef<Partial<Record<SourceId, LiveSource>>>({});
 
@@ -162,29 +156,9 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [], accou
     return `${origin}/live/play?${q}`;
   }, [origin, pick, game, clean, overlayKey]);
 
-  const copy = async () => {
-    try {
-      await navigator.clipboard.writeText(url);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1600);
-    } catch {
-      setCopied(false);
-    }
-  };
-
   const connect = (e: React.FormEvent) => {
     e.preventDefault();
     sources.current.bridge?.send({ cmd: "connect", user: username });
-  };
-
-  /** Everything it's heard, as a file: what to send if the game misreads something. */
-  const saveRaw = () => {
-    const blob = new Blob([JSON.stringify(allRaw.current, null, 2)], { type: "application/json" });
-    const a = document.createElement("a");
-    a.href = URL.createObjectURL(blob);
-    a.download = `hookline-live-events-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
-    a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   };
 
   return (
@@ -317,22 +291,7 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [], accou
         <p className="text-[14px] leading-relaxed text-fg/70">
           In OBS, add a Browser source with this address, 1080 wide and 1920 tall. In TikTok LIVE Studio, add it the same way you&rsquo;d add a TikFinity overlay.
         </p>
-        <div className="flex flex-col gap-2">
-          <code className="block break-all border border-edge bg-card px-3 py-2.5 font-mono text-[12px] leading-relaxed text-fg">{url || "…"}</code>
-          <div className="flex flex-wrap items-center gap-3">
-            <button type="button" onClick={copy} className="press bg-fg px-4 py-2 font-display text-lg uppercase tracking-wider text-surface [--press:var(--color-signal)]">
-              {copied ? "Copied" : "Copy address"}
-            </button>
-            <a href={url || "#"} target="_blank" rel="noreferrer" className="font-display text-lg uppercase tracking-wider underline decoration-signal decoration-2 underline-offset-4 hover:text-signal">
-              Open it
-            </a>
-          </div>
-          <label className="mt-1 flex items-center gap-2 font-mono text-[11px] uppercase tracking-[0.14em] text-fg/70">
-            <input type="checkbox" checked={clean} onChange={(e) => setClean(e.target.checked)} className="accent-[var(--color-signal)]" />
-            Hide the hints around the game
-          </label>
-          {overlayKey && <p className="text-[12px] leading-relaxed text-muted">This address has your private key in it, so the game uses your settings and saves your stats. Don&rsquo;t share it.</p>}
-        </div>
+        <AddressBox url={url} clean={clean} onClean={setClean} keyed={!!overlayKey} />
       </div>
 
       {/* 3: try it */}
@@ -342,27 +301,12 @@ export function Setup({ overlayKey, game: initial = "battle", locked = [], accou
         <p className="text-[15px] leading-relaxed text-fg/70">
           On the game, press <kbd className="border border-edge px-1.5 font-mono text-[12px]">T</kbd> for the test panel: every gift, likes and joins, without spending a coin. <kbd className="border border-edge px-1.5 font-mono text-[12px]">D</kbd> fills it with pretend viewers, labeled DEMO.
         </p>
-        <div className="flex min-h-[220px] flex-col border border-edge bg-card">
-          <div className="flex items-center justify-between border-b border-edge px-3 py-2 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-            <span>What it&rsquo;s hearing</span>
-            <span className="flex gap-3">
-              <button type="button" onClick={saveRaw} className="hover:text-fg">Save log</button>
-              <button type="button" onClick={() => setShowRaw((r) => !r)} className="hover:text-fg">{showRaw ? "Readable" : "Raw"}</button>
-            </span>
-          </div>
-          <ol className="flex flex-1 flex-col gap-1.5 overflow-hidden p-3 font-mono text-[11px] leading-snug">
-            {showRaw
-              ? raw.map((r, i) => <li key={`${raw.length - i}${r.slice(0, 20)}`} className="truncate text-fg/70">{r}</li>)
-              : heard.map((h) => (
-                  <li key={h.at + h.e.viewer.id + h.e.kind} className="truncate text-fg/80">
-                    <span className="text-fg">{h.e.viewer.name}</span> {describe(h.e)}
-                  </li>
-                ))}
-            {(showRaw ? raw.length : heard.length) === 0 && (
-              <li className="text-muted">{looking ? "Nothing yet. Once TikFinity or the bridge is connected and you're live, chats and gifts show up here." : "Find TikFinity or the bridge first (step 01), then chats and gifts show up here."}</li>
-            )}
-          </ol>
-        </div>
+        <HearingLog
+          heard={heard}
+          raw={raw}
+          empty={looking ? "Nothing yet. Once TikFinity or the bridge is connected and you're live, chats and gifts show up here." : "Find TikFinity or the bridge first (step 01), then chats and gifts show up here."}
+          onSave={() => saveLog(allRaw.current)}
+        />
         <p className="text-[12px] leading-relaxed text-muted">If a gift or a chat doesn&rsquo;t do what it should, Save log and send us the file.</p>
       </div>
     </div>

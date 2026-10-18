@@ -1,9 +1,10 @@
 import { FPS } from "@/lib/battle/sim";
 import { ARENA, type Fighter, type RoyaleGame } from "@/lib/live/games/royale";
 import type { Show } from "@/lib/live/show";
-import { crownLine, drawEffects, drawFloor, ruleLines } from "./battle";
+import { words } from "@/lib/live/words";
+import { crownLine, drawEffects, drawFloor, helpPic, ruleLines } from "./battle";
 import {
-  AX, AY, blade, circle, CPU, crown, ease, face, GOLD, HEAD, heart, INK, M, meteorFall, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, SIGNAL, spikeRing, STRIP, text, W,
+  AX, AY, blade, circle, CPU, crown, ease, face, GOLD, HEAD, INK, M, meteorFall, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, SIGNAL, spikeRing, STRIP, text, W,
   type Ctx, type View,
 } from "./kit";
 import type { GameDraw } from "./types";
@@ -88,7 +89,7 @@ export const royaleDraw: GameDraw = {
 
   rules(ctx, show, view) {
     ruleLines(ctx, [
-      { s: "LIKES HEAL YOUR BALL", size: 40, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 36, "#FF6FB5") },
+      { s: words(show.platform).royaleRules, size: 40, color: PAPER, pic: helpPic(ctx, show, 36) },
       { ...crownLine(show, view), pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },

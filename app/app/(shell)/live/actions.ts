@@ -1,7 +1,8 @@
 "use server";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import type { LiveCheck } from "@/lib/live/eligibility";
+import { z } from "zod";
+import type { LiveCheck, YtLiveCheck } from "@/lib/live/eligibility";
 import { validGifts } from "@/lib/live/menu";
 import { ownRivalryProblem, sidesProblem, validSideGifts } from "@/lib/live/rivals";
 import { liveSettingsSchema } from "@/lib/live/settings";
@@ -9,6 +10,7 @@ import { requireUser } from "@/lib/server/auth";
 import { forgetClips } from "@/lib/server/clips";
 import { asUser } from "@/lib/server/db";
 import { rotateOverlayKey, saveLiveSettings, setHideNames } from "@/lib/server/live";
+import { chooseLiveChannel } from "@/lib/server/ytlive";
 
 export type SaveState = { ok: boolean; message: string; at: number } | null;
 /** after a tap on the names switch: whether it saved, and which way */
@@ -91,4 +93,31 @@ export async function recheckLive() {
   await asUser(me.id, (tx) => tx`update public.profiles set live_check = null where id = ${me.id}`);
   revalidatePath("/app", "layout");
   redirect("/app/live#go-live");
+}
+
+/** Their answers to "can you get Super Chats on YouTube Live?": a box left unticked is a no. */
+export async function checkYouTubeLive(form: FormData) {
+  const me = await requireUser();
+  const on = (name: string) => form.get(name) === "on";
+  const c: YtLiveCheck = { adult: on("adult"), canGoLive: on("canGoLive"), computer: on("computer"), superChat: on("superChat") };
+  await asUser(me.id, (tx) => tx`update public.profiles set yt_live_check = ${tx.json(c)} where id = ${me.id}`);
+  revalidatePath("/app", "layout");
+  redirect("/app/live?on=youtube#go-live");
+}
+
+/** Answer YouTube's questions again. */
+export async function recheckYouTubeLive() {
+  const me = await requireUser();
+  await asUser(me.id, (tx) => tx`update public.profiles set yt_live_check = null where id = ${me.id}`);
+  revalidatePath("/app", "layout");
+  redirect("/app/live?on=youtube#go-live");
+}
+
+/** The YouTube channel they go live on, which the game then reads: only ever one of their own. */
+export async function pickLiveChannel(form: FormData) {
+  const me = await requireUser();
+  const id = z.uuid().safeParse(form.get("channel"));
+  if (id.success) await chooseLiveChannel(me.id, id.data);
+  revalidatePath("/app/live");
+  redirect("/app/live?on=youtube#go-live");
 }

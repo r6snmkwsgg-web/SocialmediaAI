@@ -11,7 +11,15 @@
  * whose `repeatCount` keeps climbing (1, 2, 5, 9…) and then one that says
  * the streak is over. Counting each message would pay out 1+2+5+9; this
  * pays out only what's new each time, so ten roses are worth ten.
+ *
+ * A YouTube LIVE comes in the same shape, read by Hookline itself
+ * (lib/live/youtube.ts): chat, and gifts for Super Chats, Super Stickers,
+ * memberships and Jewels gifts. It has no likes, follows or shares.
  */
+
+/** Where the LIVE is: TikTok, heard through TikFinity or Hookline Bridge, or YouTube, heard through Hookline itself. */
+export const LIVE_PLATFORMS = ["tiktok", "youtube"] as const;
+export type LivePlatform = (typeof LIVE_PLATFORMS)[number];
 
 export type Viewer = {
   id: string;

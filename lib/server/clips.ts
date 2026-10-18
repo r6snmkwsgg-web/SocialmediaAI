@@ -241,7 +241,8 @@ export async function takeClip(userId: string, o: { now: Date; today: Date; tz: 
     from public.live_clips c
     join public.live_sessions s on s.id = c.session_id and s.user_id = c.user_id
     where c.user_id = ${userId} and c.state = 'ready' and c.created_at > ${at(CLIP_DAYS * DAY)}
-      and s.verified and s.game = c.game
+      -- a TikTok LIVE's only: rounds on YouTube never become Shorts
+      and s.verified and s.game = c.game and s.platform = 'tiktok'
       -- the LIVE is over, so it can't stop counting as theirs after this
       and coalesce(s.last_event_at, s.started_at) < ${at(SESSION_IDLE)}
       -- the round was played while that LIVE was going

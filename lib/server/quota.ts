@@ -1,6 +1,6 @@
 import "server-only";
 import {
-  BUCKETS, capOf, fits, heldOf, KIND_NAMES, KINDS, lastWeek, LINK_CHECKS_A_DAY, METHODS, quotaDay, quotaResetsAt, SHARES, USES,
+  accountLiveUnits, BUCKETS, capOf, fits, heldOf, KIND_NAMES, KINDS, lastWeek, LINK_CHECKS_A_DAY, METHODS, quotaDay, quotaResetsAt, SHARES, USES,
   type Bucket, type Kind, type Method, type QuotaWeekDay,
 } from "../shorts/quota";
 import { admin, type Tx } from "./db";
@@ -15,8 +15,8 @@ import { youtubeQuota } from "./env";
  * needs. A call with no room left isn't made: it throws QuotaWait, and
  * whatever asked waits for the reset. When YouTube says an allowance is
  * used up anyway, it's closed until the reset, whatever the count says.
- * Each account's uploads and link checks are counted here too, by the
- * server alone.
+ * Each account's uploads, link checks and YouTube Live units are counted
+ * here too, by the server alone.
  */
 
 /** A call there's no room for today: whatever asked waits for `until`. `google` when YouTube itself said it's used up. */
@@ -114,6 +114,40 @@ export async function takeLinkCheck(userId: string, now = new Date()): Promise<b
     await forgetOldDays(tx, day);
     return took.length > 0;
   });
+}
+
+/**
+ * Takes YouTube Live's units for one call from an account's part of this
+ * quota day, or says no once that would take it past accountLiveUnits, so
+ * one streamer can't use everyone's LIVE time. Counted by the server alone.
+ */
+export async function takeLiveUnits(userId: string, units: number, now = new Date()): Promise<boolean> {
+  const day = quotaDay(now);
+  const most = accountLiveUnits(youtubeQuota().units);
+  if (units > most) return false;
+  return admin(async (tx) => {
+    const took = await tx`
+      insert into public.youtube_account_days (day, user_id, live_units) values (${day}, ${userId}, ${units})
+      on conflict (day, user_id) do update set live_units = youtube_account_days.live_units + excluded.live_units
+        where youtube_account_days.live_units + excluded.live_units <= ${most}
+      returning live_units`;
+    await forgetOldDays(tx, day);
+    return took.length > 0;
+  });
+}
+
+/** Units taken for a call that was never made (the project's allowance had run out first), given back. */
+export async function giveBackLiveUnits(userId: string, units: number, now = new Date()): Promise<void> {
+  await admin((tx) => tx`
+    update public.youtube_account_days set live_units = greatest(0, live_units - ${units})
+    where day = ${quotaDay(now)} and user_id = ${userId}`);
+}
+
+/** An account's YouTube Live units this quota day, and the most it may use. */
+export async function liveUnitsOf(userId: string, now = new Date()): Promise<{ used: number; most: number }> {
+  const [r] = await admin((tx) => tx<{ live_units: number }[]>`
+    select live_units from public.youtube_account_days where day = ${quotaDay(now)} and user_id = ${userId}`);
+  return { used: r?.live_units ?? 0, most: accountLiveUnits(youtubeQuota().units) };
 }
 
 /** The most a kind may use, or null where only the allowance itself limits it (posting, or an allowance with no limit). */

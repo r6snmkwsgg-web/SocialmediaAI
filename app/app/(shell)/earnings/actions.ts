@@ -26,13 +26,17 @@ export async function addGoal(form: FormData) {
   const me = await requireUser();
   const g = goal.safeParse({ series: form.get("series"), target: form.get("target"), period: form.get("period") });
   if (!g.success) redirect("/app/earnings?error=goal");
+  // Stripe's sales and Super Chats are money in their own currency, so they're said with its code and no $
+  const superChat = /^youtube:superchat:[a-z]{3}$/.test(g.data.series);
   const t = g.data.series.startsWith("stripe:revenue:")
     ? { source: "stripe", metric: g.data.series.slice("stripe:".length), noun: `in Stripe sales (${g.data.series.split(":")[2].toUpperCase()})` }
-    : TARGETS[g.data.series];
+    : superChat
+      ? { source: "youtube", metric: g.data.series.slice("youtube:".length), noun: `in Super Chats and Super Stickers (${g.data.series.split(":")[2].toUpperCase()})` }
+      : TARGETS[g.data.series];
   if (!t) redirect("/app/earnings?error=goal");
-  const money = t.metric.startsWith("revenue");
+  const money = t.metric.startsWith("revenue") || superChat;
   const amount = money ? g.data.target.toLocaleString("en-US", { maximumFractionDigits: 2 }) : Math.round(g.data.target).toLocaleString("en-US");
-  const label = `${money && !t.noun.includes("Stripe") ? "$" : ""}${amount} ${t.noun} ${g.data.period === "month" ? "this month" : "in all"}`;
+  const label = `${t.source === "youtube" && t.metric === "revenue" ? "$" : ""}${amount} ${t.noun} ${g.data.period === "month" ? "this month" : "in all"}`;
   await asUser(me.id, (tx) => tx`
     insert into public.goals (user_id, source, metric, target, period, label) values (${me.id}, ${t.source}, ${t.metric}, ${g.data.target}, ${g.data.period}, ${label})`);
   revalidatePath("/app/earnings");

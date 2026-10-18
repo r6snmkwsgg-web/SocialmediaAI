@@ -92,6 +92,7 @@ describe.skipIf(!safe)("the database", () => {
     process.env.GOOGLE_CLIENT_SECRET = "test-secret";
     process.env.YOUTUBE_API_KEY = "test-key";
     process.env.YOUTUBE_TEST_CHANNELS = TEST_CHANNEL;
+    process.env.YOUTUBE_LIVE = "1";
     process.env.TIKTOK_DIRECT_POST = "1";
     process.env.TIKTOK_PROFILE = "1";
     db = await import("@/lib/server/db");
@@ -4965,4 +4966,1003 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: ytlive
+  describe("ytlive: YouTube Live, from a stream's chat to Earnings", () => {
+    type LiveEvent = import("@/lib/live/events").LiveEvent;
+    let yt: typeof import("@/lib/server/ytlive");
+    let youtube: typeof import("@/lib/server/youtube");
+    let seal: (s: string) => string;
+    /** everyone the test running now made, deleted once it's done */
+    const made: string[] = [];
+    let count = 0;
+    const SEC = 1000, MIN = 60_000;
+    const plus = (d: Date, ms: number) => new Date(d.getTime() + ms);
+    /** A moment in Pacific time on a quota day of these tests' own, in April 2037, after the clocks have gone forward (UTC-7). */
+    const pacific = (date: string, time: string) => new Date(`${date}T${time}-07:00`);
+    /** what Google gave a channel that let Hookline see the account, and one that was let only upload */
+    const SCOPES = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/youtube.readonly https://www.googleapis.com/auth/yt-analytics.readonly";
+    const NO_READ = "https://www.googleapis.com/auth/youtube.upload https://www.googleapis.com/auth/yt-analytics.readonly";
+
+    /** Someone new with a YouTube channel Hookline holds a working token for, and the key in their game's address. */
+    const streamer = async (o: { plan?: "free" | "pro"; scopes?: string | null } = {}) => {
+      const n = ++count;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${`w2-ytlive-${n}@test.local`}) returning id`);
+      made.push(user);
+      await db.admin((tx) => tx`insert into public.subscriptions (user_id, plan, status) values (${user}, ${o.plan ?? "pro"}, 'active')`);
+      const channel = await channelOf(user, n, o.scopes === undefined ? SCOPES : o.scopes);
+      return { user, channel, name: `Streams ${n}`, key: await live.overlayKeyOf(user), access: `ya29.w2yt${n}` };
+    };
+    /** A YouTube channel of theirs, with its own token. */
+    const channelOf = async (user: string, n: number, scopes: string | null = SCOPES) => {
+      const [c] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.channels (user_id, platform, external_id, title) values (${user}, 'youtube', ${`UCw2ytlive${n}`}, ${`Streams ${n}`}) returning id`);
+      await db.admin((tx) => tx`insert into public.channel_tokens (channel_id, access_token, expires_at, scopes) values (${c.id}, ${seal(`ya29.w2yt${n}`)}, now() + interval '1 hour', ${scopes})`);
+      return c.id;
+    };
+
+    /** YouTube for the test: the stream live on the channel each token belongs to, and each chat read's page in turn. Every call is listed. */
+    const tube = (o: { live?: (access: string) => unknown; chat?: (read: number, url: URL) => unknown; token?: () => unknown } = {}) => {
+      let reads = 0;
+      return stubFetch((u, init) => {
+        const url = new URL(u);
+        const access = new Headers(init?.headers).get("authorization")?.replace("Bearer ", "") ?? "";
+        if (url.pathname.endsWith("/liveBroadcasts")) return o.live ? o.live(access) : { items: [] };
+        if (url.pathname.endsWith("/liveChat/messages")) return o.chat ? o.chat(++reads, url) : page([]);
+        if (u.startsWith("https://oauth2.googleapis.com/token")) return o.token ? o.token() : new Response(JSON.stringify({ error: "invalid_grant" }), { status: 400 });
+        return new Response("{}", { status: 404 });
+      });
+    };
+    const paths = (calls: Call[]) => calls.map((c) => new URL(c.url).pathname.replace("/youtube/v3/", ""));
+
+    /** A stream on air, as liveBroadcasts.list lists it. */
+    const onAir = (o: { id?: string; chat?: string | null; kids?: boolean; title?: string } = {}) => ({
+      items: [{
+        id: o.id ?? "w2ytLive001",
+        snippet: { title: o.title ?? "My stream", actualStartTime: "2037-04-06T18:55:00Z", ...(o.chat === null ? {} : { liveChatId: o.chat ?? "w2ytchat001" }) },
+        status: { privacyStatus: "public", madeForKids: o.kids ?? false, selfDeclaredMadeForKids: false },
+      }],
+    });
+    /** A page of the chat, as liveChatMessages.list sends it. */
+    const page = (items: unknown[], o: { next?: string; offline?: boolean } = {}) => ({
+      items, pollingIntervalMillis: 2000, ...(o.next ? { nextPageToken: o.next } : {}), ...(o.offline ? { offlineAt: "2037-04-06T19:00:00Z" } : {}),
+    });
+    const by = (channelId: string) => ({ channelId, displayName: "A viewer" });
+    const said = (id: string, at: Date, text: string, who = "UCw2ytviewer0000000001") => ({
+      id, snippet: { type: "textMessageEvent", publishedAt: at.toISOString(), textMessageDetails: { messageText: text } }, authorDetails: by(who),
+    });
+    const superChat = (id: string, at: Date, tier: number, comment?: string) => ({
+      id,
+      snippet: { type: "superChatEvent", publishedAt: at.toISOString(), superChatDetails: { amountMicros: "5000000", currency: "USD", amountDisplayString: "$5.00", tier, ...(comment ? { userComment: comment } : {}) } },
+      authorDetails: by("UCw2ytviewer0000000002"),
+    });
+    const jewels = (id: string, at: Date, combo: number) => ({
+      id, snippet: { type: "giftEvent", publishedAt: at.toISOString(), giftDetails: { giftName: "Glow stick", jewelsAmount: 10, comboCount: combo } }, authorDetails: by("UCw2ytviewer0000000003"),
+    });
+    const removed = (id: string, at: Date, target: string) => ({
+      id, snippet: { type: "messageDeletedEvent", publishedAt: at.toISOString(), messageDeletedDetails: { deletedMessageId: target } }, authorDetails: by("UCw2ytmoderator000001"),
+    });
+    const chatEnded = (at: Date) => ({ id: `ended-${at.getTime()}`, snippet: { type: "chatEndedEvent", publishedAt: at.toISOString() } });
+    /** YouTube saying no, with its reason. */
+    const refusal = (status: number, reason: string) => new Response(JSON.stringify({ error: { code: status, message: reason, errors: [{ reason }] } }), { status });
+
+    /** What a game got, as words: chat as it was said, and gifts with how many. */
+    const heard = (events: LiveEvent[]) => events.map((e) => (e.kind === "chat" ? e.text : e.kind === "gift" ? `${e.count}x ${e.gift}` : e.kind));
+    const readerOf = async (user: string) => (await db.admin((tx) => tx<{
+      state: string; detail: string | null; channel_id: string | null; broadcast_id: string | null; chat_id: string | null; page_token: string | null;
+      read_at: Date | null; next_at: Date; quiet: number; hurry_until: Date | null; paused_until: Date | null; paused_for: string | null; asked_at: Date | null; streaks: unknown;
+    }[]>`select * from public.yt_live_readers where user_id = ${user}`))[0];
+    const rowsOf = (user: string) => db.admin((tx) => tx<{ message_id: string; combo: number; events: LiveEvent[] }[]>`
+      select message_id, combo, events from public.yt_chat_events where user_id = ${user} order by seq`);
+    const streamOf = async (user: string, id = "w2ytLive001") => (await db.admin((tx) => tx<{
+      channel_id: string; title: string | null; ended_at: Date | null; super_chats: number; super_stickers: number; jewels: number; new_members: number; gifted_members: number;
+    }[]>`select channel_id, title, ended_at, super_chats, super_stickers, jewels::int as jewels, new_members, gifted_members from public.yt_broadcasts where user_id = ${user} and broadcast_id = ${id}`))[0];
+    /** An account's YouTube Live units on a quota day, as the server counted them, and as if it had. */
+    const unitsOf = async (user: string, day: string) => (await db.admin((tx) => tx<{ live_units: number }[]>`
+      select live_units from public.youtube_account_days where user_id = ${user} and day = ${day}`))[0]?.live_units ?? 0;
+    const hadUnits = (user: string, day: string, units: number) => db.admin((tx) => tx`
+      insert into public.youtube_account_days (day, user_id, live_units) values (${day}, ${user}, ${units})
+      on conflict (day, user_id) do update set live_units = excluded.live_units`);
+    /** YouTube Live's part of the day's units, as the ledger has it, and as if those calls had been made. */
+    const ledger = (day: string) => db.admin((tx) => tx<{ units: number; calls: number; full_at: Date | null }[]>`
+      select units, calls, full_at from public.youtube_quota where day = ${day} and bucket = 'units' and kind = 'live'`);
+    const liveUsed = (day: string, units: number) => db.admin((tx) => tx`
+      insert into public.youtube_quota (day, bucket, kind, units, calls) values (${day}, 'units', 'live', ${units}, ${units})
+      on conflict (day, bucket, kind) do update set units = excluded.units, calls = excluded.calls`);
+
+    /** The game opening at `at`: it looks for the stream straight away, and finds it. */
+    const opens = async (s: { key: string }, at: Date) => {
+      const r = await yt.youtubeLiveFor(s.key, null, { go: true, now: at });
+      expect(r).toMatchObject({ state: "live" });
+      return r!;
+    };
+
+    beforeAll(async () => {
+      if (!safe) return;
+      yt = await import("@/lib/server/ytlive");
+      youtube = await import("@/lib/server/youtube");
+      seal = (await import("@/lib/server/crypto")).seal;
+    });
+
+    afterEach(async () => {
+      if (!safe || !made.length) return;
+      const gone = made.splice(0);
+      await db.admin((tx) => tx`delete from auth.users where id = any(${gone}::uuid[])`);
+    });
+
+    afterAll(async () => {
+      if (!safe) return;
+      await db.admin((tx) => tx`delete from public.youtube_quota where day between '2037-01-01' and '2037-12-31'`);
+    });
+
+    it("finds the stream on the account's own channel, skips the chat's history, and serves what's new to every open game", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-06", "12:00:00");
+      const calls = tube({
+        live: (access) => (access === s.access ? onAir() : { items: [] }),
+        chat: (n) => n === 1
+          // the chat's history: a Super Chat from before the game found the stream never fires, but a vote just before it counts
+          ? page([superChat("w2yt-old", plus(t0, -10 * MIN), 4), said("w2yt-early", plus(t0, -20 * SEC), "1"), said("w2yt-hello", plus(t0, 500), "hello")], { next: "p2" })
+          : page([superChat("w2yt-sc1", plus(t0, 9 * SEC), 3, "2")], { next: "p3" }),
+      });
+      // opening the game looks for the stream at once, on the account's own channel, with its own access
+      const first = await opens(s, t0);
+      expect(first).toMatchObject({ state: "live", channel: s.name, title: "My stream", broadcast: "w2ytLive001", events: [], wait: 1000 });
+      expect(paths(calls)).toEqual(["liveBroadcasts"]);
+      const look = new URL(calls[0].url).searchParams;
+      expect([look.get("broadcastStatus"), look.get("broadcastType"), look.get("part")]).toEqual(["active", "all", "snippet,status"]);
+      expect(new Headers(calls[0].init?.headers).get("authorization")).toBe(`Bearer ${s.access}`);
+      expect(calls[0].init?.signal).toBeInstanceOf(AbortSignal);
+
+      // a second later its chat is read, and the reply of the one that read it carries what it found
+      const t1 = plus(t0, SEC);
+      const a = await yt.youtubeLiveFor(s.key, first.seq, { now: t1 });
+      expect(paths(calls)).toEqual(["liveBroadcasts", "liveChat/messages"]);
+      expect(new URL(calls[1].url).searchParams.get("liveChatId")).toBe("w2ytchat001");
+      expect(new URL(calls[1].url).searchParams.has("pageToken")).toBe(false);
+      expect(heard(a!.events)).toEqual(["1", "hello"]);
+      expect(a!.events[0]).toMatchObject({ kind: "chat", viewer: { id: "yt:UCw2ytviewer0000000001", name: "A viewer" } });
+      // and says to ask again just after the next read, ten seconds on
+      expect(a!.wait).toBe(10_300);
+
+      // another window, open since the start, gets the same from where it was, without YouTube being asked
+      const b = await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t1, 2 * SEC) });
+      expect(b!.events).toEqual(a!.events);
+      expect(calls).toHaveLength(2);
+
+      // both ask the moment the next read is due: YouTube is asked once, from where the chat was left
+      const t2 = plus(t1, 10 * SEC);
+      const both = await Promise.all([yt.youtubeLiveFor(s.key, a!.seq, { now: t2 }), yt.youtubeLiveFor(s.key, b!.seq, { now: t2 })]);
+      expect(paths(calls)).toEqual(["liveBroadcasts", "liveChat/messages", "liveChat/messages"]);
+      expect(new URL(calls[2].url).searchParams.get("pageToken")).toBe("p2");
+      expect(both.some((r) => heard(r!.events).join() === "2,1x Green Super Chat")).toBe(true);
+      // whichever didn't hold the turn gets it on its next ask, once
+      for (const r of both.filter((x) => !x!.events.length)) {
+        expect(heard((await yt.youtubeLiveFor(s.key, r!.seq, { now: plus(t2, SEC) }))!.events)).toEqual(["2", "1x Green Super Chat"]);
+      }
+      expect(calls).toHaveLength(3);
+
+      // what was kept: the new messages, never the history, and the stream with what the game heard on it
+      expect((await rowsOf(s.user)).map((r) => r.message_id)).toEqual(["w2yt-early", "w2yt-hello", "w2yt-sc1"]);
+      expect(await streamOf(s.user)).toMatchObject({ channel_id: s.channel, title: "My stream", ended_at: null, super_chats: 1 });
+      expect(await readerOf(s.user)).toMatchObject({ state: "live", page_token: "p3", quiet: 0 });
+      // three calls at 5 units, from the account's LIVE time and YouTube Live's part of everyone's
+      expect(await unitsOf(s.user, "2037-04-06")).toBe(15);
+      expect(await ledger("2037-04-06")).toEqual([{ units: 15, calls: 3, full_at: null }]);
+    });
+
+    it("answers 404 for a key that isn't anyone's without asking YouTube, and asks an account with no channel to connect one", async () => {
+      const route = await import("@/app/api/live/youtube/route");
+      const calls = tube();
+      const gone = await route.GET(new Request("https://hookline.test/api/live/youtube?key=w2ytlive-nobody-has-this-key"));
+      expect(gone.status).toBe(404);
+      expect(await yt.youtubeLiveFor("not a key!", null)).toBeNull();
+      // someone with a game address and no YouTube channel, through the route as a game asks
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values ('w2-ytlive-nochannel@test.local') returning id`);
+      made.push(user);
+      const res = await route.GET(new Request(`https://hookline.test/api/live/youtube?key=${await live.overlayKeyOf(user)}&go=1`));
+      expect(res.status).toBe(200);
+      expect(res.headers.get("cache-control")).toBe("no-store");
+      expect(await res.json()).toMatchObject({ state: "setup", channel: null, events: [], wait: 60_000 });
+      expect(calls).toHaveLength(0);
+    });
+
+    it("reads only with the account's own channels, starts over on the one they pick, and asks for a reconnect it can see is needed", async () => {
+      const s = await streamer();
+      const other = await streamer();
+      // the database won't let a reader name someone else's channel
+      await expect(db.admin((tx) => tx`insert into public.yt_live_readers (user_id, channel_id) values (${s.user}, ${other.channel})`)).rejects.toThrow(/foreign key/);
+      expect(await yt.chooseLiveChannel(s.user, other.channel)).toBe(false);
+      expect(await yt.chooseLiveChannel(s.user, "not-a-channel")).toBe(false);
+      const second = await channelOf(s.user, ++count);
+      const secondAccess = `ya29.w2yt${count}`;
+      const calls = tube({ live: (access) => (access === s.access ? onAir({ id: "w2ytFirst01" }) : access === secondAccess ? onAir({ id: "w2ytSecond1", title: "On my second channel" }) : { items: [] }) });
+      const t0 = pacific("2037-04-07", "12:00:00");
+      // the first channel connected, until they pick another
+      expect((await opens(s, t0)).broadcast).toBe("w2ytFirst01");
+      expect(await yt.chooseLiveChannel(s.user, second)).toBe(true);
+      expect(await readerOf(s.user)).toMatchObject({ channel_id: second, state: "idle", broadcast_id: null, chat_id: null });
+      const picked = await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, MIN) });
+      expect(picked).toMatchObject({ state: "live", channel: `Streams ${count}`, broadcast: "w2ytSecond1", title: "On my second channel" });
+      expect(new Headers(calls.at(-1)!.init?.headers).get("authorization")).toBe(`Bearer ${secondAccess}`);
+      // disconnected, it can't be picked, and the game goes back to the first
+      await (await import("@/lib/server/channels")).disconnectChannel(s.user, second);
+      expect(await yt.chooseLiveChannel(s.user, second)).toBe(false);
+      expect((await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, 2 * MIN) }))!.broadcast).toBe("w2ytFirst01");
+
+      // a token that wasn't let see the account: reconnect, without asking YouTube
+      const noRead = await streamer({ scopes: NO_READ });
+      const before = calls.length;
+      expect(await yt.youtubeLiveFor(noRead.key, null, { go: true, now: t0 })).toMatchObject({
+        state: "reconnect", detail: "Hookline isn't allowed to see this YouTube account.", broadcast: null, wait: 60_000,
+      });
+      expect(calls).toHaveLength(before);
+      // one whose scopes weren't saved is tried, and YouTube's refusal for missing permission means reconnect too
+      const unknown = await streamer({ scopes: null });
+      tube({ live: () => refusal(403, "insufficientPermissions") });
+      expect(await yt.youtubeLiveFor(unknown.key, null, { go: true, now: t0 })).toMatchObject({ state: "reconnect", detail: "Hookline isn't allowed to see this YouTube account." });
+      expect((await readerOf(unknown.user)).next_at).toEqual(plus(t0, 5 * MIN));
+      // its uploads aren't touched: the channel stays connected
+      expect(await db.admin((tx) => tx`select status from public.channels where id = ${unknown.channel}`)).toEqual([{ status: "connected" }]);
+    });
+
+    it("hands out a message YouTube sends twice once, pays a combo only the rise, and never what was removed in the same page", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-08", "12:00:00");
+      const t1 = plus(t0, SEC);
+      tube({
+        live: () => onAir(),
+        chat: (n) => n === 1
+          ? page([
+            said("w2yt-dup", plus(t0, 200), "hi"), said("w2yt-dup", plus(t0, 200), "hi"),
+            jewels("w2yt-j1", plus(t0, 400), 1), jewels("w2yt-j1", plus(t0, 600), 3),
+            said("w2yt-oops", plus(t0, 700), "something they took back"), removed("w2yt-del", plus(t0, 800), "w2yt-oops"),
+          ], { next: "p2" })
+          // YouTube sends the first two again, then a new message for the combo's next step
+          : page([said("w2yt-dup", plus(t0, 200), "hi"), jewels("w2yt-j1", plus(t0, 600), 3), jewels("w2yt-j2", plus(t1, 5 * SEC), 4)], { next: "p3" }),
+      });
+      const first = await opens(s, t0);
+      const a = await yt.youtubeLiveFor(s.key, first.seq, { now: t1 });
+      expect(heard(a!.events)).toEqual(["hi", "1x Glow stick", "2x Glow stick"]);
+      const b = await yt.youtubeLiveFor(s.key, a!.seq, { now: plus(t1, 10 * SEC) });
+      expect(heard(b!.events)).toEqual(["1x Glow stick"]);
+      expect((await rowsOf(s.user)).map((r) => [r.message_id, r.combo])).toEqual([["w2yt-dup", 0], ["w2yt-j1", 1], ["w2yt-j1", 3], ["w2yt-j2", 4]]);
+      // what the game heard on the stream: the Jewels of every gift handed out, once
+      expect(await streamOf(s.user)).toMatchObject({ jewels: 40, super_chats: 0 });
+      // one removed later stands in the game that had it, but goes from the chat no other game has had yet
+      tube({ chat: () => page([removed("w2yt-del2", plus(t1, 12 * SEC), "w2yt-dup")]) });
+      await yt.youtubeLiveFor(s.key, b!.seq, { now: plus(t1, 20 * SEC) });
+      expect((await rowsOf(s.user)).map((r) => r.message_id)).toEqual(["w2yt-j1", "w2yt-j1", "w2yt-j2"]);
+    });
+
+    it("never hands out anything over a minute old, so a game that fell behind starts from now, and each read tidies its own account's chat", async () => {
+      const s = await streamer();
+      const other = await streamer();
+      const t0 = pacific("2037-04-09", "12:00:00");
+      tube({ live: () => onAir(), chat: (n) => (n === 1 ? page([said("w2yt-m1", plus(t0, 500), "one")], { next: "p2" }) : page([], { next: `p${n + 1}` })) });
+      const first = await opens(s, t0);
+      expect(heard((await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) }))!.events)).toEqual(["one"]);
+      // chat from 11 and 2 minutes before the next ask, theirs and someone else's
+      const t2 = plus(t0, 3 * MIN);
+      const old = (user: string, id: string, ago: number) => db.admin((tx) => tx`
+        insert into public.yt_chat_events (user_id, broadcast_id, message_id, events, created_at)
+        values (${user}, 'w2ytLive001', ${id}, ${tx.json([{ kind: "chat", viewer: { id: "yt:UCold", name: "Old" }, text: id }])}, ${plus(t2, -ago)})`);
+      await old(s.user, "w2yt-11min", 11 * MIN);
+      await old(s.user, "w2yt-2min", 2 * MIN);
+      await old(other.user, "w2yt-theirs", 11 * MIN);
+      // a game that last heard anything at the start gets none of it, and carries on from the newest
+      const behind = await yt.youtubeLiveFor(s.key, first.seq, { now: t2 });
+      expect(behind!.events).toEqual([]);
+      const [{ seq }] = await db.admin((tx) => tx<{ seq: string }[]>`select max(seq)::text as seq from public.yt_chat_events where user_id = ${s.user}`);
+      expect(behind!.seq).toBe(Number(seq));
+      // its read let go of its own chat older than 10 minutes, and nobody else's
+      expect((await rowsOf(s.user)).map((r) => r.message_id)).toEqual(["w2yt-m1", "w2yt-2min"]);
+      expect((await rowsOf(other.user)).map((r) => r.message_id)).toEqual(["w2yt-theirs"]);
+    });
+
+    it("pauses an account at 1,500 units, everyone at YouTube Live's share and Free accounts at 80% of it, until the reset", async () => {
+      const t0 = pacific("2037-04-10", "15:00:00");
+      const reset = pacific("2037-04-11", "00:05:00");
+      const calls = tube({ live: () => onAir(), chat: () => page([said(`w2yt-${Math.random()}`, plus(t0, 500), "hi")]) });
+      // this account's own LIVE time: a read that would take it past 1,500 isn't made
+      const s = await streamer();
+      const first = await opens(s, t0);
+      await hadUnits(s.user, "2037-04-10", 1496);
+      const before = calls.length;
+      const own = await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) });
+      expect(own).toMatchObject({ state: "paused", who: "account", until: reset.toISOString(), events: [], wait: 60_000 });
+      expect(calls).toHaveLength(before);
+      expect(await unitsOf(s.user, "2037-04-10")).toBe(1496);
+      expect(await readerOf(s.user)).toMatchObject({ state: "paused", paused_for: "account", paused_until: reset, next_at: reset });
+      // nothing more is asked before the reset, and after it the chat is read again, from then on
+      expect((await yt.youtubeLiveFor(s.key, own!.seq, { now: plus(reset, -MIN) }))!.state).toBe("paused");
+      expect(calls).toHaveLength(before);
+      const back = await yt.youtubeLiveFor(s.key, own!.seq, { now: plus(reset, MIN) });
+      expect(back).toMatchObject({ state: "live", who: null, until: null });
+      expect(paths(calls).at(-1)).toBe("liveChat/messages");
+      expect(new URL(calls.at(-1)!.url).searchParams.has("pageToken")).toBe(false);
+      expect(await unitsOf(s.user, "2037-04-11")).toBe(5);
+
+      // everyone's: YouTube Live's 2,500 of the day's 10,000 units are used, so the call isn't made and the account's units come back
+      const t1 = pacific("2037-04-12", "15:00:00");
+      const e = await streamer();
+      const live1 = await opens(e, t1);
+      await liveUsed("2037-04-12", 2496);
+      const all = await yt.youtubeLiveFor(e.key, live1.seq, { now: plus(t1, SEC) });
+      expect(all).toMatchObject({ state: "paused", who: "everyone", until: pacific("2037-04-13", "00:05:00").toISOString() });
+      expect(await unitsOf(e.user, "2037-04-12")).toBe(5);
+
+      // Free accounts stop at 80% of it, 2,000 units, while paying accounts go on
+      const t2 = pacific("2037-04-13", "15:00:00");
+      const free = await streamer({ plan: "free" });
+      const paying = await streamer();
+      const live2 = await opens(free, t2);
+      const live3 = await opens(paying, t2);
+      await liveUsed("2037-04-13", 1996);
+      expect(await yt.youtubeLiveFor(free.key, live2.seq, { now: plus(t2, SEC) })).toMatchObject({ state: "paused", who: "everyone" });
+      expect(await yt.youtubeLiveFor(paying.key, live3.seq, { now: plus(t2, SEC) })).toMatchObject({ state: "live" });
+      expect(await ledger("2037-04-13")).toEqual([{ units: 2001, calls: 1997, full_at: null }]);
+    });
+
+    it("pauses everyone until the reset when YouTube itself says the quota is used up", async () => {
+      const t0 = pacific("2037-04-14", "15:00:00");
+      const s = await streamer();
+      tube({ live: () => onAir(), chat: () => refusal(403, "quotaExceeded") });
+      const first = await opens(s, t0);
+      expect(await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) })).toMatchObject({ state: "paused", who: "everyone", until: pacific("2037-04-15", "00:05:00").toISOString() });
+      expect(await ledger("2037-04-14")).toEqual([{ units: 10, calls: 2, full_at: plus(t0, SEC) }]);
+    });
+
+    it("says the stream ended and looks again a minute later, calls one still listed live again only once its chat is back, says chat is off and looks on the slow schedule, and asks for a reconnect once", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-15", "12:00:00");
+      let chatOn = true;
+      const calls = tube({
+        live: () => onAir(),
+        chat: (n) => (n === 1 ? page([said("w2yt-bye", plus(t0, 500), "bye"), chatEnded(plus(t0, 900))]) : chatOn ? page([]) : refusal(403, "liveChatDisabled")),
+      });
+      const first = await opens(s, t0);
+      const t1 = plus(t0, SEC);
+      const over = await yt.youtubeLiveFor(s.key, first.seq, { now: t1 });
+      expect(over).toMatchObject({ state: "ended", broadcast: null, wait: 60_000 });
+      expect(heard(over!.events)).toEqual(["bye"]);
+      expect(await streamOf(s.user)).toMatchObject({ ended_at: t1 });
+      expect(await readerOf(s.user)).toMatchObject({ chat_id: null, page_token: null, next_at: plus(t1, MIN) });
+
+      // a minute later it looks again, and YouTube still lists the stream that ended: it's read on the slow schedule, and it's still over meanwhile
+      const t2 = plus(t1, MIN);
+      expect(await yt.youtubeLiveFor(s.key, over!.seq, { now: t2 })).toMatchObject({ state: "ended", broadcast: null });
+      expect(await readerOf(s.user)).toMatchObject({ chat_id: "w2ytchat001", next_at: plus(t2, MIN) });
+      expect(await streamOf(s.user)).toMatchObject({ ended_at: t1 });
+      // that read finds its chat going again: it's live, and hasn't ended
+      const t3 = plus(t2, MIN);
+      expect((await yt.youtubeLiveFor(s.key, over!.seq, { now: t3 }))!.state).toBe("live");
+      expect(await streamOf(s.user)).toMatchObject({ ended_at: null });
+      // then YouTube says its chat is off
+      chatOn = false;
+      const off = await yt.youtubeLiveFor(s.key, over!.seq, { now: plus(t3, 10 * SEC) });
+      expect(off).toMatchObject({ state: "chat_off", detail: "Live chat is off on this stream.", broadcast: "w2ytLive001", kids: false });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t3, 10 * SEC + MIN));
+      // a stream made for kids has no chat, and the game says why without suggesting anything about it
+      tube({ live: () => onAir({ chat: null, kids: true }) });
+      expect(await yt.youtubeLiveFor(s.key, over!.seq, { now: plus(t3, 2 * MIN) })).toMatchObject({
+        state: "chat_off", detail: "YouTube has this stream as made for kids, so it has no live chat.", kids: true,
+      });
+
+      // Google refuses the channel's token: it needs reconnecting, it's said once, and YouTube isn't asked while it does
+      await db.admin((tx) => tx`update public.channel_tokens set expires_at = now() - interval '1 minute', refresh_token = ${seal("1//w2yt-refresh")} where channel_id = ${s.channel}`);
+      const refused = tube();
+      expect(await yt.youtubeLiveFor(s.key, null, { go: true, now: plus(t3, 10 * MIN) })).toMatchObject({ state: "reconnect", detail: "Hookline lost access to this channel." });
+      // only Google's token endpoint was asked, which refused
+      expect(refused.map((c) => c.url)).toEqual(["https://oauth2.googleapis.com/token"]);
+      await yt.youtubeLiveFor(s.key, null, { go: true, now: plus(t3, 12 * MIN) });
+      expect(refused).toHaveLength(1);
+      expect(await db.admin((tx) => tx`select title from public.notifications where user_id = ${s.user} and kind = 'account'`)).toEqual([{ title: "Reconnect YouTube" }]);
+      expect(paths(calls)).toEqual(["liveBroadcasts", "liveChat/messages", "liveBroadcasts", "liveChat/messages", "liveChat/messages"]);
+    });
+
+    it("keeps a quiet chat's next read within 10 seconds of the last one while a game counts down or votes", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-16", "12:00:00");
+      tube({ live: () => onAir(), chat: () => page([]) });
+      let at = t0;
+      let seq = (await opens(s, at)).seq;
+      // three reads that find nothing: the next is 20 seconds after the last
+      for (let i = 0; i < 4; i++) {
+        at = (await readerOf(s.user)).next_at;
+        seq = (await yt.youtubeLiveFor(s.key, seq, { now: at }))!.seq;
+      }
+      const quiet = await readerOf(s.user);
+      expect(quiet.quiet).toBe(4);
+      expect(quiet.next_at).toEqual(plus(quiet.read_at!, 20 * SEC));
+      // a game counting down pulls it back to 10 seconds after the last read, and the reads after it stay there while it lasts
+      const hurry = await yt.youtubeLiveFor(s.key, seq, { hurry: true, now: plus(quiet.read_at!, 3 * SEC) });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(quiet.read_at!, 10 * SEC));
+      expect(hurry!.wait).toBe(7300);
+      const next = plus(quiet.read_at!, 10 * SEC);
+      await yt.youtubeLiveFor(s.key, seq, { hurry: true, now: next });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(next, 10 * SEC));
+    });
+
+    it("lets a game counting down cut short only a quiet chat's slowdown, never a wait YouTube asked for or one after it didn't answer", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-05-07", "12:00:00");
+      let answer: () => unknown = () => page([]);
+      const calls = tube({ live: () => onAir(), chat: () => answer() });
+      const first = await opens(s, t0);
+      const t1 = plus(t0, SEC);
+      await yt.youtubeLiveFor(s.key, first.seq, { now: t1 });
+      // YouTube asks to be left a while: the next read is twice the usual wait away, and a countdown starting doesn't bring it closer
+      answer = () => refusal(403, "rateLimitExceeded");
+      const t2 = plus(t1, 10 * SEC);
+      await yt.youtubeLiveFor(s.key, first.seq, { now: t2 });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t2, 20 * SEC));
+      const asked = calls.length;
+      await yt.youtubeLiveFor(s.key, first.seq, { hurry: true, now: plus(t2, 2 * SEC) });
+      expect(calls).toHaveLength(asked);
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t2, 20 * SEC));
+      // YouTube not answering: 30 seconds, hurrying or not
+      answer = () => new Response("oops", { status: 503 });
+      const t3 = plus(t2, 20 * SEC);
+      await yt.youtubeLiveFor(s.key, first.seq, { hurry: true, now: t3 });
+      expect(calls).toHaveLength(asked + 1);
+      await yt.youtubeLiveFor(s.key, first.seq, { hurry: true, now: plus(t3, 2 * SEC) });
+      expect(calls).toHaveLength(asked + 1);
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t3, 30 * SEC));
+    });
+
+    it("looks straight away for a game that's just opened, but for reloads, look-nows and OBS starting the stream together no more than once a minute", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-05-06", "12:00:00");
+      const calls = tube({ live: () => ({ items: [] }) });
+      await yt.youtubeLiveFor(s.key, null, { go: true, now: t0 });
+      expect(calls).toHaveLength(1);
+      // reloaded half a minute later, and again, or asking again after Hookline didn't answer: each a first ask, and none looks again yet
+      await yt.youtubeLiveFor(s.key, null, { go: true, now: plus(t0, 30 * SEC) });
+      await yt.youtubeLiveFor(s.key, null, { go: true, now: plus(t0, 45 * SEC) });
+      expect(calls).toHaveLength(1);
+      // on the 5-minute schedule, a reload over a minute after the last look-now looks straight away, and the next within the minute doesn't
+      await db.admin((tx) => tx`update public.yt_live_readers set next_at = ${plus(t0, 5 * MIN)} where user_id = ${s.user}`);
+      await yt.youtubeLiveFor(s.key, null, { go: true, now: plus(t0, 70 * SEC) });
+      expect(calls).toHaveLength(2);
+      await yt.youtubeLiveFor(s.key, null, { now: plus(t0, 100 * SEC) });
+      expect(calls).toHaveLength(2);
+    });
+
+    it("reads a stream that went offline but YouTube still lists on the slow schedule, never every minute, and hears it once it's back", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-05-04", "12:00:00");
+      let at = t0;
+      let back = false;
+      const calls = tube({ live: () => onAir(), chat: () => (back ? page([said("w2yt-back", plus(at, -2 * SEC), "we're back")]) : page([], { offline: true })) });
+      await opens(s, at);
+      // the stream goes offline (OBS stopped, and its auto-stop is off), so YouTube still lists it as live
+      at = plus(t0, SEC);
+      expect(await yt.youtubeLiveFor(s.key, 0, { now: at })).toMatchObject({ state: "ended", broadcast: null, wait: 60_000 });
+      const ended = at;
+      // the game left open asks whenever it's told to, for half an hour, and hears the stream ended all along
+      const states = new Set<string>();
+      while (at < plus(ended, 30 * MIN)) {
+        at = (await readerOf(s.user)).next_at;
+        states.add((await yt.youtubeLiveFor(s.key, 0, { now: at }))!.state);
+      }
+      expect([...states]).toEqual(["ended"]);
+      // YouTube is asked as often as while waiting for any stream, a look and a read in turn, a minute apart for 10 minutes and then 5:
+      // 16 calls in all, where looking and reading every minute would be 60 for the half hour alone
+      expect(paths(calls)).toEqual(Array<string[]>(8).fill(["liveBroadcasts", "liveChat/messages"]).flat());
+      // a look-now while it's still offline reads it straight away, and it's still over
+      at = plus(at, MIN);
+      const before = calls.length;
+      expect((await yt.youtubeLiveFor(s.key, 0, { go: true, now: at }))!.state).toBe("ended");
+      expect((await yt.youtubeLiveFor(s.key, 0, { now: plus(at, SEC) }))!.state).toBe("ended");
+      expect(paths(calls.slice(before))).toEqual(["liveBroadcasts", "liveChat/messages"]);
+      // back by itself: within two turns its chat is heard again, and it's live
+      back = true;
+      let r: Awaited<ReturnType<typeof yt.youtubeLiveFor>> = null;
+      for (let i = 0; i < 2 && r?.state !== "live"; i++) {
+        at = (await readerOf(s.user)).next_at;
+        r = await yt.youtubeLiveFor(s.key, 0, { now: at });
+      }
+      expect(r).toMatchObject({ state: "live", broadcast: "w2ytLive001" });
+      expect(heard(r!.events)).toEqual(["we're back"]);
+      expect(await streamOf(s.user)).toMatchObject({ ended_at: null });
+    });
+
+    it("keeps nothing a look or a read brings back when the channel was disconnected while YouTube was being asked", async () => {
+      const { disconnectChannel } = await import("@/lib/server/channels");
+      const t0 = pacific("2037-05-05", "12:00:00");
+      /** YouTube, answering the call named only once the streamer has disconnected the channel it was asked through */
+      const meanwhile = (s: { user: string; channel: string }, on: string) => vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+        const url = new URL(String(input));
+        if (url.pathname.endsWith(on)) await disconnectChannel(s.user, s.channel);
+        const body = url.pathname.endsWith("/liveBroadcasts") ? onAir() : page([superChat("w2yt-late", plus(t0, 500), 3)]);
+        return new Response(JSON.stringify(body), { status: 200, headers: { "content-type": "application/json" } });
+      });
+      // a look: the stream isn't kept as one their reader heard, so no LIVE can count as theirs by it
+      const looked = await streamer();
+      meanwhile(looked, "/liveBroadcasts");
+      await yt.youtubeLiveFor(looked.key, null, { go: true, now: t0 });
+      expect(await streamOf(looked.user)).toBeUndefined();
+      expect(await readerOf(looked.user)).toMatchObject({ state: "idle", broadcast_id: null, chat_id: null });
+      // a read: nothing it read is handed out or counted
+      const read = await streamer();
+      tube({ live: () => onAir(), chat: () => page([]) });
+      const first = await opens(read, t0);
+      meanwhile(read, "/liveChat/messages");
+      expect((await yt.youtubeLiveFor(read.key, first.seq, { now: plus(t0, SEC) }))!.events).toEqual([]);
+      expect(await rowsOf(read.user)).toEqual([]);
+      expect(await readerOf(read.user)).toMatchObject({ state: "idle", broadcast_id: null, chat_id: null });
+    });
+
+    it("counts a game's wait from when it gets its reply, so YouTube taking a while to answer doesn't make every read later", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-05-08", "12:00:00");
+      tube({ live: () => onAir(), chat: () => page([]) });
+      const first = await opens(s, t0);
+      // YouTube took 2 seconds over the read: the next is 10 seconds after it answered, and so is the game's next ask
+      const t1 = plus(t0, SEC);
+      const read = await yt.youtubeLiveFor(s.key, first.seq, { now: t1, later: plus(t1, 2 * SEC) });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t1, 12 * SEC));
+      expect(read!.wait).toBe(10_300);
+      // a window that didn't take the turn counts from its own ask
+      expect((await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t1, 5 * SEC) }))!.wait).toBe(7300);
+    });
+
+    it("gives up on a token refresh Google doesn't answer within 5 seconds, as an outage, so a turn never outlasts its hold", async () => {
+      const s = await streamer();
+      await db.admin((tx) => tx`update public.channel_tokens set expires_at = now() - interval '1 minute', refresh_token = ${seal("1//w2yt-refresh")} where channel_id = ${s.channel}`);
+      // Google's token endpoint never answers
+      const asked: string[] = [];
+      vi.stubGlobal("fetch", (input: RequestInfo | URL) => {
+        asked.push(String(input));
+        return new Promise<Response>(() => {});
+      });
+      const t0 = pacific("2037-05-09", "12:00:00");
+      const began = Date.now();
+      expect(await yt.youtubeLiveFor(s.key, null, { go: true, now: t0 })).toMatchObject({ state: "error", detail: "YouTube isn't answering.", wait: 30_300 });
+      // inside the turn's 15-second hold, so no other window could take the turn meanwhile and ask YouTube alongside it
+      expect(Date.now() - began).toBeLessThan(15_000);
+      expect(asked).toEqual(["https://oauth2.googleapis.com/token"]);
+      expect(await db.admin((tx) => tx`select busy_until, next_at from public.yt_live_readers where user_id = ${s.user}`)).toEqual([{ busy_until: null, next_at: plus(t0, 30 * SEC) }]);
+      // it wasn't a refusal, so the channel isn't marked as needing reconnecting
+      expect(await db.admin((tx) => tx`select status from public.channels where id = ${s.channel}`)).toEqual([{ status: "connected" }]);
+    }, 20_000);
+
+    it("lets nobody signed in read the chat, people read only their own reader and streams and change none of it, and goes with the account", async () => {
+      const s = await streamer();
+      const other = await streamer();
+      tube({ live: () => onAir(), chat: () => page([said("w2yt-rls", plus(pacific("2037-04-17", "12:00:00"), 500), "hi")]) });
+      const first = await opens(s, pacific("2037-04-17", "12:00:00"));
+      await yt.youtubeLiveFor(s.key, first.seq, { now: pacific("2037-04-17", "12:00:01") });
+      await expect(db.asUser(s.user, (tx) => tx`select * from public.yt_chat_events`)).rejects.toThrow(/permission denied/);
+      expect(await db.asUser(s.user, (tx) => tx`select user_id, state from public.yt_live_readers`)).toEqual([{ user_id: s.user, state: "live" }]);
+      expect(await db.asUser(s.user, (tx) => tx`select broadcast_id from public.yt_broadcasts`)).toEqual([{ broadcast_id: "w2ytLive001" }]);
+      expect(await db.asUser(other.user, (tx) => tx`select user_id from public.yt_live_readers`)).toEqual([]);
+      expect(await db.asUser(other.user, (tx) => tx`select broadcast_id from public.yt_broadcasts`)).toEqual([]);
+      const refused: ((tx: import("@/lib/server/db").Tx) => Promise<unknown>)[] = [
+        (tx) => tx`update public.yt_live_readers set state = 'live', paused_until = null`,
+        (tx) => tx`insert into public.yt_live_readers (user_id) values (${other.user})`,
+        (tx) => tx`delete from public.yt_live_readers`,
+        (tx) => tx`update public.yt_broadcasts set super_chats = 1000`,
+        (tx) => tx`insert into public.yt_broadcasts (user_id, broadcast_id, channel_id) values (${other.user}, 'w2ytFake001', ${other.channel})`,
+        (tx) => tx`insert into public.yt_chat_events (user_id, broadcast_id, message_id, events) values (${other.user}, 'w2ytLive001', 'fake', '[]')`,
+        (tx) => tx`update public.youtube_account_days set live_units = 0`,
+      ];
+      for (const q of refused) await expect(db.asUser(other.user, q)).rejects.toThrow(/permission denied/);
+      // deleting the account deletes all of it
+      await db.admin((tx) => tx`delete from auth.users where id = ${s.user}`);
+      const left = await db.admin((tx) => tx<{ n: number }[]>`
+        select (select count(*) from public.yt_live_readers where user_id = ${s.user}) + (select count(*) from public.yt_broadcasts where user_id = ${s.user})
+          + (select count(*) from public.yt_chat_events where user_id = ${s.user}) + (select count(*) from public.youtube_account_days where user_id = ${s.user}) as n`);
+      expect(Number(left[0].n)).toBe(0);
+    });
+
+    it("lets go of a channel's streams, their chat and the names heard through it when it's disconnected, and the reader starts over; sessions keep their numbers", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-18", "12:00:00");
+      tube({ live: () => onAir(), chat: () => page([superChat("w2yt-sc", plus(t0, 500), 2)]) });
+      const first = await opens(s, t0);
+      await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) });
+      // a stream on another of their channels, heard by the same reader before
+      const second = await channelOf(s.user, ++count);
+      await db.admin((tx) => tx`insert into public.yt_broadcasts (user_id, broadcast_id, channel_id) values (${s.user}, 'w2ytOther01', ${second})`);
+      const names = [{ id: "yt:UCw2ytviewer0000000002", name: "Kayla", coins: 0 }];
+      const [{ id: session }, { id: elsewhere }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, rounds, platform, broadcasts, top_gifters)
+        values (gen_random_uuid(), ${s.user}, 'battle', ${t0}, 4, 'youtube', '{w2ytLive001}', ${tx.json(names)}),
+               (gen_random_uuid(), ${s.user}, 'battle', ${t0}, 2, 'youtube', '{w2ytOther01}', ${tx.json(names)})
+        returning id`);
+      expect(await rowsOf(s.user)).toHaveLength(1);
+      await (await import("@/lib/server/channels")).disconnectChannel(s.user, s.channel);
+      expect(await streamOf(s.user)).toBeUndefined();
+      expect(await rowsOf(s.user)).toEqual([]);
+      expect(await readerOf(s.user)).toMatchObject({ state: "idle", broadcast_id: null, chat_id: null, streaks: {} });
+      // its LIVE keeps its numbers, but not the supporters' names read through the channel; a LIVE heard through another keeps them
+      const sessions = await db.admin((tx) => tx<{ id: string; rounds: number; broadcasts: string[]; top_gifters: unknown[] }[]>`
+        select id, rounds, broadcasts, top_gifters from public.live_sessions where user_id = ${s.user}`);
+      expect(sessions.find((x) => x.id === session)).toMatchObject({ rounds: 4, broadcasts: ["w2ytLive001"], top_gifters: [] });
+      expect(sessions.find((x) => x.id === elsewhere)).toMatchObject({ rounds: 2, top_gifters: names });
+      await (await import("@/lib/server/channels")).disconnectChannel(s.user, second);
+      // with no channel left, the game asks them to connect one
+      expect((await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, MIN) }))!.state).toBe("setup");
+    });
+
+    it("tidies up: chat older than 10 minutes, YouTube viewers' names after 30 days, and readers nobody has asked for in an hour", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-19", "12:00:00");
+      tube({ live: () => onAir() });
+      await opens(s, t0);
+      await db.admin((tx) => tx`
+        insert into public.yt_chat_events (user_id, broadcast_id, message_id, events, created_at)
+        values (${s.user}, 'w2ytLive001', 'w2yt-stale', '[]', ${plus(t0, -11 * MIN)}), (${s.user}, 'w2ytLive001', 'w2yt-recent', '[]', ${plus(t0, -MIN)})`);
+      const gifters = [{ id: "yt:UCw2ytviewer0000000001", name: "Kayla", coins: 0 }];
+      const sessions = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, platform, top_gifters)
+        values (gen_random_uuid(), ${s.user}, 'battle', ${plus(t0, -31 * 86400_000)}, 'youtube', ${tx.json(gifters)}),
+               (gen_random_uuid(), ${s.user}, 'battle', ${plus(t0, -29 * 86400_000)}, 'youtube', ${tx.json(gifters)}),
+               (gen_random_uuid(), ${s.user}, 'battle', ${plus(t0, -31 * 86400_000)}, 'tiktok', ${tx.json([{ id: "7001", name: "Kayla", coins: 5 }])})
+        returning id`);
+      const picked = await channelOf(s.user, ++count);
+      await db.admin((tx) => tx`update public.yt_live_readers set channel_id = ${picked} where user_id = ${s.user}`);
+      // just asked: chat older than 10 minutes goes, the rest stays, and so does the reader
+      await yt.sweepYouTubeLive(t0);
+      expect((await rowsOf(s.user)).map((r) => r.message_id)).toEqual(["w2yt-recent"]);
+      expect(await readerOf(s.user)).toMatchObject({ state: "live", broadcast_id: "w2ytLive001" });
+      // names go from YouTube sessions over 30 days old, and from nothing else
+      const names = await db.admin((tx) => tx<{ id: string; top_gifters: unknown[] }[]>`select id, top_gifters from public.live_sessions where user_id = ${s.user}`);
+      const of = (id: string) => names.find((r) => r.id === id)!.top_gifters;
+      expect([of(sessions[0].id), of(sessions[1].id).length, of(sessions[2].id).length]).toEqual([[], 1, 1]);
+      // an hour with nobody asking: the reader goes back to idle, keeping the channel they picked
+      const lines = await yt.sweepYouTubeLive(plus(t0, 61 * MIN));
+      expect(lines.join("\n")).toMatch(/readers nobody asked for in an hour back to idle/);
+      expect(await rowsOf(s.user)).toEqual([]);
+      expect(await readerOf(s.user)).toMatchObject({ state: "idle", broadcast_id: null, chat_id: null, streaks: {}, channel_id: picked });
+    });
+
+    it("counts each YouTube Live call at its cost, and reads streams, chat and Super Chats as YouTube lists them", async () => {
+      const fixture = (name: string) => JSON.parse(readFileSync(join("tests/fixtures/youtube", name), "utf8")) as unknown;
+      const now = pacific("2037-04-20", "12:30:00");
+      const calls = tube({ live: () => fixture("broadcasts.json"), chat: () => fixture("chat-page.json") });
+      // two live at once: the latest started that has a chat
+      expect(await youtube.youtubeActiveBroadcast("ya29.w2yt", now)).toEqual({
+        id: "w2ytBcast01", chatId: "Cg0KC3cyeXRCY2FzdDAx", title: "Ball Battle all night", privacy: "public", madeForKids: false, startedAt: new Date("2037-04-06T19:00:12Z"),
+      });
+      const chat = await youtube.youtubeChatPage("ya29.w2yt", "Cg0KC3cyeXRCY2FzdDAx", "GLprev", now);
+      expect(chat).toMatchObject({ next: "GLvR8oaNw2ytNext", waitMs: 4000, offline: false });
+      expect(chat.items).toHaveLength(24);
+      const asked = new URL(calls[1].url).searchParams;
+      expect([asked.get("part"), asked.get("maxResults"), asked.get("pageToken")]).toEqual(["snippet,authorDetails", "2000", "GLprev"]);
+      stubFetch(() => fixture("superchats.json"));
+      expect(await youtube.youtubeSuperChats("ya29.w2yt", null, now)).toEqual({
+        items: [
+          { amountMicros: 5_000_000, currency: "USD", createdAt: new Date("2037-04-06T19:29:44Z") },
+          { amountMicros: 100_000_000, currency: "JPY", createdAt: new Date("2037-04-06T19:29:47Z") },
+          { amountMicros: 2_000_000, currency: "USD", createdAt: new Date("2037-04-06T19:29:53Z") },
+        ],
+        next: "CDIQAA",
+      });
+      // 5 for a look, 5 for a page of chat and 1 for a page of Super Chats, all YouTube Live's
+      expect(await ledger("2037-04-20")).toEqual([{ units: 11, calls: 3, full_at: null }]);
+    });
+
+    it("tells the LIVE page what the game hears, which stream, whether a game is open and how much of today's LIVE time is used", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-21", "12:00:00");
+      expect(await yt.youtubeLiveOf(s.user, t0)).toMatchObject({ state: "idle", channel: s.name, title: null, open: false, used: 0 });
+      tube({ live: () => onAir({ title: "Friday fights" }), chat: () => page([]) });
+      const first = await opens(s, t0);
+      await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) });
+      expect(await yt.youtubeLiveOf(s.user, plus(t0, MIN))).toEqual({
+        state: "live", detail: null, kids: false, channelId: s.channel, channel: s.name, title: "Friday fights", open: true, used: 10 / 1500, until: null, who: null,
+      });
+      expect((await yt.youtubeLiveOf(s.user, plus(t0, 3 * MIN))).open).toBe(false);
+      // the LIVE page listening keeps the chat read, but isn't a game being open
+      await yt.youtubeLiveFor(s.key, first.seq, { setup: true, now: plus(t0, 4 * MIN) });
+      expect((await yt.youtubeLiveOf(s.user, plus(t0, 4 * MIN))).open).toBe(false);
+      expect((await readerOf(s.user)).asked_at).toEqual(plus(t0, 4 * MIN));
+      await hadUnits(s.user, "2037-04-21", 1500);
+      expect((await yt.youtubeLiveOf(s.user, plus(t0, 3 * MIN))).used).toBe(1);
+    });
+
+    it("looks for the stream on its schedule while it isn't live, and straight away on a look-now, at most once a minute", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-22", "12:00:00");
+      const calls = tube({ live: () => ({ items: [] }) });
+      expect(await yt.youtubeLiveFor(s.key, null, { go: true, now: t0 })).toMatchObject({ state: "not_live", channel: s.name, broadcast: null, wait: 60_000 });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t0, MIN));
+      // a look-now half a minute after the last one waits for the schedule
+      await yt.youtubeLiveFor(s.key, 0, { go: true, now: plus(t0, 30 * SEC) });
+      expect(calls).toHaveLength(1);
+      // the schedule: a minute on
+      await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, MIN) });
+      expect(calls).toHaveLength(2);
+      // a look-now over a minute after the last goes straight away
+      await yt.youtubeLiveFor(s.key, 0, { go: true, now: plus(t0, 70 * SEC) });
+      expect(calls).toHaveLength(3);
+      // ten minutes after it started looking again, every 5 minutes, with the game asking once a minute meanwhile, as it does
+      await db.admin((tx) => tx`update public.yt_live_readers set next_at = ${plus(t0, 12 * MIN)}, asked_at = ${plus(t0, 11 * MIN)} where user_id = ${s.user}`);
+      await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, 12 * MIN) });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t0, 17 * MIN));
+      expect(paths(calls)).toEqual(["liveBroadcasts", "liveBroadcasts", "liveBroadcasts", "liveBroadcasts"]);
+    });
+
+    it("starts over on another channel when the one its stream was on needs reconnecting, rather than reading it with the other's access", async () => {
+      const s = await streamer();
+      const second = await channelOf(s.user, ++count);
+      const secondAccess = `ya29.w2yt${count}`;
+      const t0 = pacific("2037-04-23", "12:00:00");
+      const calls = tube({ live: (access) => onAir({ id: access === s.access ? "w2ytFirst01" : "w2ytSecond1" }), chat: () => page([]) });
+      expect((await opens(s, t0)).broadcast).toBe("w2ytFirst01");
+      // Google stops letting Hookline into the first: the connected one comes first now, and reading starts over there
+      await db.admin((tx) => tx`update public.channels set status = 'expired' where id = ${s.channel}`);
+      const moved = await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, SEC) });
+      expect(moved).toMatchObject({ state: "live", broadcast: "w2ytSecond1", channel: `Streams ${count}` });
+      expect(paths(calls)).toEqual(["liveBroadcasts", "liveBroadcasts"]);
+      expect(new Headers(calls[1].init?.headers).get("authorization")).toBe(`Bearer ${secondAccess}`);
+      expect((await streamOf(s.user, "w2ytSecond1")).channel_id).toBe(second);
+      // picked, the one that needs reconnecting is the one the game asks about
+      expect(await yt.chooseLiveChannel(s.user, s.channel)).toBe(true);
+      expect(await yt.youtubeLiveFor(s.key, 0, { now: plus(t0, 2 * SEC) })).toMatchObject({ state: "reconnect", channel: s.name, broadcast: null });
+      expect(calls).toHaveLength(2);
+    });
+
+    it("says YouTube isn't answering and tries again in 30 seconds, and waits twice as long when YouTube asks to be left a while", async () => {
+      const s = await streamer();
+      const t0 = pacific("2037-04-24", "12:00:00");
+      let answer: () => unknown = () => page([]);
+      tube({ live: () => onAir(), chat: () => answer() });
+      const first = await opens(s, t0);
+      answer = () => new Response("oops", { status: 503 });
+      const t1 = plus(t0, SEC);
+      expect(await yt.youtubeLiveFor(s.key, first.seq, { now: t1 })).toMatchObject({ state: "error", detail: "YouTube isn't answering.", broadcast: "w2ytLive001" });
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t1, 30 * SEC));
+      // back: the chat is read again from where it was
+      answer = () => page([said("w2yt-back", plus(t1, 20 * SEC), "back")]);
+      const t2 = plus(t1, 30 * SEC);
+      expect(heard((await yt.youtubeLiveFor(s.key, first.seq, { now: t2 }))!.events)).toEqual(["back"]);
+      expect((await readerOf(s.user)).state).toBe("live");
+      // too often: the state stays, and the next read is twice the usual wait away
+      answer = () => refusal(403, "rateLimitExceeded");
+      const t3 = plus(t2, 10 * SEC);
+      expect((await yt.youtubeLiveFor(s.key, first.seq, { now: t3 }))!.state).toBe("live");
+      expect((await readerOf(s.user)).next_at).toEqual(plus(t3, 20 * SEC));
+      // YouTube no longer having the chat is the stream ending
+      answer = () => refusal(404, "liveChatNotFound");
+      const t4 = plus(t3, 20 * SEC);
+      expect(await yt.youtubeLiveFor(s.key, first.seq, { now: t4 })).toMatchObject({ state: "ended", broadcast: null });
+      expect(await streamOf(s.user)).toMatchObject({ ended_at: t4 });
+    });
+
+    /** A YouTube LIVE session as the game sends it, played on the stream the tests' reader finds. */
+    const youtubeSession = (key: string, o: Partial<import("@/lib/live/session").SessionPayload> & { id: string; startedAt: number }) => ({
+      key, game: "battle" as const, lastAt: o.startedAt + 10 * MIN, rounds: 3, coins: 1200, peakPlayers: 5,
+      topGifters: [{ id: "yt:UCw2ytviewer0000000002", name: "Kayla", coins: 1000 }], platform: "youtube" as const, broadcasts: ["w2ytLive001"], ...o,
+    });
+
+    it("saves a YouTube LIVE as theirs only when their own reader heard every stream it names, with no gift coins and its supporters by name", async () => {
+      const { whyNotCounted } = await import("@/lib/live/proof");
+      const s = await streamer();
+      const t0 = pacific("2037-04-25", "12:00:00");
+      tube({ live: () => onAir({ title: "Saturday fights" }), chat: () => page([superChat("w2yt-s1", plus(t0, 500), 3, "1"), jewels("w2yt-j1", plus(t0, 600), 2)]) });
+      const first = await opens(s, t0);
+      await yt.youtubeLiveFor(s.key, first.seq, { now: plus(t0, SEC) });
+      // played two hours ago, so Earnings looks at it
+      const id = crypto.randomUUID();
+      const startedAt = Date.now() - 2 * 3600_000;
+      // a YouTube game hears no TikTok LIVE, whatever a send says, and keeps its own power to itself
+      expect(await live.recordSession({ ...youtubeSession(s.key, { id, startedAt }), heard: ["someone.else"], unknown: true })).toBe(true);
+      expect(await live.sessionOf(s.user, id)).toMatchObject({
+        platform: "youtube", coins: 0, rounds: 3, heard: [], unknown: false, broadcasts: ["w2ytLive001"], verified: true,
+        topGifters: [{ id: "yt:UCw2ytviewer0000000002", name: "Kayla", coins: 0 }],
+        streams: [{ id: "w2ytLive001", title: "Saturday fights", channel: s.name, superChats: 1, superStickers: 0, jewels: 20, newMembers: 0, giftedMembers: 0 }],
+      });
+      // the newest send's supporters, in the game's order; an older one arriving late changes nothing
+      await live.recordSession(youtubeSession(s.key, { id, startedAt, lastAt: startedAt + 12 * MIN, topGifters: [{ id: "yt:UCw2ytviewer0000000003", name: "Omar", coins: 50 }, { id: "yt:UCw2ytviewer0000000002", name: "Kayla", coins: 9 }] }));
+      await live.recordSession(youtubeSession(s.key, { id, startedAt, lastAt: startedAt + 11 * MIN, topGifters: [] }));
+      expect((await live.sessionOf(s.user, id))!.topGifters.map((g) => [g.name, g.coins])).toEqual([["Omar", 0], ["Kayla", 0]]);
+      // a send that says TikTok can't make it a TikTok LIVE with gift coins
+      await live.recordSession({ ...youtubeSession(s.key, { id, startedAt }), platform: "tiktok", coins: 5000, heard: ["w2yt.streams"] });
+      expect(await live.sessionOf(s.user, id)).toMatchObject({ platform: "youtube", coins: 0, heard: [], verified: true });
+
+      // a stream their reader never heard isn't theirs, and naming one makes a session stop counting, whatever comes after
+      const other = crypto.randomUUID();
+      await live.recordSession(youtubeSession(s.key, { id: other, startedAt, broadcasts: ["w2ytNever01"] }));
+      const theirs = (await live.sessionOf(s.user, other))!;
+      expect(theirs).toMatchObject({ verified: false, streams: [] });
+      expect(whyNotCounted(theirs, [], true)).toBe("Hookline has no record of hearing this stream's chat, so it can't say it was yours.");
+      await live.recordSession(youtubeSession(s.key, { id, startedAt, broadcasts: ["w2ytNever01"] }));
+      await live.recordSession(youtubeSession(s.key, { id, startedAt }));
+      expect(await live.sessionOf(s.user, id)).toMatchObject({ verified: false, broadcasts: ["w2ytLive001", "w2ytNever01"] });
+
+      // gift coins seen are TikTok's: Earnings counts none from YouTube, and lists no YouTube LIVE as not counted
+      const e = await earn.earningsOf(s.user, 30);
+      expect(e.series.some((x) => x.id === "live:coins")).toBe(false);
+      expect(e.unverified).toEqual({ lives: 0, coins: 0 });
+      // connecting TikTok verifies TikTok LIVEs only, even a YouTube one that somehow names that username
+      const [tt] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.channels (user_id, platform, external_id, title, handle) values (${s.user}, 'tiktok', ${`w2yt-tt-${s.user.slice(0, 8)}`}, 'TT', 'w2yt.streams') returning id`);
+      const odd = crypto.randomUUID();
+      await db.admin((tx) => tx`insert into public.live_sessions (id, user_id, game, started_at, platform, heard, verified) values (${odd}, ${s.user}, 'battle', now(), 'youtube', '{w2yt.streams}', false)`);
+      await live.rememberTikTok(s.user, tt.id, "w2yt.streams");
+      expect((await live.sessionOf(s.user, odd))!.verified).toBe(false);
+      // and no YouTube LIVE can carry gift coins at all
+      await expect(db.admin((tx) => tx`update public.live_sessions set coins = 10 where id = ${id}`)).rejects.toThrow(/live_sessions_youtube_no_coins/);
+    });
+
+    it("welcomes back a TikTok LIVE's supporters only: a YouTube LIVE is never the last LIVE, even one begun just after a TikTok one ended", async () => {
+      const s = await streamer();
+      const now = new Date();
+      const ago = (ms: number) => new Date(now.getTime() - ms);
+      await db.admin((tx) => tx`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, coins, top_gifters, heard, verified, platform)
+        values (gen_random_uuid(), ${s.user}, 'battle', ${ago(3 * 3600_000)}, ${ago(3600_000)}, 4, 300, ${tx.json([{ id: "7001", name: "Kai", coins: 300 }])}, '{w2yt.tt}', true, 'tiktok'),
+               (gen_random_uuid(), ${s.user}, 'battle', ${ago(50 * MIN)}, ${ago(30 * MIN)}, 6, 0, ${tx.json([{ id: "yt:UCw2ytviewer0000000009", name: "Ana", coins: 0 }])}, '{}', false, 'youtube')`);
+      expect(await live.lastLiveOf(s.user, now)).toEqual({ verified: true });
+      expect((await live.overlayFor(s.key, now))!.supporters).toEqual(["7001"]);
+    });
+
+    it("recaps a YouTube LIVE with the Super Chats the game heard on its stream and nothing about money, and tidies up as it does", async () => {
+      const s = await streamer();
+      // someone who never said whether their channel has Super Chat, so Earnings never reads theirs
+      const unasked = await streamer();
+      await db.admin((tx) => tx`update public.profiles set yt_live_check = ${tx.json({ adult: true, canGoLive: true, computer: true, superChat: true })} where id = ${s.user}`);
+      const t0 = pacific("2037-04-26", "12:00:00");
+      tube({ live: () => onAir({ title: "Sunday fights" }), chat: () => page([superChat("w2yt-r1", plus(t0, 500), 2), superChat("w2yt-r2", plus(t0, 700), 5, "go blue")]) });
+      const ids = new Map<string, string>();
+      for (const who of [s, unasked]) {
+        const first = await opens(who, t0);
+        await yt.youtubeLiveFor(who.key, first.seq, { now: plus(t0, SEC) });
+        ids.set(who.user, crypto.randomUUID());
+        await live.recordSession(youtubeSession(who.key, { id: ids.get(who.user)!, game: "rivals", startedAt: t0.getTime(), lastAt: plus(t0, 30 * MIN).getTime(), rounds: 7, peakPlayers: 12 }));
+      }
+      const id = ids.get(s.user)!;
+      const done = await live.recapLives(plus(t0, 61 * MIN));
+      expect(done).toContain(`recap for ${id}`);
+      const notesOf = (user: string) => db.admin((tx) => tx<{ title: string; body: string; href: string }[]>`select title, body, href from public.notifications where user_id = ${user} and kind = 'live'`);
+      const notes = await notesOf(s.user);
+      expect(notes).toEqual([{
+        title: "LIVE recap on YouTube: 7 rounds",
+        body: "12 playing at once. The game heard 2 Super Chats on \"Sunday fights\". What viewers paid shows in Earnings, from YouTube.",
+        href: `/app/live/${id}`,
+      }]);
+      expect(`${notes[0].title} ${notes[0].body}`).not.toMatch(/\$|USD|coin|Kayla/i);
+      // Earnings reads no Super Chats for someone who didn't say they have them, so their recap doesn't point there
+      expect((await notesOf(unasked.user)).map((n) => n.body)).toEqual(["12 playing at once. The game heard 2 Super Chats on \"Sunday fights\"."]);
+      // the same job tidied YouTube Live: nobody has asked for this reader in an hour
+      expect((await readerOf(s.user)).state).toBe("idle");
+    });
+
+    it("never makes a Short from a round played on YouTube", async () => {
+      const clips = await import("@/lib/server/clips");
+      const clip = await import("@/lib/live/clip");
+      const { scriptedShow } = await import("@/lib/live/clip-demo");
+      const { PLANS } = await import("@/lib/billing/plans");
+      const s = await streamer();
+      await db.admin((tx) => tx`update public.profiles set goal = 'both' where id = ${s.user}`);
+      // a Rivals round worth a Short, from made-up viewers playing the way real ones do
+      let log: import("@/lib/live/clip").ClipLog | undefined;
+      for (let seed = 1; seed <= 8 && !log; seed++) {
+        log = scriptedShow("rivals", seed).kept.map((k) => k.log).find((l) => clip.clipWindow(clip.replay(l), l)!.drama.score >= clip.CLIP_MIN_SCORE);
+      }
+      const now = new Date();
+      const ago = (ms: number) => new Date(now.getTime() - ms);
+      // two LIVEs that count as theirs and are over, one on each platform, each with that round waiting
+      const lives = await db.admin((tx) => tx<{ id: string; platform: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, platform, heard, broadcasts, verified)
+        values (gen_random_uuid(), ${s.user}, 'rivals', ${ago(2 * 3600_000)}, ${ago(3600_000)}, 5, 'youtube', '{}', '{w2ytLive001}', true),
+               (gen_random_uuid(), ${s.user}, 'rivals', ${ago(5 * 3600_000)}, ${ago(4 * 3600_000)}, 5, 'tiktok', '{w2yt.tt}', '{}', true)
+        returning id, platform`);
+      const wait = (session: string, at: Date) => db.admin((tx) => tx`
+        insert into public.live_clips (user_id, session_id, round, game, state, log, score, played_at)
+        values (${s.user}, ${session}, 1, 'rivals', 'ready', ${tx.json({ ...log!, session, round: 1, at: at.getTime() })}, 9, ${at})`);
+      const take = () => clips.takeClip(s.user, { now, today: ago(6 * 3600_000), tz: "UTC", per: PLANS.pro.shorts, rand: () => 0.5 });
+      await wait(lives.find((l) => l.platform === "youtube")!.id, ago(90 * MIN));
+      expect(await take()).toBeNull();
+      const tiktok = lives.find((l) => l.platform === "tiktok")!.id;
+      await wait(tiktok, ago(4.5 * 3600_000));
+      expect((await take())?.session).toBe(tiktok);
+    });
+
+    it("reads Super Chats only for channels whose owners said they have them, adds them up by local day and currency, and leaves a channel it can't read as it was", async () => {
+      const { localDay, dayAfter } = await import("@/lib/earnings/superchats");
+      const iso = (d: Date) => d.toISOString().slice(0, 10);
+      const tz = "America/Los_Angeles";
+      // Earnings shows the last 30 or 90 days from today, so this reads around now
+      const now = new Date();
+      const ago = (hours: number) => new Date(now.getTime() - hours * 3600_000);
+      const dayOf = (d: Date) => localDay(d, tz);
+      const says = (superChat: boolean) => ({ adult: true, canGoLive: true, computer: true, superChat });
+      const s = await streamer();
+      const second = await channelOf(s.user, ++count);
+      const secondAccess = `ya29.w2yt${count}`;
+      const capped = await streamer();
+      const quiet = await streamer();
+      for (const [u, yes] of [[s.user, true], [capped.user, true], [quiet.user, false]] as const) {
+        await db.admin((tx) => tx`update public.profiles set timezone = ${tz}, yt_live_check = ${tx.json(says(yes))} where id = ${u}`);
+      }
+      const paid = (dollars: number, currency: string, at: Date) => ({ snippet: { amountMicros: String(dollars * 1e6), currency, createdAt: at.toISOString(), messageType: 1, isSuperStickerEvent: false } });
+      let firstPage = [paid(5, "USD", ago(1)), paid(100, "JPY", ago(30)), paid(2, "USD", ago(60)), paid(1, "USD", ago(31 * 24))];
+      let secondFails = false;
+      const calls = stubFetch((u, init) => {
+        if (!new URL(u).pathname.endsWith("/superChatEvents")) return new Response("{}", { status: 404 });
+        const access = new Headers(init?.headers).get("authorization")?.replace("Bearer ", "");
+        if (access === s.access) return { items: firstPage };
+        if (access === secondAccess) return secondFails ? refusal(403, "forbidden") : { items: [paid(10, "USD", ago(2))] };
+        // more than 40 pages: one every 6 hours, never reaching back 30 days
+        const n = Number(new URL(u).searchParams.get("pageToken") ?? 0);
+        return { items: [paid(1, "USD", ago(6 * n + 1))], nextPageToken: String(n + 1) };
+      });
+      const quiet0 = await db.admin((tx) => tx`select 1 from public.metrics where user_id = ${quiet.user}`);
+      await earn.syncEarnings(now);
+      const askedWith = calls.filter((c) => new URL(c.url).pathname.endsWith("/superChatEvents")).map((c) => new Headers(c.init?.headers).get("authorization"));
+      expect(askedWith.filter((a) => a === `Bearer ${quiet.access}`)).toEqual([]);
+      expect(askedWith.filter((a) => a === `Bearer ${capped.access}`)).toHaveLength(40);
+      // what's kept, as "<channel> <metric> <day> <amount>", by currency and day, the first channel first
+      const rows = async () => (await db.admin((tx) => tx<{ channel_id: string; metric: string; day: Date; value: string }[]>`
+        select channel_id, metric, day, value from public.metrics where user_id = ${s.user} and source = 'youtube' and metric like 'superchat:%'
+        order by metric, day, channel_id = ${s.channel} desc`)).map((r) => `${r.channel_id === s.channel ? "first" : "second"} ${r.metric} ${iso(r.day)} ${Number(r.value)}`);
+      /** the same, worked out from what YouTube listed: each on its local day, and a channel's on the same day in the same currency added up */
+      type Paid = { who: "first" | "second"; cur: string; at: Date; v: number };
+      const expected = (list: Paid[]) => {
+        const sums = new Map<string, Paid & { day: string }>();
+        for (const x of list) {
+          const day = dayOf(x.at);
+          const k = `${x.who} ${x.cur} ${day}`;
+          sums.set(k, { ...x, day, v: (sums.get(k)?.v ?? 0) + x.v });
+        }
+        return [...sums.values()]
+          .sort((a, b) => a.cur.localeCompare(b.cur) || a.day.localeCompare(b.day) || (a.who === "first" ? -1 : 1))
+          .map((x) => `${x.who} superchat:${x.cur} ${x.day} ${x.v}`);
+      };
+      const listed: Paid[] = [
+        { who: "first", cur: "usd", at: ago(1), v: 5 }, { who: "first", cur: "jpy", at: ago(30), v: 100 }, { who: "first", cur: "usd", at: ago(60), v: 2 },
+        { who: "second", cur: "usd", at: ago(2), v: 10 },
+      ];
+      // the one from before 30 days ago is left out
+      expect(await rows()).toEqual(expected(listed));
+      // each channel's days read: from the first whole day 30 days back, to today; the capped one from the day after the oldest it reached
+      const days = async (user: string) => (await db.admin((tx) => tx<{ id: string; since: string | null; till: string | null }[]>`
+        select id, superchats_from::text as since, superchats_through::text as till from public.channels where user_id = ${user} order by added_at`)).map((c) => [c.since, c.till]);
+      const whole = dayAfter(dayOf(new Date(now.getTime() - 30 * 86400_000)));
+      expect(await days(s.user)).toEqual([[whole, dayOf(now)], [whole, dayOf(now)]]);
+      expect(await days(capped.user)).toEqual([[dayAfter(dayOf(ago(6 * 39 + 1))), dayOf(now)]]);
+      expect(await days(quiet.user)).toEqual([[null, null]]);
+      expect(await db.admin((tx) => tx`select 1 from public.metrics where user_id = ${quiet.user}`)).toEqual(quiet0);
+
+      // in Earnings: added up across both channels by currency, what viewers paid before YouTube's share, unknown before the first read
+      const usd = (await earn.earningsOf(s.user, 90)).series.find((x) => x.id === "youtube:superchat:usd")!;
+      expect(usd).toMatchObject({ source: "youtube", label: "Super Chats and Super Stickers (USD)", unit: "money", currency: "USD", total: 17, from: whole });
+      expect(usd.note).toBe("What viewers paid on your channels, before YouTube's share");
+      expect(usd.points.filter((p) => p.day < whole).every((p) => p.value === null)).toBe(true);
+      expect(usd.points.filter((p) => p.day >= whole).every((p) => typeof p.value === "number")).toBe(true);
+      expect((await earn.earningsOf(s.user, 90)).series.find((x) => x.id === "youtube:superchat:jpy")).toMatchObject({ total: 100, currency: "JPY" });
+      // one channel picked shows its own
+      expect((await earn.earningsOf(s.user, 30, second)).series.find((x) => x.id === "youtube:superchat:usd")).toMatchObject({ total: 10 });
+      // a goal on them counts money in that currency, across every channel
+      await db.admin((tx) => tx`insert into public.goals (user_id, source, metric, target, period, label) values (${s.user}, 'youtube', 'superchat:usd', 100, 'all', '100 in Super Chats and Super Stickers (USD) in all')`);
+      expect((await earn.earningsOf(s.user, 30, second)).goals).toMatchObject([{ progress: 17, unit: "money", currency: "USD" }]);
+
+      // the next read: the first channel has one more, and the second can't be read, so its days stay as they were
+      firstPage = [paid(3, "USD", ago(0.5)), ...firstPage];
+      secondFails = true;
+      const log = await earn.syncEarnings(now);
+      expect(log.some((l) => l.startsWith(`super chats ${second} failed`))).toBe(true);
+      expect(await rows()).toEqual(expected([{ who: "first", cur: "usd", at: ago(0.5), v: 3 }, ...listed]));
+
+      // disconnected, its figures and the days they covered go with it
+      await (await import("@/lib/server/channels")).disconnectChannel(s.user, s.channel);
+      expect((await rows()).every((r) => r.startsWith("second"))).toBe(true);
+      expect((await days(s.user))[0]).toEqual([null, null]);
+    });
+
+    it("keeps someone's answers about YouTube Live on their profile, where only they can read or change them", async () => {
+      const { parseYtLiveCheck } = await import("@/lib/live/eligibility");
+      const s = await streamer();
+      const other = await streamer();
+      const yes = { adult: true, canGoLive: true, computer: true, superChat: true };
+      await db.asUser(s.user, (tx) => tx`update public.profiles set yt_live_check = ${tx.json(yes)} where id = ${s.user}`);
+      expect(await db.asUser(other.user, (tx) => tx`update public.profiles set yt_live_check = null where id = ${s.user} returning id`)).toEqual([]);
+      expect(await db.asUser(other.user, (tx) => tx`select yt_live_check from public.profiles where id = ${s.user}`)).toEqual([]);
+      const [p] = await db.asUser(s.user, (tx) => tx<{ yt_live_check: unknown }[]>`select yt_live_check from public.profiles where id = ${s.user}`);
+      expect(parseYtLiveCheck(p.yt_live_check)).toEqual(yes);
+    });
+  });
 });

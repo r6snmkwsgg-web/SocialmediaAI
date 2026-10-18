@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { LIVE_PLATFORMS } from "./events";
 import { HEARD_MAX, type Heard } from "./proof";
 import { GAME_IDS } from "./settings";
 import type { Show } from "./show";
@@ -33,14 +34,24 @@ export const sessionSchema = z.object({
   heard: z.array(z.string().regex(/^[a-z0-9._]{2,24}$/)).max(HEARD_MAX).default([]),
   /** some of it came from a source that didn't say whose LIVE it was (TikFinity), so it can't count */
   unknown: z.boolean().default(false),
+  /** where the LIVE was; a game from before there was YouTube sends none, and was on TikTok */
+  platform: z.enum(LIVE_PLATFORMS).default("tiktok"),
+  /** on YouTube, the streams it heard real viewers on, by video id, as Hookline's own reader found them */
+  broadcasts: z.array(z.string().regex(/^[A-Za-z0-9_-]{11}$/)).max(HEARD_MAX).default([]),
 });
 
 export type SessionPayload = z.infer<typeof sessionSchema>;
 
-/** The session so far, ready to send, with the LIVEs it heard; null until a real viewer has done something. */
-export function sessionPayload(show: Show, key: string, { heard, unknown }: Heard = { heard: [], unknown: false }): SessionPayload | null {
+/**
+ * The session so far, ready to send, with the LIVEs it heard; null until a
+ * real viewer has done something. YouTube has no gift coins: what the game
+ * counts there is its own power, which never leaves the game, so a YouTube
+ * session sends none, and its top gifters only in their order.
+ */
+export function sessionPayload(show: Show, key: string, { heard, unknown, broadcasts }: Heard = { heard: [], unknown: false, broadcasts: [] }): SessionPayload | null {
   const s = show.stats;
   if (s.firstAt === null || s.lastAt === null) return null;
+  const coins = show.platform === "tiktok";
   return {
     key,
     id: s.id,
@@ -48,11 +59,13 @@ export function sessionPayload(show: Show, key: string, { heard, unknown }: Hear
     startedAt: s.firstAt,
     lastAt: s.lastAt,
     rounds: s.rounds,
-    coins: s.coins,
+    coins: coins ? s.coins : 0,
     peakPlayers: s.peakPlayers,
-    topGifters: show.topGifters(5).map((g) => ({ id: g.viewer.id.slice(0, 64), name: g.viewer.name.slice(0, 64), coins: g.coins })),
+    topGifters: show.topGifters(5).map((g) => ({ id: g.viewer.id.slice(0, 64), name: g.viewer.name.slice(0, 64), coins: coins ? g.coins : 0 })),
     heard: heard.slice(0, HEARD_MAX),
     unknown,
+    platform: show.platform,
+    broadcasts: broadcasts.slice(0, HEARD_MAX),
   };
 }
 

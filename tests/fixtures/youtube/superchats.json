@@ -1,0 +1,62 @@
+{
+  "kind": "youtube#superChatEventListResponse",
+  "etag": "w2-ytlive-superchats",
+  "nextPageToken": "CDIQAA",
+  "pageInfo": { "totalResults": 3, "resultsPerPage": 50 },
+  "items": [
+    {
+      "kind": "youtube#superChatEvent",
+      "etag": "w2-ytlive-superchat-1",
+      "id": "w2ytSuperChat1",
+      "snippet": {
+        "channelId": "UCw2ytliveChannel0000001",
+        "supporterDetails": { "channelId": "UCmarco00000000000000001", "channelUrl": "http://www.youtube.com/channel/UCmarco00000000000000001", "displayName": "Marco", "profileImageUrl": "https://yt3.ggpht.example/marco=s88" },
+        "commentText": "2",
+        "createdAt": "2037-04-06T19:29:44.000Z",
+        "amountMicros": "5000000",
+        "currency": "USD",
+        "displayString": "$5.00",
+        "messageType": 3,
+        "isSuperStickerEvent": false
+      }
+    },
+    {
+      "kind": "youtube#superChatEvent",
+      "etag": "w2-ytlive-superchat-2",
+      "id": "w2ytSuperChat2",
+      "snippet": {
+        "channelId": "UCw2ytliveChannel0000001",
+        "supporterDetails": { "channelId": "UCyui000000000000000001", "channelUrl": "http://www.youtube.com/channel/UCyui000000000000000001", "displayName": "Yui", "profileImageUrl": "https://yt3.ggpht.example/yui=s88" },
+        "commentText": "",
+        "createdAt": "2037-04-06T19:29:47.000Z",
+        "amountMicros": "100000000",
+        "currency": "JPY",
+        "displayString": "¥100",
+        "messageType": 1,
+        "isSuperStickerEvent": false
+      }
+    },
+    {
+      "kind": "youtube#superChatEvent",
+      "etag": "w2-ytlive-superchat-3",
+      "id": "w2ytSuperChat3",
+      "snippet": {
+        "channelId": "UCw2ytliveChannel0000001",
+        "supporterDetails": { "channelId": "UCsam000000000000000001", "channelUrl": "http://www.youtube.com/channel/UCsam000000000000000001", "displayName": "Sam", "profileImageUrl": "https://yt3.ggpht.example/sam=s88" },
+        "createdAt": "2037-04-06T19:29:53.000Z",
+        "amountMicros": "2000000",
+        "currency": "usd",
+        "displayString": "$2.00",
+        "messageType": 2,
+        "isSuperStickerEvent": true,
+        "superStickerMetadata": { "stickerId": "w2ytSticker1", "altText": "A dancing cat", "language": "en" }
+      }
+    },
+    {
+      "kind": "youtube#superChatEvent",
+      "etag": "w2-ytlive-superchat-4",
+      "id": "w2ytSuperChat4",
+      "snippet": { "channelId": "UCw2ytliveChannel0000001", "createdAt": "not a time", "amountMicros": "1000000", "currency": "USD" }
+    }
+  ]
+}

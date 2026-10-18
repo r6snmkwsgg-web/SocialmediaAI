@@ -1,5 +1,5 @@
 import type { BattleEvent, Team } from "../../battle/sim";
-import type { Viewer } from "../events";
+import type { LivePlatform, Viewer } from "../events";
 import type { Tier } from "../menu";
 import type { GameId, LiveSettings } from "../settings";
 import type { RoundTape } from "../tape";
@@ -60,6 +60,8 @@ export type RoundStart = {
   /** what the vote picked, if there was a vote */
   option: VoteOption | null;
   rand: () => number;
+  /** how many seconds behind the game the stream's chat reaches it: none on TikTok, a read of YouTube's chat and its stream delay there */
+  lag?: number;
 };
 
 export interface Game {
@@ -76,6 +78,12 @@ export interface Game {
    * up for a race) or wait until play starts (a battle's fight).
    */
   readonly liveInIntro: boolean;
+  /**
+   * Whether free entries close as play starts (Ball Race's gate), so the
+   * countdown is the only time to type your way in, and it runs longer
+   * behind a stream whose chat reaches the game late.
+   */
+  readonly gate?: boolean;
 
   start(o: RoundStart): void;
   /** one physics step */
@@ -115,4 +123,4 @@ export interface Game {
   tape?(): RoundTape | null;
 }
 
-export type GameMaker = (s: LiveSettings) => Game;
+export type GameMaker = (s: LiveSettings, platform: LivePlatform) => Game;

@@ -4,19 +4,25 @@ import { rng } from "@/lib/battle/sim";
 import type { BridgeStatus } from "@/lib/live/bridge";
 import type { ClipLog } from "@/lib/live/clip";
 import { connectionView, sinceAfter, type SocketState } from "@/lib/live/connection";
-import { demoTick, demoViewer } from "@/lib/live/demo";
-import type { LiveEvent, Viewer } from "@/lib/live/events";
+import { demoTick, demoViewer, pretendGift } from "@/lib/live/demo";
+import type { LiveEvent, LivePlatform, Viewer } from "@/lib/live/events";
 import type { MenuGift, Tier } from "@/lib/live/menu";
 import type { LiveSettings } from "@/lib/live/settings";
 import { HeardLog, heardIn, type Heard } from "@/lib/live/proof";
 import { LETTERS, LIKES_PER_HP, Show } from "@/lib/live/show";
+import type { YouTubeStatus } from "@/lib/live/youtube";
 import { draw, H, W } from "./draw/frame";
 import { LiveSound } from "./sound";
-import { LiveSource, SOURCES, type SourceId } from "./source";
+import { LiveSource, SOURCES, type GameSource } from "./source";
+import { YouTubeSource } from "./youtube-source";
 
 type Props = {
   /** where the live's events come from; none means only the test panel and demo */
-  src: SourceId | "none";
+  src: GameSource | "none";
+  /** where the LIVE is, for the menu and the words on screen: YouTube whenever it's heard from there */
+  platform?: LivePlatform;
+  /** the streamer's overlay key: on YouTube, how the game asks Hookline for the chat of their own stream */
+  overlayKey?: string;
   /** a custom WebSocket address, instead of the source's usual one */
   url?: string;
   demo: boolean;
@@ -40,8 +46,24 @@ type Props = {
   onClip?: (log: ClipLog) => void;
 };
 
-/** Where the game is listening, kept outside React so the drawing loop reads it fresh every frame. */
-type Ear = { src: SourceId | "none"; socket: SocketState; since: number; bridge: BridgeStatus | null; heardAt: number; bridgeOff: boolean };
+/**
+ * Where the game is listening, kept outside React so the drawing loop
+ * reads it fresh every frame. On YouTube, what Hookline last said about
+ * the stream (null until it answers), and the last stream it named.
+ */
+type Ear = {
+  src: GameSource | "none";
+  socket: SocketState;
+  since: number;
+  bridge: BridgeStatus | null;
+  heardAt: number;
+  bridgeOff: boolean;
+  youtube?: YouTubeStatus | null;
+  broadcast: string | null;
+};
+
+/** what the game listens to, as people know it */
+const toolName = (src: GameSource) => (src === "youtube" ? "Hookline" : SOURCES[src].name);
 
 const TESTERS: [Viewer, Viewer] = [
   { id: "test-1", name: "tester one", pretend: true },
@@ -68,10 +90,12 @@ function useImages() {
 
 /**
  * The live game on a canvas, for the streamer to put on their stream. It
- * runs the game in real time, listens to TikFinity or the bridge, and has
- * a test panel (press T) for trying every gift without spending a coin.
+ * runs the game in real time, listens to TikFinity or the bridge, or on
+ * YouTube asks Hookline for the stream's chat, and has a test panel
+ * (press T) for trying every gift without spending a coin.
  */
-export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, hideNames, supporters, onStats, onClip }: Props) {
+export function LiveGame({ src, platform: look, overlayKey, url, demo: demoAtStart, clean, settings, tag = false, notice, status: calm, hideNames, supporters, onStats, onClip }: Props) {
+  const platform: LivePlatform = src === "youtube" ? "youtube" : (look ?? "tiktok");
   const canvas = useRef<HTMLCanvasElement>(null);
   const show = useRef<Show | null>(null);
   const sound = useRef<LiveSound | null>(null);
@@ -80,11 +104,11 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const [panel, setPanel] = useState(false);
   const [demoOn, setDemoOn] = useState(demoAtStart);
   // the source can change: a bridge that Hookline has switched off sends the game to TikFinity
-  const [live, setLive] = useState<SourceId | "none">(src);
+  const [live, setLive] = useState<GameSource | "none">(src);
   const [soundOn, setSoundOn] = useState(false);
   const [muted, setMuted] = useState(false);
   const [, redraw] = useState(0);
-  const ear = useRef<Ear>({ src, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now(), bridgeOff: false });
+  const ear = useRef<Ear>({ src, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now(), bridgeOff: false, broadcast: null });
   const heard = useRef(new HeardLog());
   const stats = useRef(onStats);
   stats.current = onStats;
@@ -94,7 +118,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const names = useRef(false);
   names.current = hideNames ?? settings?.hideNames ?? false;
 
-  if (!show.current) show.current = new Show({ settings });
+  if (!show.current) show.current = new Show({ settings, platform });
   if (!sound.current) {
     sound.current = new LiveSound();
     sound.current.setVolume(show.current.settings.volume);
@@ -122,8 +146,38 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   // listen to the live, and keep track of whether it can really hear it, and whose it is
   useEffect(() => {
     const h = ear.current;
-    Object.assign(h, { src: live, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now() });
+    Object.assign(h, { src: live, socket: "closed", since: Date.now(), bridge: null, heardAt: Date.now(), youtube: live === "youtube" ? null : undefined, broadcast: null });
     if (live === "none") return;
+    if (live === "youtube") {
+      // without its key the game can't ask for anything: the address was replaced while it was open
+      if (!overlayKey) {
+        h.youtube = { state: "gone" };
+        return;
+      }
+      const y = new YouTubeSource(overlayKey, {
+        onEvent: (e) => {
+          h.heardAt = Date.now();
+          handle(e);
+          // the stream it came from, which Hookline found on the account's own channel
+          const id = show.current ? heardIn(show.current, e) : null;
+          if (id) heard.current.noteYouTube(id, h.broadcast);
+        },
+        onState: (st) => {
+          h.since = sinceAfter(h.socket, st, h.since, Date.now());
+          h.socket = st;
+        },
+        onStatus: (st) => {
+          // a quiet chat counts from when Hookline started reading it
+          if (st.state === "live" && h.youtube?.state !== "live") h.heardAt = Date.now();
+          // the last stream named: an answer from as a stream ends brings its last chat and no stream
+          if (st.state !== "gone" && st.broadcast) h.broadcast = st.broadcast;
+          h.youtube = st;
+        },
+        hurry: () => show.current?.hurrying ?? false,
+      });
+      y.start();
+      return () => y.stop();
+    }
     const s = new LiveSource(live === src && url ? url : SOURCES[live].url, {
       onEvent: (e) => {
         h.heardAt = Date.now();
@@ -150,7 +204,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     });
     s.start();
     return () => s.stop();
-  }, [live, src, url, handle]);
+  }, [live, src, url, handle, overlayKey]);
 
   // the session's numbers, every half minute and when the page closes
   useEffect(() => {
@@ -173,9 +227,12 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     const s = show.current!;
     const snd = sound.current!;
     const rand = rng(Date.now() % 100_000);
-    // where each side has its own gifts, pretend viewers send their side's
+    // pretend viewers send what's on the menu, and where each side has its own gifts, their side's
     const sm = s.game.sideMenu?.bind(s.game);
-    const sides = sm ? ([0, 1] as const).map((t) => sm(t).filter((x) => x.effect !== "heal").map((x): MenuGift => ({ name: x.gift, coins: x.price ?? x.min }))) as [MenuGift[], MenuGift[]] : undefined;
+    const sides = sm ? ([0, 1] as const).map((t) => sm(t).filter((x) => x.effect !== "heal").map(pretendGift)) as [MenuGift[], MenuGift[]] : undefined;
+    const gifts = s.game.menu.map(pretendGift);
+    // YouTube's chat has no likes or follows
+    const likes = s.platform === "tiktok";
     let round = -1;
     let seen = 0;
     let cues = s.cueCount;
@@ -185,7 +242,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     const step = (now: number) => {
       const dt = Math.min(0.25, (now - last) / 1000);
       last = now;
-      if (demo.current) for (const e of demoTick(dt, rand, s.game.teams, s.phase === "win" && !!s.vote, sides)) s.handle(e);
+      if (demo.current) for (const e of demoTick(dt, rand, { teams: s.game.teams, voting: s.phase === "win" && !!s.vote, gifts, sides, likes })) s.handle(e);
       s.update(dt);
       // a round kept for a Short goes out once, as it's decided: with names hidden, it names nobody
       for (const c of s.takeClips({ hideNames: names.current })) clip.current?.(c);
@@ -207,7 +264,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
     const top = () => {
       const h = ear.current;
       if (h.src === "none") return { status: calm, notice };
-      const c = connectionView({ ...h, name: SOURCES[h.src].name, now: Date.now() });
+      const c = connectionView({ ...h, name: toolName(h.src), now: Date.now() });
       return { status: c.status ?? calm, notice: c.notice ?? notice };
     };
 
@@ -294,9 +351,13 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
   const items = (side: 0 | 1 | null): Tier[] => (side !== null && s0.game.sideMenu ? s0.game.sideMenu(side) : s0.game.menu);
   /** what "same viewer again" sends: a ball with their face on it */
   const again = (side: 0 | 1 | null): Tier => items(side).find((t) => t.effect === "ball") ?? items(side)[2];
+  /** what a button says an item takes: its coins, or on YouTube its Jewels, and nothing more for a Super Chat, which goes by its colour */
+  const cost = (t: Tier) => (t.unit === "super" ? t.name : `${t.min.toLocaleString("en-US")}${t.unit === "jewels" ? (t.min === 1 ? " Jewel" : " Jewels") : ""} · ${t.name}`);
   const voting = s0.phase === "win" && s0.vote;
   const h = ear.current;
-  const hint = h.src === "none" ? null : connectionView({ ...h, name: SOURCES[h.src].name, now: Date.now() }).hint;
+  const hint = h.src === "none" ? null : connectionView({ ...h, name: toolName(h.src), now: Date.now() }).hint;
+  // YouTube's chat has no likes or shares, and its LIVEs have no welcome backs, so the panel doesn't pretend they do
+  const tiktok = s0.platform === "tiktok";
 
   return (
     <div className="fixed inset-0 flex items-center justify-center bg-[#050506]" onClick={startSound}>
@@ -323,7 +384,7 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
             <p className="font-display text-xl uppercase tracking-wide">Test panel</p>
             <button type="button" onClick={() => setPanel(false)} className="text-paper/60 hover:text-paper" aria-label="Close the test panel">✕</button>
           </div>
-          <p className="mt-1 leading-relaxed text-paper/55">Every button acts like a viewer did it. Nothing is sent to TikTok.</p>
+          <p className="mt-1 leading-relaxed text-paper/55">Every button acts like a viewer did it. Nothing is sent to TikTok or YouTube.</p>
           {voting && (
             <div className="mt-4">
               <p className="mb-2 uppercase tracking-[0.16em] text-[#FFD60A]">The vote</p>
@@ -344,39 +405,45 @@ export function LiveGame({ src, url, demo: demoAtStart, clean, settings, tag = f
               </p>
               <div className="grid grid-cols-2 gap-1.5">
                 {items(side).map((t) => (
-                  <button key={t.effect} type="button" onClick={() => handle({ kind: "gift", viewer: newcomer(side), gift: t.gift, coins: t.min, count: 1 })} className={btn}>
-                    <span className="block text-paper">{t.gift}</span>
-                    <span className="block text-[10px] text-dim">{t.min} · {t.name}</span>
+                  <button key={t.effect} type="button" onClick={() => handle({ kind: "gift", viewer: newcomer(side), gift: pretendGift(t).name, coins: t.min, count: 1 })} className={btn}>
+                    <span className="block text-paper">{pretendGift(t).name}</span>
+                    <span className="block text-[10px] text-dim">{cost(t)}</span>
                   </button>
                 ))}
-                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: again(side).gift, coins: again(side).min, count: 1 })} className={btn}>
+                <button type="button" onClick={() => handle({ kind: "gift", viewer: tester(side), gift: pretendGift(again(side)).name, coins: again(side).min, count: 1 })} className={btn}>
                   <span className="block text-paper">Same viewer again</span>
-                  <span className="block text-[10px] text-dim">{again(side).gift} from {tester(side).name}</span>
+                  <span className="block text-[10px] text-dim">{pretendGift(again(side)).name} from {tester(side).name}</span>
                 </button>
-                <button type="button" onClick={() => handle({ kind: "like", viewer: tester(side), count: LIKES_PER_HP })} className={btn}>
-                  <span className="block text-paper">{LIKES_PER_HP} likes</span>
-                  <span className="block text-[10px] text-dim">from {tester(side).name}</span>
-                </button>
+                {tiktok && (
+                  <button type="button" onClick={() => handle({ kind: "like", viewer: tester(side), count: LIKES_PER_HP })} className={btn}>
+                    <span className="block text-paper">{LIKES_PER_HP} likes</span>
+                    <span className="block text-[10px] text-dim">from {tester(side).name}</span>
+                  </button>
+                )}
                 <button type="button" onClick={() => crowd(side)} className={btn}>
                   <span className="block text-paper">6 join</span>
                   <span className="block text-[10px] text-dim">type {side === null ? "go" : side + 1} in chat</span>
                 </button>
-                <button type="button" onClick={() => handle({ kind: "share", viewer: newcomer(side) })} className={btn}>
-                  <span className="block text-paper">Share</span>
-                  <span className="block text-[10px] text-dim">a new viewer</span>
-                </button>
+                {tiktok && (
+                  <button type="button" onClick={() => handle({ kind: "share", viewer: newcomer(side) })} className={btn}>
+                    <span className="block text-paper">Share</span>
+                    <span className="block text-[10px] text-dim">a new viewer</span>
+                  </button>
+                )}
               </div>
             </div>
           ))}
-          <div className="mt-4">
-            <p className="mb-2 uppercase tracking-[0.16em] text-[#FFD60A]">Your supporters</p>
-            <div className="grid grid-cols-2 gap-1.5">
-              <button type="button" onClick={() => show.current!.welcome(TESTERS[0], 1)} className={btn}>
-                <span className="block text-paper">Welcome back</span>
-                <span className="block text-[10px] text-dim">as if {TESTERS[0].name} gave most last LIVE</span>
-              </button>
+          {tiktok && (
+            <div className="mt-4">
+              <p className="mb-2 uppercase tracking-[0.16em] text-[#FFD60A]">Your supporters</p>
+              <div className="grid grid-cols-2 gap-1.5">
+                <button type="button" onClick={() => show.current!.welcome(TESTERS[0], 1)} className={btn}>
+                  <span className="block text-paper">Welcome back</span>
+                  <span className="block text-[10px] text-dim">as if {TESTERS[0].name} gave most last LIVE</span>
+                </button>
+              </div>
             </div>
-          </div>
+          )}
           <button
             type="button"
             onClick={() => {

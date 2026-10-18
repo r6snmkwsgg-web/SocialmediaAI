@@ -13,12 +13,17 @@ import { parseMessage, type LiveEvent, type Streaks } from "@/lib/live/events";
  *   live:bridge`), on port 21214. The setup page can tell it which
  *   account to connect to, and it says how it's doing: whether it's
  *   really connected to TikTok, and to whose LIVE.
+ *
+ * A YouTube LIVE needs neither: Hookline reads its chat itself, and the
+ * game asks Hookline for it (YouTubeSource, in youtube-source.ts).
  */
 export const SOURCES = {
   tikfinity: { name: "TikFinity", url: "ws://localhost:21213/" },
   bridge: { name: "Hookline Bridge", url: "ws://localhost:21214/" },
 } as const;
 export type SourceId = keyof typeof SOURCES;
+/** where a game can hear a LIVE from: one of the tools on the computer, or Hookline itself for YouTube */
+export type GameSource = SourceId | "youtube";
 
 export type SourceState = SocketState;
 

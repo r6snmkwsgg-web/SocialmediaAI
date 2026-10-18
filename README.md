@@ -62,6 +62,7 @@ Every setting is in [.env.example](.env.example), with what it's for. Locally th
 | TikTok | `TIKTOK_CLIENT_KEY`, `TIKTOK_CLIENT_SECRET`, `TIKTOK_DIRECT_POST`, `TIKTOK_PROFILE` | Connecting TikTok: Shorts to the creator's drafts, or posted straight to their TikTok; with `TIKTOK_PROFILE=1`, the username that makes a LIVE count as theirs. |
 | Scheduler | `CRON_SECRET` | The `/api/cron/*` routes, for a scheduler running the background jobs. |
 | Bridge | `NEXT_PUBLIC_BRIDGE_REPO`, `EULER_API_KEY`, `BRIDGE_OFF` | Where the bridge downloads come from, a signing key if TikTok starts refusing it, and `BRIDGE_OFF=1` to switch every bridge off (games move to TikFinity). |
+| YouTube Live | `YOUTUBE_LIVE` | `YOUTUBE_LIVE=1` puts the LIVE games on YouTube Live: the game reads the chat of the creator's own stream through their connected channel, and Earnings shows Super Chats for those who said they get them. Off until Google's verification and the audit form describe it (NEXT.md, section 11). |
 | Rendering | `CHROME_PATH` | The Chrome the worker renders with, if not Remotion's own. |
 | Contact | `NEXT_PUBLIC_CONTACT_EMAIL` | Shown on the privacy and terms pages. |
 | Admin | `ADMIN_EMAILS` | Who can open `/admin`: sign-ups, plans, revenue, the render queue and problems. |
@@ -150,6 +151,8 @@ The LIVE games hear a stream through something on the streamer's computer: **Tik
 The game itself is `/live/play`, an OBS browser source at 1080 × 1920. Its address carries the streamer's private key from `/app/live`, so it plays with their settings. `?demo=1` adds pretend viewers and `?clean=1` hides the hints. On the game, T opens a test panel, D switches the demo, M mutes and F goes full screen. Every game keeps the LIVE's top 3 gifters on screen, and each LIVE has its own page under `/app/live`, with a recap card to share once it's verified as the streamer's own.
 
 With "Best rounds become Shorts" on, the game sends each Ball Battle or Rivals round worth a Short to `POST /api/live/clips` with its key, and the best round of a LIVE that counts as the streamer's own can become one of the next morning's Shorts.
+
+YouTube Live needs nothing on the computer: with `?src=youtube` and the streamer's key, the game asks Hookline (`GET /api/live/youtube`), which reads the chat of their own stream through the YouTube channel they connected, at most every 10 seconds and only while a game or the setup is asking (`lib/server/ytlive.ts`).
 
 ## Scripts
 

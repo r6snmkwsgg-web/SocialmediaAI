@@ -156,6 +156,7 @@ export default async function Settings({ searchParams }: { searchParams: Search 
               youtubeApi={c.youtubeAudited}
               tiktokProfile={c.tiktokProfile}
               posts={me.plan.scheduling}
+              live={c.youtubeLive}
             />
             <p className="mt-4 text-[13px] leading-relaxed text-muted">
               Hookline only posts videos you approved. Disconnecting stops posting and reading at once; you can also remove access from your Google or TikTok account settings.

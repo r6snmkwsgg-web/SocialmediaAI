@@ -10,6 +10,10 @@ import { byColumn } from "../shorts/proof";
 import { analyticsReport, type Report } from "./youtube-analytics";
 import { YouTubeError } from "./youtube";
 import { youtubeAccess } from "./youtube";
+import { dayAfter, localDay, readBetween, superChatsRead, type SuperChat } from "../earnings/superchats";
+import { configured } from "./env";
+import { QuotaWait } from "./quota";
+import { youtubeSuperChats } from "./youtube";
 
 /**
  * Earnings: real numbers only, from where they really are. YouTube
@@ -87,10 +91,10 @@ export async function earningsOf(userId: string, days: number, channelId?: strin
     // a disconnected channel's figures are gone; anything left of one doesn't count
     const channels = await tx<{ id: string; platform: "youtube" | "tiktok"; title: string | null; handle: string | null; status: string }[]>`
       select id, platform, title, handle, status from public.channels where status <> 'revoked' order by added_at, id`;
-    // only LIVEs heard on their own TikTok count; the rest are shown apart, plainly
+    // only LIVEs heard on their own TikTok count; the rest are shown apart, plainly. Gift coins are TikTok's: a YouTube LIVE has none
     const sessions = await tx<{ day: string; verified: boolean; lives: number; coins: number }[]>`
       select to_char(started_at at time zone ${tz}, 'YYYY-MM-DD') as day, verified, count(*)::int as lives, sum(coins)::int as coins
-      from public.live_sessions group by 1, 2`;
+      from public.live_sessions where platform = 'tiktok' group by 1, 2`;
 
     // each measure's figures, by channel and day
     const by = new Map<string, Map<string | null, Map<string, number>>>();
@@ -168,19 +172,46 @@ export async function earningsOf(userId: string, days: number, channelId?: strin
       }
     }
 
+    // Super Chats and Super Stickers, by currency, each channel's own: known for the days Hookline has read of them in full,
+    // so a day read with none is none and one not read is unknown. Several channels add up like YouTube's other figures
+    type Read = { id: string; status: string; superchats_from: Date; superchats_through: Date };
+    const superRead: Read[] = await tx<Read[]>`
+      select id, status, superchats_from, superchats_through from public.channels
+      where platform = 'youtube' and status <> 'revoked' and superchats_from is not null and superchats_through is not null`;
+    const superShown = superRead.filter((c) => channelId === undefined || c.id === channelId);
+    const superChats = (k: string, days: string[], read: Read[]): Point[] =>
+      read.length
+        ? addUp(read.map((c) => {
+            const from = iso(c.superchats_from), through = iso(c.superchats_through);
+            return { points: readBetween(days, by.get(k)?.get(c.id) ?? new Map(), from, through), from, until: c.status === "expired" ? through : null };
+          }))
+        : days.map((day) => ({ day, value: null }));
+    for (const k of [...by.keys()].filter((x) => x.startsWith("youtube:superchat:")).sort()) {
+      if (!picked(partsOf(k)).length) continue;
+      const cur = k.split(":")[2].toUpperCase();
+      add(k, "youtube", on ? `Super Chats and Super Stickers on ${on} (${cur})` : `Super Chats and Super Stickers (${cur})`, "money", superChats(k, range, superShown), {
+        currency: cur,
+        note: `What viewers paid on your ${superShown.length > 1 ? "channels" : "channel"}, before YouTube's share`,
+        from: superShown.map((c) => iso(c.superchats_from)).sort()[0],
+      });
+    }
+
     const goals = await tx<{ id: string; source: string; metric: string; target: string; period: "month" | "all"; label: string }[]>`
       select id, source, metric, target, period, label from public.goals order by created_at`;
     const everything = (source: string, metric: string): Point[] => {
       if (source === "live") return fill(allDays, live, 0);
       if (source === "tiktok") return together(partsOf("tiktok:views_total"), allDays, fromTotals);
+      if (source === "youtube" && metric.startsWith("superchat:")) return superChats(`youtube:${metric}`, allDays, superRead);
       if (source === "youtube") return together(partsOf(`${source}:${metric}`), allDays, fillReported);
       return fillSince(allDays, by.get(`${source}:${metric}`)?.get(null) ?? new Map(), stripeSince);
     };
     return {
       series: out,
       goals: goals.map((g) => {
-        const unit: Series["unit"] = g.source === "live" ? "coins" : g.metric.startsWith("revenue") ? "money" : "count";
-        const currency = g.metric.startsWith("revenue:") ? g.metric.split(":")[1].toUpperCase() : g.metric === "revenue" ? "USD" : undefined;
+        // Super Chats are money in their own currency, like Stripe's sales
+        const ownCurrency = g.metric.startsWith("revenue:") || g.metric.startsWith("superchat:");
+        const unit: Series["unit"] = g.source === "live" ? "coins" : g.metric.startsWith("revenue") || ownCurrency ? "money" : "count";
+        const currency = ownCurrency ? g.metric.split(":")[1].toUpperCase() : g.metric === "revenue" ? "USD" : undefined;
         return { id: g.id, source: g.source, metric: g.metric, target: Number(g.target), period: g.period, label: g.label, progress: goalProgress(everything(g.source, g.metric), g.period, today), unit, currency };
       }),
       unverified,
@@ -279,6 +310,92 @@ async function syncStripe(userId: string, sealedKey: string, now: Date): Promise
   return `stripe ${days.size} days`;
 }
 
+/** the most pages of a channel's Super Chats read at each sync, 50 to a page */
+const SUPER_CHAT_PAGES = 40;
+
+/**
+ * One YouTube channel's Super Chats and Super Stickers, from YouTube's own
+ * list of them: what viewers paid on each local day, in each currency,
+ * before YouTube's share. YouTube lists 30 days back, 50 at a time, and at
+ * most 40 pages are read. Only the days the read covered in full are
+ * written again, all at once, so a read that stops short or fails never
+ * lowers a day that was whole when it was written.
+ */
+async function syncSuperChats(userId: string, channelId: string, tz: string, now: Date): Promise<string> {
+  const access = await youtubeAccess(channelId);
+  const since = new Date(now.getTime() - 30 * 86400_000);
+  const items: SuperChat[] = [];
+  let token: string | null = null;
+  let whole = false;
+  for (let pages = 0; pages < SUPER_CHAT_PAGES && !whole; pages++) {
+    const page = await youtubeSuperChats(access, token, now);
+    items.push(...page.items);
+    // newest first: once one is from before 30 days ago, or the list ends, everything since has been read
+    whole = !page.next || page.items.some((x) => x.createdAt < since);
+    token = page.next;
+  }
+  const today = localDay(now, tz);
+  const { first, days } = superChatsRead(items, { tz, now, whole });
+  if (first > today) return `super chats ${channelId}: more today than one read covers, so nothing was kept`;
+  const kept = await keepSuperChats(userId, channelId, { first, today }, days);
+  return kept ? `super chats ${channelId}: ${items.length} read, days from ${first}` : `super chats ${channelId}: disconnected meanwhile`;
+}
+
+/**
+ * A channel's Super Chat figures from one read, in one transaction: the
+ * days it covered in full are replaced, and the days Hookline has read of
+ * that channel run on to today, and back to this read's first if it went
+ * further. A read that doesn't join on to the last one starts afresh,
+ * since the days in between were never read and mustn't show as none.
+ * Like put(), nothing is kept for a channel disconnected meanwhile, and a
+ * disconnect waits for this to finish.
+ */
+async function keepSuperChats(userId: string, channelId: string, read: { first: string; today: string }, days: Map<string, Map<string, number>>): Promise<boolean> {
+  return admin(async (tx) => {
+    const [c] = await tx<{ superchats_from: Date | null; superchats_through: Date | null }[]>`
+      select superchats_from, superchats_through from public.channels where id = ${channelId} and user_id = ${userId} and status <> 'revoked' for share`;
+    if (!c) return false;
+    const fresh = !c.superchats_from || !c.superchats_through || dayAfter(iso(c.superchats_through)) < read.first;
+    // afresh, nothing of the last reads stays; otherwise the days before this one's first stay as they were written
+    const replaced = fresh ? null : read.first;
+    await tx`
+      delete from public.metrics where user_id = ${userId} and channel_id = ${channelId} and source = 'youtube' and metric like 'superchat:%'
+        and (${replaced}::date is null or day >= ${replaced}::date)`;
+    const rows = [...days].flatMap(([cur, byDay]) => [...byDay].map(([day, value]) => ({ user_id: userId, channel_id: channelId, source: "youtube", metric: `superchat:${cur}`, day, value })));
+    if (rows.length) await tx`insert into public.metrics ${tx(rows)}`;
+    const from = fresh || read.first < iso(c.superchats_from!) ? read.first : iso(c.superchats_from!);
+    await tx`update public.channels set superchats_from = ${from}::date, superchats_through = ${read.today}::date where id = ${channelId}`;
+    return true;
+  });
+}
+
+/**
+ * Super Chats for Earnings, while YouTube Live is on: only the connected
+ * YouTube channels of people who said they have Super Chat, so the many
+ * channels that can't get any cost nothing. Each channel is read on its
+ * own, and one that can't be read is left as it was. Once YouTube Live's
+ * share of the day's quota is used, the rest wait for the next sync.
+ */
+async function syncAllSuperChats(now: Date): Promise<string[]> {
+  const channels = await admin((tx) => tx<{ id: string; user_id: string; timezone: string }[]>`
+    select c.id, c.user_id, p.timezone from public.channels c join public.profiles p on p.id = c.user_id
+    where c.platform = 'youtube' and c.status = 'connected' and p.yt_live_check ->> 'superChat' = 'true'
+    order by c.superchats_through nulls first, c.added_at, c.id`);
+  const log: string[] = [];
+  for (const c of channels) {
+    try {
+      log.push(await syncSuperChats(c.user_id, c.id, validTimezone(c.timezone), now));
+    } catch (e) {
+      if (e instanceof QuotaWait) {
+        log.push(`super chats wait for YouTube's quota until ${e.until.toISOString()}`);
+        break;
+      }
+      log.push(`super chats ${c.id} failed: ${e instanceof Error ? e.message : e}`);
+    }
+  }
+  return log;
+}
+
 /** Every connected channel's numbers, each written as its own, and Stripe's: for the worker every few hours. */
 export async function syncEarnings(now = new Date()): Promise<string[]> {
   const log: string[] = [];
@@ -301,6 +418,7 @@ export async function syncEarnings(now = new Date()): Promise<string[]> {
       log.push(`stripe ${k.user_id} failed: ${e instanceof Error ? e.message : e}`);
     }
   }
+  if (configured().youtubeLive) log.push(...(await syncAllSuperChats(now)));
   return log;
 }
 

@@ -77,7 +77,16 @@ async function Connect({ goal, userId, plan, quota }: { goal: "shorts" | "live" 
   const channels = await channelsOf(userId);
   const c = configured();
   const posts = plan.scheduling;
-  const platforms: Platform[] = goal === "live" ? ["tiktok"] : ["youtube", "tiktok"];
+  // with YouTube Live on, the LIVE game also plays on YouTube, through the channel it's on
+  const platforms: Platform[] = goal === "live" && !c.youtubeLive ? ["tiktok"] : goal === "live" ? ["tiktok", "youtube"] : ["youtube", "tiktok"];
+  // what connecting does for someone here for the LIVE games
+  const forLive = [
+    c.tiktokProfile
+      ? "Connecting TikTok shows Hookline which LIVEs are yours, so the gift coins seen on them count in Earnings, and adds your views."
+      : "Connecting TikTok adds your views to Earnings.",
+    c.youtubeLive && "Connecting YouTube lets the game play on your YouTube Live.",
+    !c.tiktokProfile && "You can do this later in Settings.",
+  ].filter(Boolean).join(" ");
   return (
     <section aria-labelledby="connect" className="flex flex-col gap-8">
       <div>
@@ -85,9 +94,7 @@ async function Connect({ goal, userId, plan, quota }: { goal: "shorts" | "live" 
         <h1 id="connect" className="font-display text-[clamp(2.6rem,7vw,4.4rem)] uppercase leading-[0.92]">Connect where you post</h1>
         <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-muted">
           {goal === "live"
-            ? c.tiktokProfile
-              ? "Connecting TikTok shows Hookline which LIVEs are yours, so the gift coins seen on them count in Earnings, and adds your views."
-              : "Connecting TikTok adds your views to Earnings. You can do this later in Settings."
+            ? forLive
             : c.youtubeAudited && posts
               ? "So Hookline can post the Shorts you approve, and show you what they earn. Nothing posts without your yes. You can do this later in Settings."
               : "So Hookline can check the Shorts you post, and show you what they earn. You can do this later in Settings."}
@@ -105,6 +112,7 @@ async function Connect({ goal, userId, plan, quota }: { goal: "shorts" | "live" 
         youtubeApi={c.youtubeAudited}
         tiktokProfile={c.tiktokProfile}
         posts={posts}
+        live={c.youtubeLive}
       />
       <form action={finish} className="flex flex-wrap items-center gap-5">
         <button type="submit" className={button.primary}>

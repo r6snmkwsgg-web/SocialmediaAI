@@ -1,5 +1,5 @@
 import { rng, TICK, type Team } from "../battle/sim";
-import type { LiveEvent, Viewer } from "./events";
+import type { LiveEvent, LivePlatform, Viewer } from "./events";
 import { makeGame } from "./games";
 import type { Entrant, Game, Result, VoteOption } from "./games/types";
 import { tierIn, type Tier } from "./menu";
@@ -26,6 +26,13 @@ export const KO_HOLD = 1.8;
 export const WIN = 7;
 /** with the vote on, the win screen is the vote, and runs this long */
 export const VOTE = 10;
+/**
+ * how many seconds behind the game a stream's chat reaches it: on YouTube,
+ * one 10-second read of the chat plus about 5 seconds of stream delay. The
+ * vote, Ball Race's countdown and Last One Standing's free entry run this
+ * much longer there, so what viewers type in time still counts.
+ */
+export const LAG: Record<LivePlatform, number> = { tiktok: 0, youtube: 15 };
 /** this many likes is worth 1 HP (or 1 weight, in a race), while likes come in at a trickle */
 export const LIKES_PER_HP = 30;
 /**
@@ -54,8 +61,13 @@ const isPower = (effect: string): effect is ClipPower => effect === "rage" || ef
 export type Member = { viewer: Viewer; side: Team | null; coins: number };
 /** one line about what just happened, shown briefly */
 export type Toast = { id: number; at: number; side: Team | null; viewer: Viewer; text: string };
-/** a big gift going off: its moment on screen, bigger for more coins; `many` is how many of its power it set off, `extra` what else it set off */
-export type Blast = { id: number; at: number; side: Team | null; viewer: Viewer; tier: Tier; count: number; coins: number; many?: number; extra?: string[] };
+/**
+ * a big gift going off: its moment on screen, bigger for more coins; `gift`
+ * is what was sent ("Green Super Chat", "3x Rose"), which can be more than
+ * the menu item it set off; `many` is how many of its power it set off,
+ * `extra` what else it set off
+ */
+export type Blast = { id: number; at: number; side: Team | null; viewer: Viewer; tier: Tier; gift: string; count: number; coins: number; many?: number; extra?: string[] };
 export type Cue = { at: number; kind: "count" | "fight" | "ko" | "win" | "gift" | "join" | "vote"; n?: number };
 /** one of the last LIVE's top gifters, back again: `rank` is where they came */
 export type Welcome = { id: number; at: number; viewer: Viewer; rank: number };
@@ -131,6 +143,9 @@ function clean(text: string): string {
 
 export class Show {
   readonly settings: LiveSettings;
+  /** where the LIVE is, which sets the menu and the words on screen, and how far behind the game its chat is */
+  readonly platform: LivePlatform;
+  readonly lag: number;
   readonly game: Game;
   /** seconds since the show started, real time */
   now = 0;
@@ -196,10 +211,12 @@ export class Show {
   private nextId = 1;
   private next: VoteOption | null = null;
 
-  constructor(o: { seed?: number; settings?: Partial<LiveSettings> } = {}) {
+  constructor(o: { seed?: number; settings?: Partial<LiveSettings>; platform?: LivePlatform } = {}) {
     this.settings = parseSettings({ ...DEFAULT_SETTINGS, ...o.settings });
+    this.platform = o.platform ?? "tiktok";
+    this.lag = LAG[this.platform];
     this.rand = rng(o.seed ?? Date.now() % 1_000_000_007);
-    this.game = makeGame(this.settings);
+    this.game = makeGame(this.settings, this.platform);
     this.stats = this.newStats();
     this.startRound();
   }
@@ -215,9 +232,19 @@ export class Show {
     return this.now - this.phaseAt;
   }
 
-  /** how long the win screen stays up: longer when it's a vote */
+  /** how long the countdown runs: longer behind the stream's lag where free entries close as play starts (Ball Race's gate) */
+  get introFor(): number {
+    return INTRO + (this.game.gate ? this.lag : 0);
+  }
+
+  /** how long the win screen stays up: longer when it's a vote, and longer still behind the stream's lag */
   get winFor(): number {
-    return this.settings.vote ? VOTE : WIN;
+    return this.settings.vote ? VOTE + this.lag : WIN;
+  }
+
+  /** counting down or voting: what viewers type now has to reach the game soon, so a YouTube chat is read at its fastest */
+  get hurrying(): boolean {
+    return this.phase === "intro" || (this.phase === "win" && this.vote !== null);
   }
 
   sideOf(viewerId: string): Team | null {
@@ -252,7 +279,7 @@ export class Show {
   private startRound() {
     this.round++;
     const before = this.game.names?.();
-    this.game.start({ round: this.round, option: this.next, rand: this.rand });
+    this.game.start({ round: this.round, option: this.next, rand: this.rand, lag: this.lag });
     // new sides, new picks: a Messi fan isn't on PlayStation's side because both were red
     const after = this.game.names?.();
     if (before && after && (before[0] !== after[0] || before[1] !== after[1])) for (const m of this.members.values()) m.side = null;
@@ -299,10 +326,11 @@ export class Show {
     const t = this.elapsed;
 
     if (this.phase === "intro") {
-      const before = Math.ceil(INTRO - (t - dt));
-      const after = Math.ceil(INTRO - t);
+      const intro = this.introFor;
+      const before = Math.ceil(intro - (t - dt));
+      const after = Math.ceil(intro - t);
       if (after !== before && after > 0 && after <= 3) this.cue("count", after);
-      if (t >= INTRO) {
+      if (t >= intro) {
         this.go("play");
         this.cue("fight");
         if (!this.game.liveInIntro) this.flush();
@@ -355,15 +383,15 @@ export class Show {
   }
 
   /**
-   * A round worth keeping for a clip goes in the outbox: only with clips on,
-   * in a game that can be played again, for a round the session counted that
-   * real viewers played and no pretend one touched. It's numbered as the
-   * session counts its rounds, never as the show does: a game left open in
-   * OBS runs its rounds on across LIVEs.
+   * A round worth keeping for a clip goes in the outbox: only on TikTok with
+   * clips on, in a game that can be played again, for a round the session
+   * counted that real viewers played and no pretend one touched. It's
+   * numbered as the session counts its rounds, never as the show does: a
+   * game left open in OBS runs its rounds on across LIVEs.
    */
   private keepClip(r: Result, counted: boolean) {
     const g = this.game;
-    if (!this.settings.clips || !counted || !this.roundReal || this.roundPretend || (g.id !== "battle" && g.id !== "rivals")) return;
+    if (this.platform !== "tiktok" || !this.settings.clips || !counted || !this.roundReal || this.roundPretend || (g.id !== "battle" && g.id !== "rivals")) return;
     const tape = g.tape?.();
     if (!tape) return;
     // the round's gifters, in the order they first gave, under the names they have now
@@ -543,7 +571,7 @@ export class Show {
 
     const said = g.gift({ viewer, side, tier, count, each, total, gift });
     if (said.blast) {
-      this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, count, coins: each * count, many: said.many, extra: said.extra });
+      this.blasts.push({ id: this.nextId++, at: this.now, side, viewer, tier, gift, count, coins: each * count, many: said.many, extra: said.extra });
       if (this.blasts.length > 8) this.blasts.splice(0, this.blasts.length - 8);
       // and its moment for a clip: which power, which side, from whom, how many of it and how big, never its coins
       if (g.step !== undefined && isPower(tier.effect)) this.roundMoments.push({ step: g.step, effect: tier.effect, team: side ?? 0, viewer: viewer.id, many: said.many ?? 1, level: giftLevel(each * count) });

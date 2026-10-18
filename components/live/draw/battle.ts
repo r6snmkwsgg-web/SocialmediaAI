@@ -1,8 +1,9 @@
 import { ARENA, FPS, type Ball, type Team } from "@/lib/battle/sim";
 import type { BattleGame } from "@/lib/live/games/battle";
 import type { Blast, Show } from "@/lib/live/show";
+import { words } from "@/lib/live/words";
 import {
-  AX, AY, blade, circle, crown, face, flame, FX, HEAD, heart, INK, M, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, spikeRing, STRIP, text, W,
+  AX, AY, blade, circle, crown, face, flame, FX, HEAD, heart, INK, jewel, M, nameOf, PAPER, roundRect, SCALE, shakeFrom, SIDE, spikeRing, STRIP, text, W,
   type Ctx, type View, ease, measure, meteorFall, meteorSize,
 } from "./kit";
 import type { GameDraw } from "./types";
@@ -175,13 +176,19 @@ export function ruleLines(ctx: Ctx, lines: { s: string; size: number; color: str
   }
 }
 
-/** The crown's line: who has it and what it takes, or how to get it. */
+/** The crown's line: who has it and what it takes, in coins on TikTok and in the game's power on YouTube, or how to get it. */
 export function crownLine(show: Show, view: View): { s: string; size: number; color: string; pic: (x: number, y: number) => void } {
+  const say = words(show.platform);
   const king = show.crown ? show.members.get(show.crown) : undefined;
   const coins = show.crown ? (show.roundCoins.get(show.crown) ?? 0) : 0;
   return king
-    ? { s: `${nameOf(view, king.viewer.name).toUpperCase()} HAS THE CROWN · ${coins.toLocaleString("en-US")} COINS · OUTGIVE THEM`, size: 32, color: "#FFD60A", pic: () => {} }
-    : { s: "BIGGEST GIFTER WEARS THE CROWN", size: 34, color: "#8D8A83", pic: () => {} };
+    ? { s: `${nameOf(view, king.viewer.name).toUpperCase()} HAS THE CROWN · ${coins.toLocaleString("en-US")} ${say.worth} · OUTGIVE THEM`, size: 32, color: "#FFD60A", pic: () => {} }
+    : { s: say.crownNobody, size: 34, color: "#8D8A83", pic: () => {} };
+}
+
+/** The picture by a rules line about what helps besides the menu: likes' heart on TikTok, a Jewel on YouTube. */
+export function helpPic(ctx: Ctx, show: Show, size: number): (x: number, y: number) => void {
+  return show.platform === "youtube" ? (x, y) => jewel(ctx, x, y, size * 0.42) : (x, y) => heart(ctx, x, y + 2, size, "#FF6FB5");
 }
 
 export const battleDraw: GameDraw = {
@@ -263,7 +270,7 @@ export const battleDraw: GameDraw = {
   rules(ctx, show, view) {
     const c = crownLine(show, view);
     ruleLines(ctx, [
-      { s: "LIKES HEAL YOUR TEAM", size: 40, color: PAPER, pic: (x, y) => heart(ctx, x, y + 2, 36, "#FF6FB5") },
+      { s: words(show.platform).battleRules, size: 40, color: PAPER, pic: helpPic(ctx, show, 36) },
       { ...c, pic: (x, y) => crown(ctx, x, y, 34) },
     ]);
   },

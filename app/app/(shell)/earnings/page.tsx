@@ -257,7 +257,11 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                   </p>
                 )}
                 {s.from && s.from > s.points[0].day && (
-                  <p className="mt-0.5 text-[12px] text-muted">Figures start {shortDay(s.from)}, as far back as Stripe was read when you connected it.</p>
+                  <p className="mt-0.5 text-[12px] text-muted">
+                    {s.id.startsWith("youtube:superchat:")
+                      ? `Figures start ${shortDay(s.from)}. YouTube shares 30 days of Super Chats, so Hookline keeps them from when it first read them.`
+                      : `Figures start ${shortDay(s.from)}, as far back as Stripe was read when you connected it.`}
+                  </p>
                 )}
               </div>
               <DailyBars points={s.points} unit={s.unit} currency={s.currency} label={s.label} through={s.through} />
@@ -292,8 +296,14 @@ export default async function Earnings({ searchParams }: { searchParams: Search 
                   youtubeApi={c.youtubeAudited}
                   posts={me.plan.scheduling}
                   tiktokProfile={c.tiktokProfile}
+                  live={c.youtubeLive}
                 />
-                <p className="mt-3 text-[12px] leading-relaxed text-muted">YouTube gives views, subscribers and, for channels in the Partner Program, YouTube&rsquo;s estimate of revenue. TikTok gives views; it doesn&rsquo;t share earnings with apps.</p>
+                <p className="mt-3 text-[12px] leading-relaxed text-muted">
+                  {c.youtubeLive
+                    ? "YouTube gives views, subscribers, your Super Chats once you've set up YouTube Live, and, for channels in the Partner Program, YouTube's estimate of revenue."
+                    : "YouTube gives views, subscribers and, for channels in the Partner Program, YouTube's estimate of revenue."}{" "}
+                  TikTok gives views; it doesn&rsquo;t share earnings with apps.
+                </p>
               </div>
             </Card>
           )}

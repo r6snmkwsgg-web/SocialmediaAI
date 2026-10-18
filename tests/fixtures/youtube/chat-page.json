@@ -1,0 +1,683 @@
+{
+  "kind": "youtube#liveChatMessageListResponse",
+  "etag": "w2-ytlive-chat-page",
+  "pollingIntervalMillis": 4000,
+  "pageInfo": {
+    "totalResults": 24,
+    "resultsPerPage": 24
+  },
+  "nextPageToken": "GLvR8oaNw2ytNext",
+  "items": [
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-text-kayla",
+      "id": "LCC.w2yt-text-kayla",
+      "snippet": {
+        "type": "textMessageEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCkayla00000000000000001",
+        "publishedAt": "2037-04-06T19:29:40.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "1",
+        "textMessageDetails": {
+          "messageText": "1"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCkayla00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCkayla00000000000000001",
+        "displayName": "@kayla",
+        "profileImageUrl": "https://yt3.ggpht.example/kayla=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-sc-marco",
+      "id": "LCC.w2yt-sc-marco",
+      "snippet": {
+        "type": "superChatEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmarco00000000000000001",
+        "publishedAt": "2037-04-06T19:29:41.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "2",
+        "superChatDetails": {
+          "amountMicros": "5000000",
+          "currency": "USD",
+          "amountDisplayString": "$5.00",
+          "userComment": "2",
+          "tier": 3
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmarco00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmarco00000000000000001",
+        "displayName": "Marco",
+        "profileImageUrl": "https://yt3.ggpht.example/marco=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-sc-yui",
+      "id": "LCC.w2yt-sc-yui",
+      "snippet": {
+        "type": "superChatEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCyui000000000000000001",
+        "publishedAt": "2037-04-06T19:29:42.000Z",
+        "hasDisplayContent": true,
+        "superChatDetails": {
+          "amountMicros": "100000000",
+          "currency": "JPY",
+          "amountDisplayString": "¥100",
+          "tier": 1
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCyui000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCyui000000000000000001",
+        "displayName": "Yui",
+        "profileImageUrl": "https://yt3.ggpht.example/yui=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-sc-ana",
+      "id": "LCC.w2yt-sc-ana",
+      "snippet": {
+        "type": "superChatEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCana000000000000000001",
+        "publishedAt": "2037-04-06T19:29:43.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "A",
+        "superChatDetails": {
+          "amountMicros": "200000000",
+          "currency": "EUR",
+          "amountDisplayString": "€200.00",
+          "userComment": "A",
+          "tier": 9
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCana000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCana000000000000000001",
+        "displayName": "Ana",
+        "profileImageUrl": "https://yt3.ggpht.example/ana=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-sticker-sam",
+      "id": "LCC.w2yt-sticker-sam",
+      "snippet": {
+        "type": "superStickerEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCsam000000000000000001",
+        "publishedAt": "2037-04-06T19:29:44.000Z",
+        "hasDisplayContent": true,
+        "superStickerDetails": {
+          "superStickerMetadata": {
+            "stickerId": "w2ytSticker1",
+            "altText": "A dancing cat",
+            "language": "en"
+          },
+          "amountMicros": "2000000",
+          "currency": "USD",
+          "amountDisplayString": "$2.00",
+          "tier": 2
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCsam000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCsam000000000000000001",
+        "displayName": "Sam",
+        "profileImageUrl": "https://yt3.ggpht.example/sam=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-member-lee",
+      "id": "LCC.w2yt-member-lee",
+      "snippet": {
+        "type": "newSponsorEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UClee000000000000000001",
+        "publishedAt": "2037-04-06T19:29:45.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "Welcome to Ball club!",
+        "newSponsorDetails": {
+          "memberLevelName": "Ball club",
+          "isUpgrade": false
+        }
+      },
+      "authorDetails": {
+        "channelId": "UClee000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UClee000000000000000001",
+        "displayName": "Lee",
+        "profileImageUrl": "https://yt3.ggpht.example/lee=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-upgrade-nia",
+      "id": "LCC.w2yt-upgrade-nia",
+      "snippet": {
+        "type": "newSponsorEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCnia000000000000000001",
+        "publishedAt": "2037-04-06T19:29:46.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "Upgraded to Ball club gold!",
+        "newSponsorDetails": {
+          "memberLevelName": "Ball club gold",
+          "isUpgrade": true
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCnia000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCnia000000000000000001",
+        "displayName": "Nia",
+        "profileImageUrl": "https://yt3.ggpht.example/nia=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-milestone-omar",
+      "id": "LCC.w2yt-milestone-omar",
+      "snippet": {
+        "type": "memberMilestoneChatEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UComar00000000000000001",
+        "publishedAt": "2037-04-06T19:29:47.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "six months!",
+        "memberMilestoneChatDetails": {
+          "memberLevelName": "Ball club",
+          "memberMonth": 6,
+          "userComment": "six months!"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UComar00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UComar00000000000000001",
+        "displayName": "Omar",
+        "profileImageUrl": "https://yt3.ggpht.example/omar=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gifting-priya",
+      "id": "LCC.w2yt-gifting-priya",
+      "snippet": {
+        "type": "membershipGiftingEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCpriya0000000000000001",
+        "publishedAt": "2037-04-06T19:29:48.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "Gifted 5 Ball club memberships",
+        "membershipGiftingDetails": {
+          "giftMembershipsCount": 5,
+          "giftMembershipsLevelName": "Ball club"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCpriya0000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCpriya0000000000000001",
+        "displayName": "Priya",
+        "profileImageUrl": "https://yt3.ggpht.example/priya=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-received-zoe",
+      "id": "LCC.w2yt-received-zoe",
+      "snippet": {
+        "type": "giftMembershipReceivedEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCzoe000000000000000001",
+        "publishedAt": "2037-04-06T19:29:49.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "Zoe received a gift membership from Priya",
+        "giftMembershipReceivedDetails": {
+          "memberLevelName": "Ball club",
+          "gifterChannelId": "UCpriya0000000000000001",
+          "associatedMembershipGiftingMessageId": "LCC.w2yt-gifting-priya"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCzoe000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCzoe000000000000000001",
+        "displayName": "Zoe",
+        "profileImageUrl": "https://yt3.ggpht.example/zoe=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-a",
+      "id": "LCC.w2yt-gift-a",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCjo0000000000000000001",
+        "publishedAt": "2037-04-06T19:29:50.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "sent Glow stick",
+        "giftDetails": {
+          "giftName": "Glow stick",
+          "jewelsAmount": 10,
+          "comboCount": 1,
+          "giftUrl": "https://www.gstatic.example/Glow-stick.png",
+          "hasVisualEffect": false,
+          "altText": "Glow stick",
+          "language": "en"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCjo0000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCjo0000000000000000001",
+        "displayName": "Jo",
+        "profileImageUrl": "https://yt3.ggpht.example/jo=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-a",
+      "id": "LCC.w2yt-gift-a",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCjo0000000000000000001",
+        "publishedAt": "2037-04-06T19:29:51.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "sent Glow stick",
+        "giftDetails": {
+          "giftName": "Glow stick",
+          "jewelsAmount": 10,
+          "comboCount": 3,
+          "giftUrl": "https://www.gstatic.example/Glow-stick.png",
+          "hasVisualEffect": false,
+          "altText": "Glow stick",
+          "language": "en"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCjo0000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCjo0000000000000000001",
+        "displayName": "Jo",
+        "profileImageUrl": "https://yt3.ggpht.example/jo=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-b1",
+      "id": "LCC.w2yt-gift-b1",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmax000000000000000001",
+        "publishedAt": "2037-04-06T19:29:52.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "sent Fireworks",
+        "giftDetails": {
+          "giftName": "Fireworks",
+          "jewelsAmount": 50,
+          "comboCount": 1,
+          "giftUrl": "https://www.gstatic.example/Fireworks.png",
+          "hasVisualEffect": false,
+          "altText": "Fireworks",
+          "language": "en"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmax000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmax000000000000000001",
+        "displayName": "Max",
+        "profileImageUrl": "https://yt3.ggpht.example/max=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-b2",
+      "id": "LCC.w2yt-gift-b2",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmax000000000000000001",
+        "publishedAt": "2037-04-06T19:29:53.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "sent Fireworks",
+        "giftDetails": {
+          "giftName": "Fireworks",
+          "jewelsAmount": 50,
+          "comboCount": 2,
+          "giftUrl": "https://www.gstatic.example/Fireworks.png",
+          "hasVisualEffect": false,
+          "altText": "Fireworks",
+          "language": "en"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmax000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmax000000000000000001",
+        "displayName": "Max",
+        "profileImageUrl": "https://yt3.ggpht.example/max=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-b3",
+      "id": "LCC.w2yt-gift-b3",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmax000000000000000001",
+        "publishedAt": "2037-04-06T19:29:54.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "sent Fireworks",
+        "giftDetails": {
+          "giftName": "Fireworks",
+          "jewelsAmount": 50,
+          "comboCount": 3,
+          "giftUrl": "https://www.gstatic.example/Fireworks.png",
+          "hasVisualEffect": false,
+          "altText": "Fireworks",
+          "language": "en"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmax000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmax000000000000000001",
+        "displayName": "Max",
+        "profileImageUrl": "https://yt3.ggpht.example/max=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-gift-old",
+      "id": "LCC.w2yt-gift-old",
+      "snippet": {
+        "type": "giftEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCjo0000000000000000001",
+        "publishedAt": "2037-04-06T19:29:55.000Z",
+        "hasDisplayContent": true,
+        "giftEventDetails": {
+          "giftName": "Glow stick",
+          "jewelsAmount": 10,
+          "comboCount": 1
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCjo0000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCjo0000000000000000001",
+        "displayName": "Jo",
+        "profileImageUrl": "https://yt3.ggpht.example/jo=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-text-gone",
+      "id": "LCC.w2yt-text-gone",
+      "snippet": {
+        "type": "textMessageEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCkayla00000000000000001",
+        "publishedAt": "2037-04-06T19:29:56.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "this one gets removed",
+        "textMessageDetails": {
+          "messageText": "this one gets removed"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCkayla00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCkayla00000000000000001",
+        "displayName": "@kayla",
+        "profileImageUrl": "https://yt3.ggpht.example/kayla=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-deleted",
+      "id": "LCC.w2yt-deleted",
+      "snippet": {
+        "type": "messageDeletedEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmod000000000000000001",
+        "publishedAt": "2037-04-06T19:29:57.000Z",
+        "hasDisplayContent": false,
+        "messageDeletedDetails": {
+          "deletedMessageId": "LCC.w2yt-text-gone"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmod000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmod000000000000000001",
+        "displayName": "A moderator",
+        "profileImageUrl": "https://yt3.ggpht.example/mod=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": true
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-retracted",
+      "id": "LCC.w2yt-retracted",
+      "snippet": {
+        "type": "messageRetractedEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCkayla00000000000000001",
+        "publishedAt": "2037-04-06T19:29:58.000Z",
+        "hasDisplayContent": false,
+        "messageRetractedDetails": {
+          "retractedMessageId": "LCC.w2yt-text-kayla"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCkayla00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCkayla00000000000000001",
+        "displayName": "@kayla",
+        "profileImageUrl": "https://yt3.ggpht.example/kayla=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-tombstone",
+      "id": "LCC.w2yt-tombstone",
+      "snippet": {
+        "type": "tombstone",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCkayla00000000000000001",
+        "publishedAt": "2037-04-06T19:29:59.000Z",
+        "hasDisplayContent": false
+      },
+      "authorDetails": {
+        "channelId": "UCkayla00000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCkayla00000000000000001",
+        "displayName": "@kayla",
+        "profileImageUrl": "https://yt3.ggpht.example/kayla=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-poll",
+      "id": "LCC.w2yt-poll",
+      "snippet": {
+        "type": "pollEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCw2ytliveChannel0000001",
+        "publishedAt": "2037-04-06T19:30:00.000Z",
+        "hasDisplayContent": true,
+        "pollDetails": {
+          "metadata": {
+            "questionText": "Red or blue?",
+            "options": [
+              {
+                "optionText": "Red"
+              },
+              {
+                "optionText": "Blue"
+              }
+            ],
+            "status": "active"
+          }
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCw2ytliveChannel0000001",
+        "channelUrl": "http://www.youtube.com/channel/UCw2ytliveChannel0000001",
+        "displayName": "Ball Battle TV",
+        "profileImageUrl": "https://yt3.ggpht.example/owner=s88",
+        "isVerified": false,
+        "isChatOwner": true,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-banned",
+      "id": "LCC.w2yt-banned",
+      "snippet": {
+        "type": "userBannedEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCmod000000000000000001",
+        "publishedAt": "2037-04-06T19:30:01.000Z",
+        "hasDisplayContent": false,
+        "userBannedDetails": {
+          "bannedUserDetails": {
+            "channelId": "UCspam00000000000000001",
+            "displayName": "Spam"
+          },
+          "banType": "permanent"
+        }
+      },
+      "authorDetails": {
+        "channelId": "UCmod000000000000000001",
+        "channelUrl": "http://www.youtube.com/channel/UCmod000000000000000001",
+        "displayName": "A moderator",
+        "profileImageUrl": "https://yt3.ggpht.example/mod=s88",
+        "isVerified": false,
+        "isChatOwner": false,
+        "isChatSponsor": false,
+        "isChatModerator": true
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-no-author",
+      "id": "LCC.w2yt-no-author",
+      "snippet": {
+        "type": "textMessageEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "publishedAt": "2037-04-06T19:30:02.000Z",
+        "hasDisplayContent": true,
+        "displayMessage": "who said this?",
+        "textMessageDetails": {
+          "messageText": "who said this?"
+        }
+      }
+    },
+    {
+      "kind": "youtube#liveChatMessage",
+      "etag": "w2-ytlive-ended",
+      "id": "LCC.w2yt-ended",
+      "snippet": {
+        "type": "chatEndedEvent",
+        "liveChatId": "Cg0KC3cyeXRCY2FzdDAx",
+        "authorChannelId": "UCw2ytliveChannel0000001",
+        "publishedAt": "2037-04-06T19:30:03.000Z",
+        "hasDisplayContent": false
+      },
+      "authorDetails": {
+        "channelId": "UCw2ytliveChannel0000001",
+        "channelUrl": "http://www.youtube.com/channel/UCw2ytliveChannel0000001",
+        "displayName": "Ball Battle TV",
+        "profileImageUrl": "https://yt3.ggpht.example/owner=s88",
+        "isVerified": false,
+        "isChatOwner": true,
+        "isChatSponsor": false,
+        "isChatModerator": false
+      }
+    }
+  ]
+}

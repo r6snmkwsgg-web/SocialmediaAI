@@ -21,6 +21,11 @@ import { METEOR_HIT, rng, World } from "@/lib/battle/sim";
 import type { ClipLog } from "@/lib/live/clip";
 import { giftLevel } from "@/lib/live/menu";
 import { fingerprint } from "@/lib/live/tape";
+import { LAG, WIN } from "@/lib/live/show";
+import { readMessage } from "@/lib/live/youtube";
+import { crownLine } from "@/components/live/draw/battle";
+import { draw } from "@/components/live/draw/frame";
+import { recorder } from "./stubs/canvas";
 
 const v2Gift = (repeatCount: number, repeatEnd: number, giftType = 1, diamondCount = 1) => ({
   giftId: 5655,
@@ -1259,5 +1264,159 @@ describe("saving a session", () => {
     expect(plausible({ ...base, startedAt: now - 30 * 24 * 3600_000, lastAt: now }, now)).toBe(false);
     expect(plausible({ ...base, startedAt: now, lastAt: now - 60_000 }, now)).toBe(false);
     expect(sessionSchema.safeParse({ ...base, startedAt: now, lastAt: now, key: "short" }).success).toBe(false);
+  });
+});
+
+describe("the show on YouTube", () => {
+  const VIEW = { demo: false, image: () => null };
+  const yt = (seed: number, settings: Partial<typeof DEFAULT_SETTINGS> = {}) => new Show({ seed, settings, platform: "youtube" });
+  const world = (s: Show) => (s.game as unknown as { world: World }).world;
+  /** a Super Chat as YouTube sends it, read the way the server reads it */
+  const superChat = (who: string, tier: number, comment?: string) =>
+    readMessage({ id: `LCC.${who}-${tier}`, snippet: { type: "superChatEvent", publishedAt: "2037-04-06T19:30:00Z", superChatDetails: { tier, userComment: comment } }, authorDetails: { channelId: `UC${who}`, displayName: who } }, {}, Date.parse("2037-04-06T19:30:01Z"))!.events;
+
+  it("runs the vote 15 seconds longer behind YouTube's lag, so a vote typed 22 seconds in still counts", () => {
+    expect(LAG).toEqual({ tiktok: 0, youtube: 15 });
+    const s = yt(21);
+    toWin(s);
+    expect(s.winFor).toBe(VOTE + 15);
+    for (let t = 0; t < 22; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("win");
+    s.handle({ kind: "chat", viewer: viewer("late"), text: "b" });
+    expect(s.tally()[1]).toBe(1);
+    for (let t = 0; t < 3.5; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("intro");
+    // TikTok's chat reaches the game at once, so its vote stays 10 seconds; and with no vote, nothing waits on the win screen
+    const tt = new Show({ seed: 21 });
+    toWin(tt);
+    expect(tt.winFor).toBe(VOTE);
+    expect(yt(24, { vote: false }).winFor).toBe(WIN);
+  });
+
+  it("runs Ball Race's countdown 15 seconds longer, where free entries close at the start, and no other game's", () => {
+    const s = yt(4, { game: "race", vote: false });
+    expect(s.introFor).toBe(INTRO + 15);
+    for (let t = 0; t < INTRO + 14; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("intro");
+    // GO typed as the countdown read 6, reaching the game 14 seconds later, still gets in the gate
+    s.handle({ kind: "chat", viewer: viewer("late"), text: "go" });
+    expect((s.game as RaceGame).racers.find((r) => r.id === "late")).toMatchObject({ free: true });
+    for (let t = 0; t < 1.5; t += 0.25) s.update(0.25);
+    expect(s.phase).toBe("play");
+    // sides are picked and entries taken at any time in the others, so their countdowns stay 6 seconds
+    for (const game of ["battle", "royale", "rivals"] as const) expect(yt(1, { game }).introFor, game).toBe(INTRO);
+    expect(new Show({ seed: 4, settings: { game: "race" } }).introFor).toBe(INTRO);
+  });
+
+  it("is hurrying while it counts down and while the vote is open, so Hookline reads the chat at its fastest", () => {
+    const s = yt(21);
+    expect([s.phase, s.hurrying]).toEqual(["intro", true]);
+    while (s.phase === "intro") s.update(0.25);
+    expect(s.hurrying).toBe(false);
+    toWin(s);
+    expect([s.vote !== null, s.hurrying]).toEqual([true, true]);
+    // a win screen with no vote waits on nobody
+    const plain = yt(3, { vote: false });
+    toWin(plain);
+    expect(plain.hurrying).toBe(false);
+  });
+
+  it("lets Last One Standing take free entries until 30 seconds of play, not 15", () => {
+    const s = yt(33, { game: "royale", vote: false });
+    while (s.phase === "intro") s.update(0.25);
+    const g = s.game as RoyaleGame;
+    for (let i = 0; i < 25 * 60; i++) g.tick();
+    s.handle({ kind: "chat", viewer: viewer("late"), text: "go" });
+    expect(g.alive().some((f) => f.id === "late")).toBe(true);
+    for (let i = 0; i < 6 * 60; i++) g.tick();
+    s.handle({ kind: "chat", viewer: viewer("later"), text: "go" });
+    expect(g.alive().some((f) => f.id === "later")).toBe(false);
+    expect(s.toasts.at(-1)?.text).toBe("is in the next round");
+    // on TikTok, 25 seconds in is too late already
+    const tt = new RoyaleGame(DEFAULT_SETTINGS);
+    tt.start({ round: 1, option: null, rand: rng(5) });
+    for (let i = 0; i < 25 * 60; i++) tt.tick();
+    expect(tt.enter(viewer("late"))).toMatchObject({ toast: "is in the next round" });
+  });
+
+  it("says POWER in the crown line and the round's best, never COINS", () => {
+    const s = yt(6, { vote: false });
+    toPlay(s);
+    s.join(viewer("a"), 0);
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Blue Super Chat", coins: 100, count: 1 });
+    expect(crownLine(s, VIEW).s).toBe("A HAS THE CROWN · 100 POWER · OUTGIVE THEM");
+    expect(crownLine(yt(7), VIEW).s).toBe("BIGGEST SUPPORTER WEARS THE CROWN");
+    toWin(s);
+    const r = recorder();
+    draw(r.ctx, s, VIEW);
+    expect(r.texts).toContain("a  ·  100 POWER");
+    expect(r.texts.filter((t) => /COIN/i.test(t))).toEqual([]);
+  });
+
+  it("sets off what YouTube's menu says: a Blue Super Chat is Rage, and a Yellow one brings the meteors a Galaxy does", () => {
+    const s = yt(6, { vote: false });
+    toPlay(s);
+    s.join(viewer("a"), 0);
+    for (const e of superChat("a", 1)) s.handle({ ...e, viewer: viewer("a") });
+    expect(world(s).rage[0]).toBeGreaterThan(world(s).clock);
+    expect(s.blasts.at(-1)).toMatchObject({ side: 0, tier: { effect: "rage" }, gift: "Blue Super Chat" });
+    for (const e of superChat("a", 4)) s.handle({ ...e, viewer: viewer("a") });
+    expect(world(s).meteors.length).toBe(meteorShower(worth(1000) / 2).n);
+    // the same as a Galaxy on TikTok
+    const tt = new Show({ seed: 6, settings: { vote: false } });
+    toPlay(tt);
+    tt.join(viewer("a"), 0);
+    tt.handle({ kind: "gift", viewer: viewer("a"), gift: "Galaxy", coins: 1000, count: 1 });
+    expect(world(tt).meteors.length).toBe(world(s).meteors.length);
+  });
+
+  it("counts a Super Chat during the vote as a vote for each point of its power, its comment first", () => {
+    const s = yt(22);
+    toWin(s);
+    s.handle({ kind: "chat", viewer: viewer("a"), text: "a" });
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Light blue Super Chat", coins: 200, count: 1 });
+    expect(s.tally()[0]).toBe(201);
+    // a Green Super Chat whose comment is C: the comment is the vote, and its power adds to it
+    for (const e of superChat("dee", 3, "C")) s.handle(e);
+    expect(s.tally()[2]).toBe(501);
+  });
+
+  it("names the gift actually sent on the banner: a Green Super Chat on YouTube, a Lion on TikTok", () => {
+    const s = yt(6, { vote: false });
+    toPlay(s);
+    s.join(viewer("a"), 0);
+    s.handle({ kind: "gift", viewer: viewer("a"), gift: "Green Super Chat", coins: 500, count: 1 });
+    // it sets off the menu's Light blue item, and the banner says what it was
+    expect(s.blasts.at(-1)).toMatchObject({ tier: { gift: "Light blue Super Chat", effect: "shield" }, gift: "Green Super Chat" });
+    const r = recorder();
+    draw(r.ctx, s, VIEW);
+    expect(r.texts).toContain("a sent Green Super Chat");
+    const tt = new Show({ seed: 6, settings: { vote: false } });
+    toPlay(tt);
+    tt.join(viewer("a"), 0);
+    tt.handle({ kind: "gift", viewer: viewer("a"), gift: "Lion", coins: 29_999, count: 1 });
+    expect(tt.blasts.at(-1)).toMatchObject({ tier: { gift: "Galaxy" }, gift: "Lion" });
+    tt.handle({ kind: "gift", viewer: viewer("a"), gift: "Hand Hearts", coins: 100, count: 3 });
+    const t = recorder();
+    draw(t.ctx, tt, VIEW);
+    expect(t.texts).toContain("a sent Lion");
+    expect(tt.blasts.at(-1)!.gift).toBe("3x Hand Hearts");
+  });
+
+  it("keeps no round for a Short on YouTube, even with real viewers and clips on", () => {
+    // both sides gift plenty of health, so the round's a fight worth keeping
+    const play = (s: Show, gift: string) => {
+      toPlay(s);
+      s.join(viewer("red-fan"), 0);
+      s.join(viewer("blue-fan"), 1);
+      s.handle({ kind: "gift", viewer: viewer("red-fan"), gift, coins: 299, count: 2 });
+      s.handle({ kind: "gift", viewer: viewer("blue-fan"), gift, coins: 299, count: 2 });
+      for (let i = 0; i < 60 * 400 && s.phase === "play"; i++) s.update(1 / 60);
+      return s.takeClips({ hideNames: false });
+    };
+    expect(play(yt(52, { vote: false, roundSeconds: 30, clips: true }), "Light blue Super Chat")).toEqual([]);
+    // the same round on TikTok is kept, and only TikTok's rounds are written down at all
+    expect(play(new Show({ seed: 52, settings: { vote: false, roundSeconds: 30, clips: true } }), "Corgi")).toHaveLength(1);
+    expect((yt(6, { clips: true }).game as BattleGame).tape()).toBeNull();
   });
 });

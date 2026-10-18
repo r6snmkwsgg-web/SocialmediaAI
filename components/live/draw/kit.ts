@@ -165,6 +165,44 @@ export function coin(ctx: Ctx, x: number, y: number, r: number) {
   circle(ctx, x, y, r, GOLD, INK, Math.max(1.5, r * 0.25));
 }
 
+/** what a Jewel is drawn in */
+export const JEWEL = "#C58AF9";
+
+/** A Jewel, YouTube's gifts' own, where TikTok's menu has a coin: a cut gem, wide at the top and coming to a point. */
+export function jewel(ctx: Ctx, x: number, y: number, r: number) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.moveTo(x - r, y - r * 0.3);
+  ctx.lineTo(x - r * 0.55, y - r * 0.85);
+  ctx.lineTo(x + r * 0.55, y - r * 0.85);
+  ctx.lineTo(x + r, y - r * 0.3);
+  ctx.lineTo(x, y + r);
+  ctx.closePath();
+  ctx.fillStyle = JEWEL;
+  ctx.fill();
+  ctx.lineWidth = Math.max(1.5, r * 0.22);
+  ctx.lineJoin = "round";
+  ctx.strokeStyle = INK;
+  ctx.stroke();
+  ctx.restore();
+}
+
+/**
+ * A Super Chat on the menu: a chip in its colour with its name in it, the
+ * way YouTube shows one in the chat, and never what it costs. `y` is the
+ * name's baseline; with `right` the chip ends at `x`. Returns how wide it is.
+ */
+export function chip(ctx: Ctx, label: string, x: number, y: number, color: string, o: { size: number; max: number; right?: boolean }): number {
+  const pad = Math.round(o.size * 0.4);
+  const w = Math.min(o.max, measure(ctx, label, o.size, 1)) + pad * 2;
+  // a little taller than the capitals, and centred on them
+  const h = Math.round(o.size * 1.3);
+  const left = o.right ? x - w : x;
+  roundRect(ctx, left, y - Math.round(o.size * 1.025), w, h, h / 2, color);
+  text(ctx, label, left + pad, y, { size: o.size, color: textOn(color), spacing: 1, max: o.max });
+  return w;
+}
+
 // ── the pictures: one for each kind of thing on a menu, used the same way in the fight ──
 
 export function heart(ctx: Ctx, x: number, y: number, s: number, fill: string) {
