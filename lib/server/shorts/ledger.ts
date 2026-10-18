@@ -14,8 +14,8 @@ import { admin } from "../db";
  * other words too.
  */
 
-/** An item to claim, with the words that carry its meaning when it's a question, a choice or a story. */
-export type Claim = { item: string; kind: FormatId | "look"; words?: string[] };
+/** An item to claim, with the words that carry its meaning when it's a question, a choice or a story; a Ball League ball's name is a `cast` item. */
+export type Claim = { item: string; kind: FormatId | "look" | "cast"; words?: string[] };
 
 /** Of these items, the ones some channel already has. */
 export async function takenOf(items: string[]): Promise<Set<string>> {
@@ -75,6 +75,21 @@ export async function claim(userId: string, claims: Claim[]): Promise<string[]> 
       throw err;
     }
   }
+}
+
+/**
+ * Claims one fight for a Ball League match, before it's run: true when
+ * it's this account's now, newly or because it already was, and false only
+ * when another account has it. So a match whose save went wrong after its
+ * fight was claimed plays the same seed when it's tried again, and gets
+ * the same result.
+ */
+export async function claimFight(userId: string, item: string): Promise<boolean> {
+  const rows = await admin((tx) => tx`
+    insert into public.content_ledger (item, kind, user_id) values (${item}, 'battle', ${userId})
+    on conflict (item) do update set claimed_at = content_ledger.claimed_at where content_ledger.user_id = ${userId}
+    returning item`);
+  return rows.length > 0;
 }
 
 /**

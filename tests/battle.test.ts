@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "vitest";
-import { ABILITY_IDS, fib } from "@/lib/battle/abilities";
+import { ABILITIES, ABILITY_IDS, fib } from "@/lib/battle/abilities";
 import { arenaAt, ARENA, FPS, SHRINK_TO, simulate, SUDDEN_DEATH } from "@/lib/battle/sim";
 import { drama, pickBattle } from "@/lib/battle/drama";
 import { OUTRO, SLOW, SLOW_FRAMES, timeline } from "@/lib/battle/timeline";
@@ -29,6 +29,24 @@ describe("the fight", () => {
       }
     }
     expect(h.digest("hex")).toBe("7033c6cb4fcab19a6aad1d96b36f1869ec009c4c8867b5ef53667d5072e34fe1");
+  }, 30_000);
+
+  it("is exactly the same fight when each side is given its own health, and another with other health", () => {
+    for (const a of ABILITY_IDS) {
+      for (const b of ABILITY_IDS) {
+        if (a === b) continue;
+        for (const seed of [1, 66]) {
+          const own = simulate(a, b, seed, [ABILITIES[a].hp, ABILITIES[b].hp]);
+          expect(JSON.stringify(own), `${a} ${b} ${seed}`).toBe(JSON.stringify(simulate(a, b, seed)));
+        }
+      }
+    }
+    // a Ball League match's health starts each side there, and the balls still start where they always did
+    const league = simulate("heal", "fibonacci", 7, [27, 4]);
+    const plain = simulate("heal", "fibonacci", 7);
+    expect(league.start).toEqual([27, 4]);
+    expect(league.frames[0].hp).toEqual([27, 4]);
+    expect(league.frames[0].balls.map((x) => [x.x, x.y])).toEqual(plain.frames[0].balls.map((x) => [x.x, x.y]));
   }, 30_000);
 
   it("ends with a winner, inside the arena, never in the first few seconds", () => {
@@ -122,6 +140,35 @@ describe("a video that starts part way into the fight", () => {
           expect(whole.slowFrom).toBe(slow ? fight.endFrame + 1 - slow : null);
         }
       }
+    }
+  });
+
+  it("is exactly the same at real speed, and faster only before the slow motion", () => {
+    for (const a of ABILITY_IDS) {
+      for (const b of ABILITY_IDS) {
+        if (a === b) continue;
+        const fight = simulate(a, b, 9);
+        const [whole, real] = [timeline(fight), timeline(fight, { speed: 1 })];
+        expect([real.duration, real.slowFrom, real.outroFrom]).toEqual([whole.duration, whole.slowFrom, whole.outroFrom]);
+        for (let v = 0; v < whole.duration; v++) expect(real.toSim(v)).toBe(whole.toSim(v));
+        for (let f = 0; f <= fight.endFrame; f++) expect(real.toVideo(f)).toBe(whole.toVideo(f));
+      }
+    }
+    // played faster: the real-time part takes fewer frames, the slow motion and the winner as long as ever
+    const fight = simulate("spike", "bomb", 4);
+    const [real, fast] = [timeline(fight), timeline(fight, { speed: 1.5 })];
+    const slow = real.outroFrom - real.slowFrom!;
+    expect(fast.slowFrom).toBe(Math.ceil(real.slowFrom! / 1.5));
+    expect(fast.outroFrom - fast.slowFrom!).toBe(slow);
+    expect(fast.duration - fast.outroFrom).toBe(OUTRO);
+    expect(fast.toSim(0)).toBe(0);
+    expect(fast.toSim(fast.slowFrom! - 1)).toBeLessThan(real.slowFrom!);
+    expect(fast.toSim(fast.slowFrom!)).toBe(real.slowFrom!);
+    expect(fast.toSim(fast.duration - 1)).toBe(fight.endFrame);
+    // every sim frame shows, in order, and the video frame each one shows on maps back to it or just before
+    for (let f = 0; f <= fight.endFrame; f++) {
+      expect(fast.toSim(fast.toVideo(f))).toBeLessThanOrEqual(f);
+      if (f > 0) expect(fast.toVideo(f)).toBeGreaterThanOrEqual(fast.toVideo(f - 1));
     }
   });
 

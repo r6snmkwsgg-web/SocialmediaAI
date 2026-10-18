@@ -1,4 +1,5 @@
 import { COUNTRIES, DATA, inRegion, latestYear, REGIONS, say, sourceLine } from "../data";
+import { nicheById } from "../niches";
 import type { Candidate, Context, Metric, RankingParams, Region } from "../types";
 
 /**
@@ -7,6 +8,12 @@ import type { Candidate, Context, Metric, RankingParams, Region } from "../types
  */
 
 export const METRICS: Metric[] = ["population", "gdp"];
+
+/** The figures a channel's charts use: its niche's one, once it has a niche, and otherwise both. */
+export function metricsFor(ctx: Pick<Context, "niche">): Metric[] {
+  const niche = nicheById(ctx.niche);
+  return niche ? (niche.charts ? [niche.charts] : []) : METRICS;
+}
 
 export function where(region: Region): string {
   return region === "World" ? "in the world" : `in ${region}`;
@@ -65,7 +72,7 @@ export function rankingYears(metric: Metric, region: Region): number[] {
 
 export function proposeRanking(ctx: Context): Candidate | null {
   const options: { p: RankingParams; s: ReturnType<typeof rankingScore>; key: string }[] = [];
-  for (const metric of METRICS) {
+  for (const metric of metricsFor(ctx)) {
     const latest = latestYear(metric);
     for (const region of REGIONS) {
       const top = topOf(region);

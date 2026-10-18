@@ -4038,6 +4038,816 @@ describe.skipIf(!safe)("the database", () => {
   });
 
   // wave 2: niches
+  describe("niches: one niche per channel", () => {
+    let channels: typeof import("@/lib/server/channels");
+    let store: typeof import("@/lib/server/channels-store");
+    let weights: typeof import("@/lib/server/shorts/weights");
+    let plans: typeof import("@/lib/billing/plans").PLANS;
+    /** everyone these tests make, deleted at the end */
+    const made: string[] = [];
+    // every job runs at the morning run's tick: 6:05 this morning, in UTC where these accounts are
+    const now = new Date();
+    now.setUTCHours(6, 5, 0, 0);
+    const HOUR = 3600_000;
+
+    /**
+     * Someone new on a plan, onboarded for Shorts in UTC, with YouTube
+     * channels connected a day apart in the order given, each about what it
+     * says (nothing, unless it says) and answered as not made for kids.
+     */
+    type Has = { niche?: string | null; status?: string; shortsOn?: boolean; external?: string };
+    const someone = async (plan: "free" | "pro" | "creator", youtube: Has[] = [], o: { goal?: string; niche?: string } = {}) => {
+      const email = `w2-niches-${made.length + 1}@test.local`;
+      const [{ id: user }] = await db.admin((tx) => tx<{ id: string }[]>`insert into auth.users (email) values (${email}) returning id`);
+      made.push(user);
+      await db.admin(async (tx) => {
+        await tx`update public.profiles set timezone = 'UTC', goal = ${o.goal ?? "shorts"}, niche = ${o.niche ?? null}, onboarded_at = now() - interval '30 days' where id = ${user}`;
+        if (plan !== "free") await tx`insert into public.subscriptions (user_id, plan, status) values (${user}, ${plan}, 'active')`;
+      });
+      const ids: string[] = [];
+      for (const [i, c] of youtube.entries()) {
+        const added = new Date(Date.UTC(2026, 0, 1 + i));
+        const [ch] = await db.admin((tx) => tx<{ id: string }[]>`
+          insert into public.channels (user_id, platform, external_id, title, status, shorts_on, made_for_kids, connected_at, added_at, niche)
+          values (${user}, 'youtube', ${c.external ?? `UCw2ni${made.length}n${i}`}, ${`Channel ${i + 1}`}, ${c.status ?? "connected"}, ${c.shortsOn ?? true}, false, ${added}, ${added}, ${c.niche ?? null})
+          returning id`);
+        ids.push(ch.id);
+      }
+      return { user, email, channels: ids };
+    };
+
+    type Short = { id: string; format: string; key: string; channel_id: string | null; description: string; params: Record<string, unknown> & { metric?: string; pairs?: { id: string }[]; questions?: { id: string }[] } };
+    const shortsOf = (user: string) => db.admin((tx) => tx<Short[]>`
+      select id, format, key, channel_id, description, params from public.videos where user_id = ${user} order by created_at, suggested_for`);
+
+    beforeAll(async () => {
+      if (!safe) return;
+      channels = await import("@/lib/server/channels");
+      store = await import("@/lib/server/channels-store");
+      weights = await import("@/lib/server/shorts/weights");
+      plans = (await import("@/lib/billing/plans")).PLANS;
+    });
+
+    afterAll(async () => {
+      if (!safe || !made.length) return;
+      await db.admin((tx) => tx`delete from auth.users where id = any(${made}::uuid[])`);
+    });
+
+    it("lets a creator say what their own channel and their own Shorts are about, never anyone else's, and never switches Shorts off", async () => {
+      const a = await someone("pro", [{}]);
+      const b = await someone("pro", [{}]);
+      const [ch] = a.channels;
+      // as themselves, through the one column they may change, and on their profile
+      expect(await db.asUser(a.user, (tx) => tx`update public.channels set niche = 'places' where id = ${ch} returning id`)).toHaveLength(1);
+      expect(await db.asUser(a.user, (tx) => tx`update public.profiles set niche = 'money' where id = ${a.user} returning id`)).toHaveLength(1);
+      // never another account's channel or profile
+      expect(await db.asUser(b.user, (tx) => tx`update public.channels set niche = 'football' where id = ${ch} returning id`)).toEqual([]);
+      expect(await db.asUser(b.user, (tx) => tx`update public.profiles set niche = 'football' where id = ${a.user} returning id`)).toEqual([]);
+      // and nobody signed in writes why a channel's Shorts fell short, or a niche longer than any there is
+      await expect(db.asUser(a.user, (tx) => tx`update public.channels set shorts_note = 'made up' where id = ${ch}`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(a.user, (tx) => tx`update public.channels set niche = ${"x".repeat(25)} where id = ${ch}`)).rejects.toThrow(/check/);
+      expect(await db.admin((tx) => tx`select niche from public.channels where id = ${ch}`)).toEqual([{ niche: "places" }]);
+      expect(await db.admin((tx) => tx`select niche from public.profiles where id = ${a.user}`)).toEqual([{ niche: "money" }]);
+
+      // saving what it's about on a one-channel plan leaves whether it gets Shorts as it was, on or off
+      expect(await channels.setChannelSettings(a.user, ch, { niche: "money" })).toBe(true);
+      expect((await channels.channelsOf(a.user))[0]).toMatchObject({ niche: "money", shortsOn: true });
+      await channels.setChannelSettings(a.user, ch, { shortsOn: false });
+      await channels.setChannelSettings(a.user, ch, { niche: "places" });
+      expect((await channels.channelsOf(a.user))[0]).toMatchObject({ niche: "places", shortsOn: false });
+      expect(await channels.setChannelSettings(b.user, ch, { niche: "football" })).toBe(false);
+      // one the code doesn't know reads as not picked
+      await db.admin((tx) => tx`update public.channels set niche = 'retired' where id = ${ch}`);
+      expect((await channels.channelsOf(a.user))[0].niche).toBeNull();
+    });
+
+    it("keeps leagues the server's: owners read their own, never a match's seeds, and nothing signed in writes them", async () => {
+      const a = await someone("pro", [{ niche: "league" }]);
+      const b = await someone("pro");
+      const [league] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.leagues (user_id, channel_id, balls) values (${a.user}, ${a.channels[0]}, '[]') returning id`);
+      const [season] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.league_seasons (league_id, user_id, number, health, lots, tune) values (${league.id}, ${a.user}, 1, '{}', '{0,1,2,3,4,5,6,7}', 'ode') returning id`);
+      await db.admin((tx) => tx`
+        insert into public.league_matches (season_id, user_id, number, stage, round, a, b, seeds, games, winner, played_at)
+        values (${season.id}, ${a.user}, 1, 'round', 1, 0, 1, '{11,12,13}', '[{"seed": 11, "winner": 0}]', 0, now()),
+               (${season.id}, ${a.user}, 2, 'round', 1, 2, 3, '{21,22,23}', null, null, null)`);
+
+      // the owner reads their own league, its season and its matches, every column but the seeds
+      expect(await db.asUser(a.user, (tx) => tx`select id from public.leagues`)).toEqual([{ id: league.id }]);
+      expect(await db.asUser(a.user, (tx) => tx`select number, status from public.league_seasons`)).toEqual([{ number: 1, status: "running" }]);
+      expect(await db.asUser(a.user, (tx) => tx`select number, a, b, winner, games from public.league_matches order by number`)).toEqual([
+        { number: 1, a: 0, b: 1, winner: 0, games: [{ seed: 11, winner: 0 }] },
+        { number: 2, a: 2, b: 3, winner: null, games: null },
+      ]);
+      // so nobody can work out a match before it's played
+      await expect(db.asUser(a.user, (tx) => tx`select seeds from public.league_matches`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(a.user, (tx) => tx`select * from public.league_matches`)).rejects.toThrow(/permission denied/);
+      // nothing signed in writes them
+      await expect(db.asUser(a.user, (tx) => tx`insert into public.leagues (user_id, balls) values (${a.user}, '[]')`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(a.user, (tx) => tx`update public.league_seasons set status = 'stopped'`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(a.user, (tx) => tx`update public.league_matches set winner = 3`)).rejects.toThrow(/permission denied/);
+      await expect(db.asUser(a.user, (tx) => tx`delete from public.league_matches`)).rejects.toThrow(/permission denied/);
+      // and nobody else reads them
+      for (const t of ["leagues", "league_seasons"]) expect(await db.asUser(b.user, (tx) => tx`select id from ${tx(`public.${t}`)}`), t).toEqual([]);
+      expect(await db.asUser(b.user, (tx) => tx`select id from public.league_matches`)).toEqual([]);
+      // one season running at a time, its matches in the stage their number says
+      await expect(db.admin((tx) => tx`insert into public.league_seasons (league_id, user_id, number, health, lots, tune) values (${league.id}, ${a.user}, 2, '{}', '{}', 'ode')`)).rejects.toThrow(/league_seasons_running/);
+      await expect(db.admin((tx) => tx`insert into public.league_matches (season_id, user_id, number, stage, seeds) values (${season.id}, ${a.user}, 29, 'round', '{1}')`)).rejects.toThrow(/check/);
+      // ball names claimed in the ledger, and a morning that waits on swipes, are things the database takes
+      await db.admin((tx) => tx`insert into public.content_ledger (item, kind, user_id) values (${`cast:w2 niches ${a.user}`}, 'cast', ${a.user})`);
+      await db.admin((tx) => tx`insert into public.shorts_runs (user_id, channel_id, tried_at, outcome, next_try_at) values (${a.user}, ${a.channels[0]}, now(), 'waiting', now())`);
+
+      // deleting the account takes its league with it
+      await db.admin((tx) => tx`delete from auth.users where id = ${a.user}`);
+      for (const t of ["leagues", "league_seasons", "league_matches"]) expect(await db.admin((tx) => tx`select 1 from ${tx(`public.${t}`)} where user_id = ${a.user}`), t).toEqual([]);
+    });
+
+    it("lets nobody signed in make a Ball League Short or change the match it is, only whether it asks for comments", async () => {
+      const a = await someone("pro", [{ niche: "league" }]);
+      const params = { a: "spike", b: "sword", seed: 4817, league: { season: 1, number: 1 } };
+      await expect(db.asUser(a.user, (tx) => tx`
+        insert into public.videos (user_id, channel_id, format, params, key, title) values (${a.user}, ${a.channels[0]}, 'battle', ${tx.json(params)}, 'battle:spike:sword', 'Match 1')`)).rejects.toThrow(/only the server makes Ball League Shorts/);
+      // the server makes one, and an ordinary battle beside it
+      const [match] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title) values (${a.user}, ${a.channels[0]}, 'battle', ${tx.json(params)}, 'battle:spike:sword', 'Match 1') returning id`);
+      const [plain] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.videos (user_id, channel_id, format, params, key, title) values (${a.user}, ${a.channels[0]}, 'battle', '{"a": "heal", "b": "bomb", "seed": 9}', 'battle:heal:bomb', 'A battle') returning id`);
+      const refused = /a Ball League Short is the match it was made from/;
+      await expect(db.asUser(a.user, (tx) => tx`update public.videos set params = jsonb_set(params, '{seed}', '5') where id = ${match.id}`)).rejects.toThrow(refused);
+      await expect(db.asUser(a.user, (tx) => tx`update public.videos set params = params - 'league' where id = ${match.id}`)).rejects.toThrow(refused);
+      await expect(db.asUser(a.user, (tx) => tx`update public.videos set format = 'quiz' where id = ${match.id}`)).rejects.toThrow(refused);
+      await expect(db.asUser(a.user, (tx) => tx`update public.videos set params = params || '{"league": {"season": 1}}'::jsonb where id = ${plain.id}`)).rejects.toThrow(refused);
+      // its title and whether it asks for comments are theirs, like any Short's
+      await db.asUser(a.user, (tx) => tx`update public.videos set title = 'Match one', params = params || '{"allowComments": false}'::jsonb where id = ${match.id}`);
+      await db.asUser(a.user, (tx) => tx`update public.videos set params = params - 'allowComments' where id = ${match.id}`);
+      // and a yes made for kids still turns its ending quiet, the match as it was
+      expect(await queue.approve(a.user, match.id, plans.pro, now, null, true)).toBe(true);
+      const [v] = await db.admin((tx) => tx<{ status: string; made_for_kids: boolean; title: string; params: Record<string, unknown> }[]>`
+        select status, made_for_kids, title, params from public.videos where id = ${match.id}`);
+      expect(v).toMatchObject({ status: "approved", made_for_kids: true, title: "Match one" });
+      expect(v.params).toEqual({ ...params, allowComments: false });
+    });
+
+    it("makes a channel's Shorts only about what it's about: geography's population charts and capitals, money's GDP", async () => {
+      const p = await someone("pro", [{ niche: "places" }]);
+      expect(await gen.tryDaily({ userId: p.user, channelId: p.channels[0] }, now)).toBe(`${p.user} ${p.channels[0]}: 3 made`);
+      const shorts = await shortsOf(p.user);
+      expect(shorts).toHaveLength(3);
+      for (const s of shorts) {
+        expect(["ranking", "race", "quiz", "wyr"]).toContain(s.format);
+        if (s.format === "ranking" || s.format === "race") expect(s.params.metric, s.key).toBe("population");
+        if (s.format === "quiz") expect(["quiz:capitals", "quiz:places"]).toContain(s.key);
+        // with no title writer set up, the plain description carries the niche's own hashtags
+        expect(s.description).toMatch(/#shorts #geography #history/);
+      }
+      const m = await someone("pro", [{ niche: "money" }]);
+      expect(await gen.makeShorts(m.user, { origin: "daily", now })).toBe(3);
+      for (const s of await shortsOf(m.user)) if (s.format === "ranking" || s.format === "race") expect(s.params.metric, s.key).toBe("gdp");
+      expect((await shortsOf(m.user)).every((s) => ["ranking", "race", "quiz", "wyr"].includes(s.format))).toBe(true);
+    }, 60_000);
+
+    it("says nothing can be written for a niche only Claude writes while Claude isn't set up, tries the next morning, not every hour, and keeps that on the channel's own note", async () => {
+      const f = await someone("pro", [{ niche: "football" }]);
+      const unit = { userId: f.user, channelId: f.channels[0] };
+      expect(await gen.tryDaily(unit, now)).toBe(`${f.user} ${f.channels[0]}: Claude isn't set up`);
+      // nothing new to make until it is, rather than a try that failed
+      const tomorrow = new Date(now.getTime() + 24 * HOUR - (now.getTime() % (24 * HOUR)));
+      expect(await db.admin((tx) => tx`select outcome, made, next_try_at from public.shorts_runs where user_id = ${f.user}`)).toEqual([
+        { outcome: "nothing_new", made: 0, next_try_at: tomorrow },
+      ]);
+      expect(await shortsOf(f.user)).toEqual([]);
+      // the queue says why for that channel, and the account's own note says nothing
+      expect(await gen.shortsNoteOf(unit)).toBe("No new quizzes or would-you-rathers can be written until Claude is set up on this Hookline.");
+      expect(await gen.shortsNoteOf({ userId: f.user, channelId: null })).toBeNull();
+      // "make one like this" says so too, and leaves the note alone
+      expect(await gen.makeShortsSaying(f.user, { origin: "daily", count: 1, like: "quiz", now })).toMatchObject({ made: 0, short: "writer" });
+    });
+
+    it("keeps each channel's note on why its Shorts fell short, and tells them once for each channel", async () => {
+      const notes = await import("@/lib/server/notify");
+      const c = await someone("creator", [{}, {}]);
+      const [one, two] = c.channels.map((channelId) => ({ userId: c.user, channelId }));
+      const told = async () => (await notes.notificationsOf(c.user)).items.filter((n) => n.title === "No new Shorts to make right now").map((n) => [n.body, n.href]);
+      const at = new Date(now.getTime() - HOUR);
+      await gen.noteDry(one, null, "Only 3 of 5 could be made.", at);
+      await gen.noteDry(one, at, "Only 3 of 5 could be made.", now);
+      expect(await gen.shortsNoteOf(one)).toBe("Only 3 of 5 could be made.");
+      expect(await gen.shortsNoteOf(two)).toBeNull();
+      expect(await told()).toEqual([["Only 3 of 5 could be made.", `/app/shorts?channel=${one.channelId}`]]);
+      // the other channel running dry at the same moment is its own, and clearing one leaves the other
+      await gen.noteDry(two, null, "There are no new rankings left.", at);
+      expect(await told()).toHaveLength(2);
+      await gen.noteDry(one, at, null, now);
+      expect(await gen.shortsNoteOf(one)).toBeNull();
+      expect(await gen.shortsNoteOf(two)).toBe("There are no new rankings left.");
+      expect(await db.admin((tx) => tx`select shorts_note from public.profiles where id = ${c.user}`)).toEqual([{ shorts_note: null }]);
+    });
+
+    it("makes one like a rising Short for a channel whose niche makes it, and says when none does", async () => {
+      const c = await someone("creator", [{ niche: "football" }, { niche: "places" }]);
+      await db.admin((tx) => tx`update public.profiles set text_stories = true where id = ${c.user}`);
+      const [football, places] = c.channels;
+      // a ranking only geography's channel makes, however much room football's has
+      expect(await gen.makeShortsSaying(c.user, { origin: "daily", count: 1, like: "ranking", now })).toMatchObject({ made: 1, short: null });
+      const [r] = await shortsOf(c.user);
+      expect(r).toMatchObject({ format: "ranking", channel_id: places });
+      expect(r.params.metric).toBe("population");
+      // nothing about battles or text stories
+      for (const like of ["battle", "texts"] as const) expect(await gen.makeShortsSaying(c.user, { origin: "daily", count: 1, like, now }), like).toMatchObject({ made: 0, short: "niche" });
+      // a quiz both make goes to the one with more room: football's, which only Claude writes
+      expect(await gen.makeShortsSaying(c.user, { origin: "daily", count: 1, like: "quiz", now })).toMatchObject({ made: 0, short: "writer" });
+      // asked for one channel outright, outside what it's about
+      expect(await gen.makeShortsSaying(c.user, { origin: "daily", count: 1, like: "race", channelId: football, now })).toMatchObject({ made: 0, short: "niche" });
+      expect(await shortsOf(c.user)).toHaveLength(1);
+    }, 60_000);
+
+    it("learns alongside only the account's channels about the same thing, and channels that haven't picked learn together", async () => {
+      const c = await someone("creator", [{ niche: "football" }, { niche: "football" }, {}, {}, { niche: "places" }]);
+      const [f1, f2, n1, n2, places] = c.channels;
+      await db.admin((tx) => tx`
+        insert into public.channel_weights (channel_id, user_id, kind, name, score, samples)
+        values (${f2}, ${c.user}, 'format', 'quiz', 3, 20), (${n2}, ${c.user}, 'format', 'quiz', 0.4, 20), (${places}, ${c.user}, 'format', 'quiz', 2, 20)`);
+      const prior = async (id: string) => (await db.asUser(c.user, (tx) => weights.weightsFor(tx, id))).find((w) => w.name === "quiz")?.prior;
+      expect(await db.asUser(c.user, (tx) => weights.peersOf(tx, f1))).toEqual([f2]);
+      expect(await db.asUser(c.user, (tx) => weights.peersOf(tx, n1))).toEqual([n2]);
+      expect(await db.asUser(c.user, (tx) => weights.peersOf(tx, places))).toEqual([]);
+      expect(await prior(f1)).toBeGreaterThan(2);
+      expect(await prior(n1)).toBeLessThan(0.6);
+      // a channel alone in its niche learns as one alone
+      expect((await db.asUser(c.user, (tx) => weights.weightsFor(tx, places))).find((w) => w.name === "quiz")).toMatchObject({ score: 2, samples: 20, prior: 1 });
+    });
+
+    it("gives an account's first channel what its own Shorts were about, unless the channel says already", async () => {
+      const f = await someone("free", [], { niche: "places" });
+      const tokens = { access: "ya29.w2-niches", refresh: null, expiresAt: new Date(Date.now() + HOUR), scopes: null };
+      const first = await store.saveChannel(f.user, "youtube", { externalId: "UCw2nifirst", title: "First", handle: null, avatarUrl: null }, tokens);
+      await channels.adoptOrphans(f.user, first);
+      expect((await channels.channelsOf(f.user)).map((x) => x.niche)).toEqual(["places"]);
+      // one about something already keeps it
+      const g = await someone("free", [{ niche: "money", status: "revoked" }], { niche: "places" });
+      const back = await store.saveChannel(g.user, "youtube", { externalId: `UCw2ni${made.length}n0`, title: "Back", handle: null, avatarUrl: null }, tokens);
+      expect(back).toBe(g.channels[0]);
+      await channels.adoptOrphans(g.user, back);
+      expect((await channels.channelsOf(g.user)).map((x) => x.niche)).toEqual(["money"]);
+    });
+
+    it("takes a round from a LIVE only for the first channel that hasn't picked what it's about", async () => {
+      const { demoClip } = await import("@/lib/live/clip-demo");
+      const c = await someone("creator", [{ niche: "places" }, {}], { goal: "both" });
+      const [places, mixed] = c.channels;
+      // a LIVE of theirs from two hours ago until an hour ago, with a round of it waiting
+      const [{ id: live }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, heard, verified)
+        values (gen_random_uuid(), ${c.user}, 'rivals', ${new Date(now.getTime() - 2 * HOUR)}, ${new Date(now.getTime() - HOUR)}, 9, '{w2.niches}', true) returning id`);
+      const played = new Date(now.getTime() - 90 * 60_000);
+      const log = { ...demoClip("rivals"), session: live, round: 3, at: played.getTime() };
+      await db.admin((tx) => tx`
+        insert into public.live_clips (user_id, session_id, round, game, state, score, log, played_at)
+        values (${c.user}, ${live}, 3, 'rivals', 'ready', 5, ${tx.json(log as never)}, ${played})`);
+      const rounds = async () => (await shortsOf(c.user)).filter((s) => s.format === "clip").map((s) => s.channel_id);
+      // the channel about geography never gets one, whatever comes first
+      expect(await gen.tryDaily({ userId: c.user, channelId: places }, now)).toBe(`${c.user} ${places}: 5 made`);
+      expect(await rounds()).toEqual([]);
+      expect(await gen.tryDaily({ userId: c.user, channelId: mixed }, now)).toBe(`${c.user} ${mixed}: 5 made`);
+      expect(await rounds()).toEqual([mixed]);
+      // with every channel about something, none gets a round, and it waits
+      const p = await someone("pro", [{ niche: "places" }], { goal: "both" });
+      const [{ id: theirs }] = await db.admin((tx) => tx<{ id: string }[]>`
+        insert into public.live_sessions (id, user_id, game, started_at, last_event_at, rounds, heard, verified)
+        values (gen_random_uuid(), ${p.user}, 'rivals', ${new Date(now.getTime() - 2 * HOUR)}, ${new Date(now.getTime() - HOUR)}, 9, '{w2.niches}', true) returning id`);
+      await db.admin((tx) => tx`
+        insert into public.live_clips (user_id, session_id, round, game, state, score, log, played_at)
+        values (${p.user}, ${theirs}, 1, 'rivals', 'ready', 5, ${tx.json({ ...log, session: theirs, round: 1 } as never)}, ${played})`);
+      expect(await gen.makeShorts(p.user, { origin: "daily", now })).toBe(3);
+      expect((await shortsOf(p.user)).some((s) => s.format === "clip")).toBe(false);
+      expect(await db.admin((tx) => tx`select state from public.live_clips where user_id = ${p.user}`)).toEqual([{ state: "ready" }]);
+    }, 120_000);
+
+    // the Ball League
+
+    type Game = import("@/lib/battle/league").Game;
+    type CastBall = import("@/lib/battle/league").CastBall;
+    type Played = { season: number; number: number; stage: string; a: number | null; b: number | null; seeds: number[]; games: Game[] | null; winner: number | null; played_at: Date | null; video_id: string | null };
+    /** Everything the server keeps of an account's leagues, seeds and all. */
+    const leagueRows = (user: string) => db.admin(async (tx) => ({
+      leagues: await tx<{ id: string; channel_id: string | null; balls: CastBall[] }[]>`select id, channel_id, balls from public.leagues where user_id = ${user}`,
+      seasons: await tx<{ id: string; number: number; status: string; champion: number | null; stopped_reason: string | null; lots: number[]; health: Record<string, number> }[]>`
+        select s.id, s.number, s.status, s.champion, s.stopped_reason, s.lots, s.health from public.league_seasons s where s.user_id = ${user} order by s.number`,
+      matches: await tx<Played[]>`
+        select s.number as season, m.number, m.stage, m.a, m.b, m.seeds, m.games, m.winner, m.played_at, m.video_id
+        from public.league_matches m join public.league_seasons s on s.id = m.season_id where m.user_id = ${user} order by s.number, m.number`,
+    }));
+    type LeagueShort = { id: string; status: string; params: { a: string; b: string; seed: number; hp: [number, number]; games?: (number | null)[]; league: { season: number; number: number; previously: { side: number | null; text: string }[] } }; why: string[]; suggested_for: Date | null; scheduled_for: Date | null; tiktok_at: Date | null; title: string; channel_id: string | null };
+    /** Their Ball League Shorts, in match order. */
+    const matchShorts = (user: string) => db.admin((tx) => tx<LeagueShort[]>`
+      select id, status, params, why, suggested_for, scheduled_for, tiktok_at, title, channel_id from public.videos
+      where user_id = ${user} and params ? 'league' order by (params -> 'league' ->> 'season')::int, (params -> 'league' ->> 'number')::int`);
+    const DAY = 24 * HOUR;
+    let league: typeof import("@/lib/server/shorts/league");
+    let pure: typeof import("@/lib/battle/league");
+    let battle: typeof import("@/lib/shorts/formats/battle");
+    let sim: typeof import("@/lib/battle/sim");
+
+    it("plays a league channel's season in order, each match saved as it's played, never a fight another account has, and the same fight again from what's kept", async () => {
+      league = await import("@/lib/server/shorts/league");
+      pure = await import("@/lib/battle/league");
+      battle = await import("@/lib/shorts/formats/battle");
+      sim = await import("@/lib/battle/sim");
+      const c = await someone("creator", [{ niche: "league" }]);
+      const other = await someone("free");
+      const unit = { userId: c.user, channelId: c.channels[0] };
+      // it was about geography once, and ran dry: a league never does, so that note goes
+      await gen.noteDry(unit, null, "There are no new rankings left.", new Date(now.getTime() - DAY));
+      // the season begins with all its seeds drawn; another account already has match 1's first fight and every one of match 2's
+      const { league: l, season } = await league.nextMatches(unit, 0);
+      const before = (await leagueRows(c.user)).matches;
+      const fight = (m: Played, seed: number) => {
+        const [A, B] = [l.cast[m.a!], l.cast[m.b!]];
+        return battle.fightId(A.power, B.power, seed, [season.health[A.power], season.health[B.power]]);
+      };
+      const theirs = [fight(before[0], before[0].seeds[0]), ...before[1].seeds.map((s) => fight(before[1], s))];
+      await db.admin((tx) => tx`insert into public.content_ledger (item, kind, user_id) select unnest(${theirs}::text[]), 'battle', ${other.user}`);
+
+      expect(await gen.tryDaily(unit, now)).toBe(`${c.user} ${unit.channelId}: 5 made`);
+      const { leagues, seasons, matches } = await leagueRows(c.user);
+      // one league, eight balls, one of each power, their names this league's alone
+      expect(leagues).toHaveLength(1);
+      expect(new Set(leagues[0].balls.map((b) => b.power)).size).toBe(8);
+      const names = await db.admin((tx) => tx<{ item: string }[]>`select item from public.content_ledger where kind = 'cast' and user_id = ${c.user}`);
+      expect(names.map((n) => n.item).sort()).toEqual(leagues[0].balls.map((b) => pure.castItem(b.name)).sort());
+      expect(seasons).toMatchObject([{ number: 1, status: "running", champion: null, health: pure.LEAGUE_HEALTH }]);
+      expect(matches).toHaveLength(31);
+      expect(matches.filter((m) => m.played_at).map((m) => m.number)).toEqual([1, 2, 3, 4, 5]);
+      // match 1 skipped the seed whose fight another account had; match 2 drew a new one, kept with the match, and its Short says so
+      expect(matches[0].games![0].seed).toBe(before[0].seeds[1]);
+      expect(matches[1].seeds.slice(0, 3)).toEqual(before[1].seeds);
+      expect(matches[1].seeds).toHaveLength(4);
+      expect(matches[1].games![0].seed).toBe(matches[1].seeds[3]);
+      const shorts = await matchShorts(c.user);
+      expect(shorts.map((s) => s.params.league.number)).toEqual([1, 2, 3, 4, 5]);
+      expect(shorts[1].why.join(" ")).toMatch(/new seed/);
+      // each one's Short is its match: the fight stored, at the season's health, and simulate plays the very same result again
+      for (const [i, m] of matches.slice(0, 5).entries()) {
+        const [A, B] = [l.cast[m.a!], l.cast[m.b!]];
+        const hp: [number, number] = [season.health[A.power], season.health[B.power]];
+        const g = m.games![0];
+        const again = sim.simulate(A.power, B.power, g.seed!, hp);
+        expect([g.winner, g.frame, g.byTimeout]).toEqual([again.winner === null ? null : [m.a, m.b][again.winner], again.endFrame, again.byTimeout]);
+        expect(shorts[i]).toMatchObject({ id: m.video_id, status: "review", channel_id: unit.channelId, params: { a: A.power, b: B.power, seed: g.seed, hp } });
+        expect(shorts[i].why).toContain("It counts in the table whether or not you post it.");
+        const [owner] = await db.admin((tx) => tx<{ user_id: string }[]>`select user_id from public.content_ledger where item = ${fight(m, g.seed!)}`);
+        expect(owner.user_id).toBe(c.user);
+      }
+      // given times in match order, and nothing said about running dry
+      const times = shorts.map((s) => s.suggested_for!.getTime());
+      expect([...times].sort((x, y) => x - y)).toEqual(times);
+      expect(await gen.shortsNoteOf(unit)).toBeNull();
+      expect(await db.admin((tx) => tx`select outcome, made from public.shorts_runs where user_id = ${c.user}`)).toEqual([{ outcome: "made", made: 5 }]);
+      // and the creator reads it all back, never a seed of a match not played yet
+      const view = await league.leagueView(unit);
+      expect(view!.seasons).toMatchObject([{ number: 1, status: "running", played: 5 }]);
+      expect(view!.matches.map((m) => m.short).slice(0, 6)).toEqual(["waiting", "waiting", "waiting", "waiting", "waiting", "unplayed"]);
+      expect(view!.table.reduce((n, r) => n + r.played, 0)).toBe(10);
+      expect(JSON.stringify(view)).not.toContain(String(matches[5].seeds[0]));
+      // one swiped away the same morning: its replacement is the next match, and goes out after the ones still waiting
+      expect(await queue.reject(c.user, shorts[2].id)).toBe(true);
+      expect(await gen.makeShorts(c.user, { origin: "replacement", channelId: unit.channelId, now })).toBe(1);
+      const waiting = (await matchShorts(c.user)).filter((s) => s.status === "review");
+      expect(waiting.map((s) => s.params.league.number)).toEqual([1, 2, 4, 5, 6]);
+      const due = waiting.map((s) => s.suggested_for!.getTime());
+      expect([...due].sort((x, y) => x - y)).toEqual(due);
+    }, 60_000);
+
+    it("plays nothing new while a day's matches wait for a swipe, and still replaces one swiped away with the next match", async () => {
+      const p = await someone("pro", [{ niche: "league" }]);
+      const unit = { userId: p.user, channelId: p.channels[0] };
+      expect(await gen.tryDaily(unit, now)).toBe(`${p.user} ${unit.channelId}: 3 made`);
+      // the next morning, with the three still waiting: nothing played, and tried again the morning after
+      const next = new Date(now.getTime() + DAY);
+      expect(await gen.tryDaily(unit, next)).toBe(`${p.user} ${unit.channelId}: matches waiting for a swipe`);
+      expect(await db.admin((tx) => tx`select outcome, made, next_try_at from public.shorts_runs where user_id = ${p.user}`)).toEqual([
+        { outcome: "waiting", made: 0, next_try_at: new Date(now.getTime() + 2 * DAY - (now.getTime() % DAY)) },
+      ]);
+      // "make one like this" waits too
+      expect(await gen.makeShortsSaying(p.user, { origin: "daily", count: 1, like: "battle", now: next })).toMatchObject({ made: 0, short: "waiting" });
+      expect((await leagueRows(p.user)).matches.filter((m) => m.played_at)).toHaveLength(3);
+      // swiping one away brings the count down: its replacement is the next match, and the one swiped away still counts
+      const [, second] = await matchShorts(p.user);
+      expect(await queue.reject(p.user, second.id)).toBe(true);
+      expect(await gen.makeShorts(p.user, { origin: "replacement", channelId: unit.channelId, now: next })).toBe(1);
+      const { matches } = await leagueRows(p.user);
+      expect(matches.filter((m) => m.played_at).map((m) => m.number)).toEqual([1, 2, 3, 4]);
+      expect((await matchShorts(p.user)).map((s) => [s.params.league.number, s.status])).toEqual([[1, "review"], [2, "rejected"], [3, "review"], [4, "review"]]);
+      expect((await league.leagueView(unit))!.matches.slice(0, 5).map((m) => m.short)).toEqual(["waiting", "skipped", "waiting", "waiting", "unplayed"]);
+    }, 60_000);
+
+    it("plays only what fills a day's worth waiting, so a match skipped always brings the next one while the day's replacements last", async () => {
+      const p = await someone("pro", [{ niche: "league" }]);
+      const unit = { userId: p.user, channelId: p.channels[0] };
+      expect(await gen.tryDaily(unit, now)).toBe(`${p.user} ${unit.channelId}: 3 made`);
+      const waiting = async () => (await matchShorts(p.user)).filter((s) => s.status === "review").map((s) => s.params.league.number);
+      // the first kept and two still waiting: the next morning plays one, to make a day's worth waiting again, never more
+      const [first] = await matchShorts(p.user);
+      expect(await queue.approve(p.user, first.id, plans.pro, now)).toBe(true);
+      const next = new Date(now.getTime() + DAY);
+      expect(await gen.tryDaily(unit, next)).toBe(`${p.user} ${unit.channelId}: 1 made`);
+      expect(await waiting()).toEqual([2, 3, 4]);
+      // so each one skipped brings the next match
+      for (const [skip, after] of [[2, [3, 4, 5]], [3, [4, 5, 6]]] as const) {
+        const s = (await matchShorts(p.user)).find((x) => x.params.league.number === skip)!;
+        expect(await queue.reject(p.user, s.id)).toBe(true);
+        expect(await gen.makeShorts(p.user, { origin: "replacement", channelId: unit.channelId, now: next })).toBe(1);
+        expect(await waiting()).toEqual(after);
+      }
+    }, 60_000);
+
+    it("plays the semi-finals from the final table, then the final, then the next season with the same balls the same morning", async () => {
+      const c = await someone("creator", [{ niche: "league", external: TEST_CHANNEL }]);
+      const unit = { userId: c.user, channelId: c.channels[0] };
+      expect(await gen.tryDaily(unit, now)).toBe(`${c.user} ${unit.channelId}: 5 made`);
+      for (const s of await matchShorts(c.user)) await queue.reject(c.user, s.id);
+      // the rest of the round robin, as if played: the lower slot wins, every fifth match a draw
+      await db.admin((tx) => tx`
+        update public.league_matches m set winner = case when m.number % 5 = 0 then null else least(m.a, m.b) end, played_at = now(),
+          games = jsonb_build_array(jsonb_build_object('seed', m.seeds[1], 'winner', case when m.number % 5 = 0 then null else least(m.a, m.b) end, 'frame', 600, 'byTimeout', false, 'hp', jsonb_build_array(1, 1)))
+        where m.user_id = ${c.user} and m.number between 6 and 28`);
+      const { seasons, matches: round } = await leagueRows(c.user);
+      const t = pure.table(round.filter((m) => m.number <= 28).map((m) => ({ number: m.number, a: m.a!, b: m.b!, games: m.games!, winner: m.winner })), seasons[0].lots);
+
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + DAY))).toBe(`${c.user} ${unit.channelId}: 5 made`);
+      const after = await leagueRows(c.user);
+      const m = (season: number, number: number) => after.matches.find((x) => x.season === season && x.number === number)!;
+      // 1st against 4th and 2nd against 3rd, the higher-placed on the left, and the final between their winners
+      expect([m(1, 29).a, m(1, 29).b]).toEqual([t[0].slot, t[3].slot]);
+      expect([m(1, 30).a, m(1, 30).b]).toEqual([t[1].slot, t[2].slot]);
+      const place = (slot: number) => t.find((r) => r.slot === slot)!.place;
+      const finalists = [m(1, 29).winner!, m(1, 30).winner!].sort((x, y) => place(x) - place(y));
+      expect([m(1, 31).a, m(1, 31).b]).toEqual(finalists);
+      // first to two wins, the champion crowned and the season over
+      const wins = (slot: number) => m(1, 31).games!.filter((g) => g.winner === slot).length;
+      expect(Math.max(wins(finalists[0]), wins(finalists[1]))).toBe(2);
+      expect(after.seasons).toMatchObject([{ number: 1, status: "done", champion: m(1, 31).winner }, { number: 2, status: "running" }]);
+      // the next season the same morning, with the same balls, and its first matches say how each ball's last season ended
+      expect(after.leagues).toHaveLength(1);
+      expect(after.matches.filter((x) => x.season === 2 && x.played_at).map((x) => x.number)).toEqual([1, 2]);
+      const shorts = await matchShorts(c.user);
+      expect(shorts.filter((s) => s.status === "review").map((s) => [s.params.league.season, s.params.league.number])).toEqual([[1, 29], [1, 30], [1, 31], [2, 1], [2, 2]]);
+      for (const s of shorts.filter((x) => x.params.league.season === 2)) {
+        for (const line of s.params.league.previously) expect(line.text).toMatch(/last season$/);
+      }
+      // the final is one Short with every game in it, each of its fights this account's
+      const final = shorts.find((s) => s.params.league.number === 31)!;
+      expect(final.title).toMatch(/^The Ball League final: /);
+      expect(final.params.games ?? [final.params.seed]).toEqual(m(1, 31).games!.map((g) => g.seed));
+      const { ledgerClaims } = await import("@/lib/shorts/formats");
+      for (const claim of ledgerClaims({ format: "battle", params: final.params as never })) {
+        expect(await db.admin((tx) => tx`select user_id from public.content_ledger where item = ${claim.item}`)).toEqual([{ user_id: c.user }]);
+      }
+
+      // times in match order across the two seasons: the next season's first matches say how the last one ended, so they come after the final
+      const due = shorts.filter((s) => s.status === "review").map((s) => s.suggested_for!.getTime());
+      expect([...due].sort((x, y) => x - y)).toEqual(due);
+      // kept out of order, the next season's first match still goes out after the final
+      const later = new Date(now.getTime() + DAY);
+      const opener = shorts.find((s) => s.params.league.season === 2 && s.params.league.number === 1)!;
+      const timeOf = async (id: string) => (await db.admin((tx) => tx<{ t: Date }[]>`select scheduled_for as t from public.videos where id = ${id}`))[0].t.getTime();
+      expect(await queue.approve(c.user, final.id, plans.creator, later)).toBe(true);
+      await db.admin((tx) => tx`update public.videos set suggested_for = ${new Date(final.suggested_for!.getTime() - 3 * HOUR)} where id = ${opener.id}`);
+      expect(await queue.approve(c.user, opener.id, plans.creator, later)).toBe(true);
+      expect(await timeOf(opener.id)).toBeGreaterThanOrEqual((await timeOf(final.id)) + HOUR);
+      // and when the channel comes back with both late, the opener due first, the final still goes out first
+      await db.admin(async (tx) => {
+        await tx`update public.videos set scheduled_for = ${new Date(later.getTime() - 2 * HOUR)} where id = ${final.id}`;
+        await tx`update public.videos set scheduled_for = ${new Date(later.getTime() - 4 * HOUR)} where id = ${opener.id}`;
+      });
+      expect(await queue.retimeLate(c.user, unit.channelId, later)).toBe(2);
+      expect(await timeOf(final.id)).toBeGreaterThan(later.getTime());
+      expect(await timeOf(opener.id)).toBeGreaterThanOrEqual((await timeOf(final.id)) + 2 * HOUR);
+    }, 90_000);
+
+    it("stops the season when the channel leaves the league, however that's done, keeps its results, and comes back to a new season with the same balls", async () => {
+      const p = await someone("pro", [{ niche: "league" }]);
+      const unit = { userId: p.user, channelId: p.channels[0] };
+      await gen.tryDaily(unit, now);
+      expect(await league.seasonOn(unit)).toEqual({ number: 1, played: 3 });
+      // saved in Settings: stopped there and then, its three results kept, nobody crowned, its Shorts still there to swipe
+      expect(await channels.setChannelSettings(p.user, unit.channelId, { niche: "places" })).toBe(true);
+      const stopped = await leagueRows(p.user);
+      expect(stopped.seasons).toMatchObject([{ number: 1, status: "stopped", stopped_reason: "niche", champion: null }]);
+      expect(stopped.matches.filter((m) => m.played_at)).toHaveLength(3);
+      expect((await matchShorts(p.user)).map((s) => s.status)).toEqual(["review", "review", "review"]);
+      expect(await league.seasonOn(unit)).toBeNull();
+      // coming back starts season 2 with the same balls, and never quotes the season that stopped
+      expect(await channels.setChannelSettings(p.user, unit.channelId, { niche: "league" })).toBe(true);
+      for (const s of await matchShorts(p.user)) await queue.reject(p.user, s.id);
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + DAY))).toBe(`${p.user} ${unit.channelId}: 3 made`);
+      const back = await leagueRows(p.user);
+      expect(back.leagues).toHaveLength(1);
+      expect(back.seasons.map((s) => [s.number, s.status])).toEqual([[1, "stopped"], [2, "running"]]);
+      const second = (await matchShorts(p.user)).filter((s) => s.params.league.season === 2);
+      expect(second.flatMap((s) => s.params.league.previously).some((l) => /last season/.test(l.text))).toBe(false);
+      // changed some other way, as the user straight to the database: the next make stops it, and makes what it's about now
+      await db.asUser(p.user, (tx) => tx`update public.channels set niche = 'money' where id = ${unit.channelId}`);
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + 2 * DAY))).toBe(`${p.user} ${unit.channelId}: 3 made`);
+      expect((await leagueRows(p.user)).seasons.map((s) => s.status)).toEqual(["stopped", "stopped"]);
+      expect((await shortsOf(p.user)).filter((s) => !s.params.league).every((s) => ["ranking", "race", "quiz", "wyr"].includes(s.format))).toBe(true);
+      // and a season stopped while its matches are being played saves none of them
+      await db.asUser(p.user, (tx) => tx`update public.channels set niche = 'league' where id = ${unit.channelId}`);
+      const next = await league.nextMatches(unit, 2);
+      const played = await league.playMatches(unit, next);
+      await channels.setChannelSettings(p.user, unit.channelId, { niche: "places" });
+      await expect(league.saveMatches(unit, next.season.id, played.map((x) => ({ ...x, title: x.c.title, description: "", why: x.c.why, origin: "daily" as const, suggestedFor: null })))).rejects.toThrow(/stopped/);
+      expect((await leagueRows(p.user)).matches.filter((m) => m.season === 3 && m.played_at)).toEqual([]);
+      // nor does a make that began before the change start a new season once the channel has left
+      await expect(league.nextMatches(unit, 1)).rejects.toThrow(/left the Ball League/);
+      expect((await leagueRows(p.user)).seasons.map((s) => s.status)).toEqual(["stopped", "stopped", "stopped"]);
+    }, 90_000);
+
+    it("plays the same seeds again after a save that went wrong once its fights were claimed, and gets the same results", async () => {
+      const p = await someone("pro", [{ niche: "league" }]);
+      const unit = { userId: p.user, channelId: p.channels[0] };
+      // saving this account's Shorts fails, once
+      await db.admin((tx) => tx.unsafe(`
+        create function public.w2_niches_no_save() returns trigger language plpgsql as $$ begin raise exception 'saving went wrong'; end $$;
+        create trigger w2_niches_no_save before insert on public.videos for each row when (new.user_id = '${p.user}') execute function public.w2_niches_no_save();`));
+      onTestFinished(async () => {
+        await db.admin((tx) => tx.unsafe("drop trigger if exists w2_niches_no_save on public.videos; drop function if exists public.w2_niches_no_save()"));
+      });
+      expect(await gen.tryDaily(unit, now)).toMatch(/failed: saving went wrong/);
+      expect(await db.admin((tx) => tx`select outcome, next_try_at from public.shorts_runs where user_id = ${p.user}`)).toEqual([{ outcome: "failed", next_try_at: new Date(now.getTime() + HOUR) }]);
+      expect((await leagueRows(p.user)).matches.filter((m) => m.played_at)).toEqual([]);
+      const claimed = async () => (await db.admin((tx) => tx<{ item: string }[]>`select item from public.content_ledger where kind = 'battle' and user_id = ${p.user} order by item`)).map((x) => x.item);
+      const first = await claimed();
+      expect(first.length).toBeGreaterThanOrEqual(3);
+      await db.admin((tx) => tx.unsafe("drop trigger w2_niches_no_save on public.videos"));
+      // an hour on: the same matches, the same seeds, the same fights, nothing new claimed
+      expect(await gen.tryDaily(unit, new Date(now.getTime() + HOUR))).toBe(`${p.user} ${unit.channelId}: 3 made`);
+      expect(await claimed()).toEqual(first);
+      const { leagues, seasons, matches } = await leagueRows(p.user);
+      for (const m of matches.filter((x) => x.played_at)) {
+        const [A, B] = [leagues[0].balls[m.a!], leagues[0].balls[m.b!]];
+        const hp: [number, number] = [seasons[0].health[A.power], seasons[0].health[B.power]];
+        expect(first).toContain(battle.fightId(A.power, B.power, m.games![0].seed!, hp));
+        const again = sim.simulate(A.power, B.power, m.games![0].seed!, hp);
+        expect(m.games![0].winner).toBe(again.winner === null ? null : [m.a, m.b][again.winner]);
+      }
+    }, 60_000);
+
+    it("keeps a season's matches in order on YouTube and TikTok when a later one is approved first, and when its channel comes back", async () => {
+      const p = await someone("pro", [{ niche: "league", external: TEST_CHANNEL }]);
+      const ch = p.channels[0];
+      await gen.tryDaily({ userId: p.user, channelId: ch }, now);
+      const [m1, m2, m3] = await matchShorts(p.user);
+      const choices = { privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false } as const;
+      expect(await queue.approve(p.user, m1.id, plans.pro, now, choices)).toBe(true);
+      // match 2 due before match 1: approved, it goes out after match 1 on YouTube, and at least an hour after it on TikTok
+      const [first] = await matchShorts(p.user);
+      await db.admin((tx) => tx`update public.videos set suggested_for = ${new Date(first.scheduled_for!.getTime() - 2 * HOUR)} where id = ${m2.id}`);
+      expect(await queue.approve(p.user, m2.id, plans.pro, now, choices)).toBe(true);
+      expect(await queue.approve(p.user, m3.id, plans.pro, now, choices)).toBe(true);
+      const [a, b, c] = await matchShorts(p.user);
+      expect(b.scheduled_for!.getTime()).toBeGreaterThanOrEqual(a.scheduled_for!.getTime() + HOUR);
+      expect(b.tiktok_at!.getTime()).toBeGreaterThanOrEqual(a.tiktok_at!.getTime() + HOUR);
+      expect(c.scheduled_for!.getTime()).toBeGreaterThan(b.scheduled_for!.getTime());
+      expect(b.why.filter((w) => /^Posts at/.test(w))).toHaveLength(1);
+      // the channel was away, and two of them came due out of order meanwhile: back, all three of the season's go out in match order
+      await db.admin(async (tx) => {
+        await tx`update public.videos set scheduled_for = ${new Date(now.getTime() - 2 * HOUR)}, tiktok_at = ${new Date(now.getTime() - 2 * HOUR)} where id = ${m1.id}`;
+        await tx`update public.videos set scheduled_for = ${new Date(now.getTime() - 4 * HOUR)}, tiktok_at = ${new Date(now.getTime() - 4 * HOUR)} where id = ${m2.id}`;
+      });
+      expect(await queue.retimeLate(p.user, ch, now)).toBe(3);
+      const back = await matchShorts(p.user);
+      const at = back.map((s) => s.scheduled_for!.getTime());
+      expect(at[0]).toBeGreaterThan(now.getTime());
+      expect(at[1] - at[0]).toBeGreaterThanOrEqual(2 * HOUR);
+      expect(at[2] - at[1]).toBeGreaterThanOrEqual(2 * HOUR);
+      const tiktok = back.map((s) => s.tiktok_at!.getTime());
+      expect([...tiktok].sort((x, y) => x - y)).toEqual(tiktok);
+    }, 60_000);
+
+    it("keeps two accounts' leagues apart, made at the same moment: no fight and no ball name shared, and a cast even when every name is taken", async () => {
+      const [x, y] = [await someone("creator", [{ niche: "league" }]), await someone("creator", [{ niche: "league" }])];
+      const lines = await Promise.all([x, y].map((u) => gen.tryDaily({ userId: u.user, channelId: u.channels[0] }, now)));
+      expect(lines).toEqual([`${x.user} ${x.channels[0]}: 5 made`, `${y.user} ${y.channels[0]}: 5 made`]);
+      const [rx, ry] = [await leagueRows(x.user), await leagueRows(y.user)];
+      const namesOf = (r: typeof rx) => r.leagues[0].balls.map((b) => b.name);
+      expect(namesOf(rx).filter((n) => namesOf(ry).includes(n))).toEqual([]);
+      for (const [u, r] of [[x, rx], [y, ry]] as const) {
+        for (const m of r.matches.filter((z) => z.played_at)) {
+          const [A, B] = [r.leagues[0].balls[m.a!], r.leagues[0].balls[m.b!]];
+          const item = battle.fightId(A.power, B.power, m.games![0].seed!, [r.seasons[0].health[A.power], r.seasons[0].health[B.power]]);
+          expect(await db.admin((tx) => tx`select user_id from public.content_ledger where item = ${item}`)).toEqual([{ user_id: u.user }]);
+        }
+      }
+      // a small word list with another league's eight names taken: eight others; with every one taken, a cast all the same
+      const words = { first: ["Wqa", "Wqb", "Wqc", "Wqd", "Wqe", "Wqf", "Wqg", "Wqh"], second: ["Zja", "Zjb", "Zjc", "Zjd", "Zje", "Zjf", "Zjg", "Zjh"] };
+      const [z, w] = [await someone("pro"), await someone("pro")];
+      const taken = words.first.map((f, i) => `${f} ${words.second[i]}`);
+      await db.admin((tx) => tx`insert into public.content_ledger (item, kind, user_id) select unnest(${taken.map(pure.castItem)}::text[]), 'cast', ${x.user}`);
+      const free = await league.leagueFor({ userId: z.user, channelId: null }, words);
+      expect(free.cast.some((b) => taken.includes(b.name))).toBe(false);
+      const all = words.first.flatMap((f) => words.second.map((s) => `${f} ${s}`)).filter((n) => !taken.includes(n) && !free.cast.some((b) => b.name === n));
+      await db.admin((tx) => tx`insert into public.content_ledger (item, kind, user_id) select unnest(${all.map(pure.castItem)}::text[]), 'cast', ${x.user}`);
+      const anyway = await league.leagueFor({ userId: w.user, channelId: null }, words);
+      expect(new Set(anyway.cast.map((b) => b.name)).size).toBe(8);
+      expect(new Set(anyway.cast.map((b) => b.power)).size).toBe(8);
+    }, 90_000);
+
+    it("pauses a disconnected channel's league, carries on with the same season when it's back, and gives an account's league to its first channel", async () => {
+      const p = await someone("pro", [{ niche: "league" }]);
+      const ch = p.channels[0];
+      await gen.tryDaily({ userId: p.user, channelId: ch }, now);
+      expect(await channels.disconnectChannel(p.user, ch)).toMatchObject({ platform: "youtube" });
+      for (const s of await matchShorts(p.user)) await queue.reject(p.user, s.id);
+      // disconnected: nothing more is played, and its season waits as it stands
+      expect(await gen.makeShorts(p.user, { origin: "daily", channelId: ch, now: new Date(now.getTime() + DAY) })).toBe(0);
+      expect(await league.seasonOn({ userId: p.user, channelId: ch })).toEqual({ number: 1, played: 3 });
+      // connected again: the same season carries on
+      const tokens = { access: "ya29.w2-niches", refresh: null, expiresAt: new Date(Date.now() + HOUR), scopes: null };
+      const [{ external_id }] = await db.admin((tx) => tx<{ external_id: string }[]>`select external_id from public.channels where id = ${ch}`);
+      expect(await store.saveChannel(p.user, "youtube", { externalId: external_id, title: "Back", handle: null, avatarUrl: null }, tokens)).toBe(ch);
+      expect(await gen.makeShorts(p.user, { origin: "daily", channelId: ch, now: new Date(now.getTime() + DAY) })).toBe(3);
+      expect((await leagueRows(p.user)).matches.filter((m) => m.played_at).map((m) => [m.season, m.number])).toEqual([[1, 1], [1, 2], [1, 3], [1, 4], [1, 5], [1, 6]]);
+
+      // an account with no channel plays its own league; its first channel takes it over, with what its Shorts were about
+      const f = await someone("pro", [], { niche: "league" });
+      expect(await gen.makeShorts(f.user, { origin: "daily", now })).toBe(3);
+      expect((await leagueRows(f.user)).leagues).toMatchObject([{ channel_id: null }]);
+      const first = await store.saveChannel(f.user, "youtube", { externalId: "UCw2nileague", title: "First", handle: null, avatarUrl: null }, tokens);
+      await channels.adoptOrphans(f.user, first);
+      expect((await leagueRows(f.user)).leagues).toMatchObject([{ channel_id: first }]);
+      expect((await channels.channelsOf(f.user)).map((x) => x.niche)).toEqual(["league"]);
+      expect((await matchShorts(f.user)).every((s) => s.channel_id === first)).toBe(true);
+      for (const s of await matchShorts(f.user)) await queue.reject(f.user, s.id);
+      expect(await gen.makeShorts(f.user, { origin: "daily", channelId: first, now: new Date(now.getTime() + DAY) })).toBe(3);
+      const after = await leagueRows(f.user);
+      expect(after.seasons).toHaveLength(1);
+      expect(after.matches.filter((m) => m.played_at).map((m) => m.number)).toEqual([1, 2, 3, 4, 5, 6]);
+    }, 90_000);
+
+    it("never puts another cast's matches on a channel with a league of its own, and leaves the account's own Shorts about nothing once its channel takes over", async () => {
+      const tokens = { access: "ya29.w2-niches", refresh: null, expiresAt: new Date(Date.now() + HOUR), scopes: null };
+      const day = (n: number) => new Date(now.getTime() + n * DAY);
+      // no channel yet, and its own Shorts in the Ball League
+      const f = await someone("pro", [], { niche: "league" });
+      const own = { userId: f.user, channelId: null };
+      expect(await gen.tryDaily(own, day(0))).toBe(`${f.user}: 3 made`);
+      const connect = async (at: Date) => (await channels.connectChannel(f.user, "youtube", { externalId: "UCw2niown", title: "Own", handle: null, avatarUrl: null }, tokens, plans.pro, at))!.id;
+      const ch = await connect(day(0));
+      // its first channel takes over its league, its matches and what its Shorts were about; its own Shorts are about nothing now
+      const [first] = (await leagueRows(f.user)).leagues;
+      expect(first.channel_id).toBe(ch);
+      expect((await channels.channelsOf(f.user)).map((c) => c.niche)).toEqual(["league"]);
+      const profileNiche = async () => (await db.admin((tx) => tx<{ niche: string | null }[]>`select niche from public.profiles where id = ${f.user}`))[0].niche;
+      expect(await profileNiche()).toBeNull();
+      expect((await matchShorts(f.user)).map((s) => s.channel_id)).toEqual([ch, ch, ch]);
+      // disconnected, its own Shorts are made again: a mix, with no new cast drawn for them
+      expect(await channels.disconnectChannel(f.user, ch)).toMatchObject({ platform: "youtube" });
+      expect(await gen.tryDaily(own, day(1))).toBe(`${f.user}: 3 made`);
+      expect((await leagueRows(f.user)).leagues).toHaveLength(1);
+      // picked again for its own Shorts, they get a league of their own
+      await db.asUser(f.user, (tx) => tx`update public.profiles set niche = 'league' where id = ${f.user}`);
+      expect(await gen.tryDaily(own, day(2))).toBe(`${f.user}: 3 made`);
+      const second = (await leagueRows(f.user)).leagues.find((l) => l.channel_id === null)!;
+      expect(second.balls.map((b) => b.name)).not.toEqual(first.balls.map((b) => b.name));
+      // the channel back keeps its own league: the account's matches stay off it, and that league's season stops where it is
+      expect(await connect(day(2))).toBe(ch);
+      const placed = await db.admin((tx) => tx<{ league: string; channel_id: string | null }[]>`
+        select s.league_id as league, v.channel_id from public.videos v
+        join public.league_matches m on m.video_id = v.id join public.league_seasons s on s.id = m.season_id
+        where v.user_id = ${f.user} order by s.league_id, m.number`);
+      expect(placed.filter((v) => v.league === first.id).map((v) => v.channel_id)).toEqual([ch, ch, ch]);
+      expect(placed.filter((v) => v.league === second.id).map((v) => v.channel_id)).toEqual([null, null, null]);
+      expect(await league.waitingFor({ userId: f.user, channelId: ch })).toBe(3);
+      expect(await db.admin((tx) => tx`
+        select l.channel_id, s.status from public.league_seasons s join public.leagues l on l.id = s.league_id
+        where s.user_id = ${f.user} order by l.channel_id nulls last`)).toEqual([{ channel_id: ch, status: "running" }, { channel_id: null, status: "stopped" }]);
+      expect(await profileNiche()).toBeNull();
+      // the Shorts its own made while it had no channel, the mix, go to the channel as ever
+      expect((await shortsOf(f.user)).filter((s) => !s.params.league).map((s) => s.channel_id)).toEqual([ch, ch, ch]);
+    }, 90_000);
+
+    it("tells the league's page and the tabs what's there: who's in the league now, which channels have had one, and where each match's Short is", async () => {
+      league = await import("@/lib/server/shorts/league");
+      const p = await someone("pro", [{ niche: "league" }, { niche: "places" }]);
+      const [ch] = p.channels;
+      const unit = { userId: p.user, channelId: ch };
+      // in the league from the moment it's picked, before there's a league to show
+      expect(await league.inLeagueNow(p.user)).toBe(true);
+      expect(await league.leaguesOf(p.user)).toEqual([]);
+      expect(await gen.tryDaily(unit, now)).toBe(`${p.user} ${ch}: 3 made`);
+      expect(await league.leaguesOf(p.user)).toEqual([ch]);
+      // one swiped away, one that failed and one deleted: each match says where its Short is, and links to it while there's one
+      const shorts = await matchShorts(p.user);
+      expect(await queue.reject(p.user, shorts[0].id)).toBe(true);
+      await db.admin((tx) => tx`update public.videos set status = 'failed' where id = ${shorts[1].id}`);
+      await db.admin((tx) => tx`delete from public.videos where id = ${shorts[2].id}`);
+      const view = (await league.leagueView(unit))!;
+      expect(view.matches.slice(0, 4).map((m) => [m.short, m.videoId])).toEqual([["skipped", shorts[0].id], ["failed", shorts[1].id], ["none", null], ["unplayed", null]]);
+      expect(view.seasons).toMatchObject([{ number: 1, status: "running", played: 3 }]);
+      // a channel that leaves the league keeps it to look back on
+      expect(await channels.setChannelSettings(p.user, ch, { niche: "money" })).toBe(true);
+      expect(await league.inLeagueNow(p.user)).toBe(false);
+      expect(await league.leaguesOf(p.user)).toEqual([ch]);
+      expect((await league.leagueView(unit))!.seasons).toMatchObject([{ number: 1, status: "stopped", played: 3 }]);
+      // an account's own Shorts are in it only while it has no channel of its own, and a disconnected channel isn't
+      expect(await league.inLeagueNow((await someone("free", [], { niche: "league" })).user)).toBe(true);
+      expect(await league.inLeagueNow((await someone("free", [{}], { niche: "league" })).user)).toBe(false);
+      expect(await league.inLeagueNow((await someone("pro", [{ niche: "league", status: "revoked" }])).user)).toBe(false);
+    }, 60_000);
+
+    it("gives the league's page each ball's record over every season, stopped ones too, its titles and every final", async () => {
+      league = await import("@/lib/server/shorts/league");
+      pure = await import("@/lib/battle/league");
+      const { seasonsOver } = await import("@/lib/shorts/league");
+      const { rng } = await import("@/lib/battle/sim");
+      const p = await someone("pro", [{ niche: "league" }]);
+      const unit = { userId: p.user, channelId: p.channels[0] };
+      const cast = pure.makeCast(pure.drawNames(rng(11)), rng(12));
+      const lots = [0, 1, 2, 3, 4, 5, 6, 7];
+      const game = (seed: number, winner: number | null): Game => ({ seed, winner, frame: 600, byTimeout: false, hp: [1, 1] });
+      type Row = { number: number; stage: string; round: number | null; a: number; b: number; games: Game[]; winner: number | null };
+      /** The first `n` round robin matches of a schedule in this order, each won as `win` says (null a draw). */
+      const fixtures = (order: number[], n: number, win: (a: number, b: number, number: number) => number | null): Row[] =>
+        pure.roundRobin(order).slice(0, n).map((f) => {
+          const w = win(f.a, f.b, f.number);
+          return { number: f.number, stage: "round", round: f.round, a: f.a, b: f.b, games: [game(f.number, w)], winner: w };
+        });
+      // season 1 played to the end: the lower slot wins in the round robin, every seventh match a draw, the higher-placed ball
+      // wins each semi-final, and the final goes to the first semi's winner 2-1, a draw between
+      const round = fixtures(lots, 28, (a, b, n) => (n % 7 === 0 ? null : Math.min(a, b)));
+      const [[a1, b1], [a2, b2]] = pure.semis(pure.table(round, lots));
+      const semis: Row[] = [
+        { number: 29, stage: "semi", round: null, a: a1, b: b1, games: [game(29, a1)], winner: a1 },
+        { number: 30, stage: "semi", round: null, a: a2, b: b2, games: [game(30, a2)], winner: a2 },
+      ];
+      const final: Row = { number: 31, stage: "final", round: null, a: a1, b: a2, games: [game(31, a1), game(32, null), game(33, a2), game(34, a1)], winner: a1 };
+      // season 2 stopped after three matches, each won by the higher slot, and season 3 playing, two draws in
+      const stopped = fixtures([7, 6, 5, 4, 3, 2, 1, 0], 3, (a, b) => Math.max(a, b));
+      const playing = fixtures([3, 1, 4, 0, 5, 2, 6, 7], 2, () => null);
+      await db.admin(async (tx) => {
+        const [l] = await tx<{ id: string }[]>`insert into public.leagues (user_id, channel_id, balls) values (${p.user}, ${unit.channelId}, ${tx.json(cast)}) returning id`;
+        const season = async (number: number, status: string, champion: number | null, rows: Row[]) => {
+          const [s] = await tx<{ id: string }[]>`
+            insert into public.league_seasons (league_id, user_id, number, status, health, lots, tune, champion, stopped_reason, ended_at)
+            values (${l.id}, ${p.user}, ${number}, ${status}, ${tx.json(pure.LEAGUE_HEALTH)}, ${lots}::int[], 'ode', ${champion},
+              ${status === "stopped" ? "niche" : null}, ${status === "running" ? null : now})
+            returning id`;
+          await tx`
+            insert into public.league_matches (season_id, user_id, number, stage, round, a, b, seeds, games, winner, played_at)
+            select ${s.id}, ${p.user}, number, stage, round, a, b, array[number], games, winner, ${now}
+            from jsonb_to_recordset(${tx.json(rows as never)}::jsonb) as t (number int, stage text, round int, a int, b int, games jsonb, winner int)`;
+        };
+        await season(1, "done", a1, [...round, ...semis, final]);
+        await season(2, "stopped", null, stopped);
+        await season(3, "running", null, playing);
+      });
+
+      const view = (await league.leagueView(unit))!;
+      expect(view.seasons.map((s) => [s.number, s.status, s.played])).toEqual([[3, "running", 2], [2, "stopped", 3], [1, "done", 31]]);
+      // the queue's line reads only the season playing now, and has the same of it
+      expect(await league.standingOf(unit)).toEqual({ cast: view.cast, seasons: [view.seasons[0]], table: view.table });
+      expect(await league.standingOf({ userId: p.user, channelId: null })).toBeNull();
+      // the table and the matches are the season playing now
+      expect(view.matches.map((m) => m.number)).toEqual([1, 2]);
+      expect(view.table.reduce((n, r) => n + r.played, 0)).toBe(4);
+      // each ball's record is every match it has played in all three seasons, a knockout as one match
+      const every = [...round, ...semis, final, ...stopped, ...playing];
+      for (const r of view.records) {
+        const mine = every.filter((m) => m.a === r.slot || m.b === r.slot);
+        expect(r, cast[r.slot].name).toEqual({
+          slot: r.slot,
+          won: mine.filter((m) => m.winner === r.slot).length,
+          drawn: mine.filter((m) => m.winner === null).length,
+          lost: mine.filter((m) => m.winner !== null && m.winner !== r.slot).length,
+          titles: r.slot === a1 ? 1 : 0,
+        });
+      }
+      // the champion comes first with the only title, and the final is there to say how it was won
+      expect(view.records.map((r) => r.slot).sort((x, y) => x - y)).toEqual(lots);
+      expect(view.records[0]).toMatchObject({ slot: a1, titles: 1 });
+      expect(view.finals).toEqual([{ season: 1, a: a1, b: a2, games: final.games, winner: a1 }]);
+      expect(seasonsOver(view)).toEqual([
+        { number: 2, champion: null, line: "Stopped after 3 matches when the niche changed" },
+        { number: 1, champion: a1, line: `Beat ${cast[a2].name} 2-1 in the final` },
+      ]);
+    }, 60_000);
+
+    it("shows Trends the niches an account's channels are about while it follows none, its own Shorts' while it has no channel, and every niche until one is picked", async () => {
+      const { channelTrendNiches } = await import("@/lib/server/niches");
+      // a league channel, a geography channel, one that hasn't picked and a disconnected football one: the account's own pick doesn't count beside them
+      const many = await someone("creator", [{ niche: "league" }, { niche: "places" }, {}, { niche: "football", status: "revoked" }], { niche: "money" });
+      expect(await channelTrendNiches(many.user)).toEqual({ ids: ["ball-battles", "quizzes", "rankings", "facts"], own: false });
+      // with no channel, what its own Shorts are about; a disconnected channel is no channel
+      expect(await channelTrendNiches((await someone("free", [], { niche: "money" })).user)).toEqual({ ids: ["rankings", "bar-chart-races"], own: true });
+      expect(await channelTrendNiches((await someone("pro", [{ niche: "nba", status: "revoked" }], { niche: "cars" })).user)).toEqual({ ids: ["cars"], own: true });
+      // one that's expired is still theirs
+      expect(await channelTrendNiches((await someone("pro", [{ niche: "gaming", status: "expired" }])).user)).toEqual({ ids: ["gaming"], own: false });
+      // nothing picked for the channel it has: every niche
+      expect(await channelTrendNiches((await someone("pro", [{}], { niche: "league" })).user)).toEqual({ ids: [], own: false });
+    }, 30_000);
+  });
 
   // wave 2: proof
   describe("proof: YouTube Analytics for each Short and each channel", () => {

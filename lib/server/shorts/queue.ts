@@ -15,6 +15,7 @@ import { YouTubeError, youtubeAccess, youtubeIdFrom, youtubeVideoStates } from "
 import { QuotaWait, takeLinkCheck } from "../quota";
 import { LINK_CHECKS_A_DAY, quotaResetsAt, tryAgainIn } from "../../shorts/quota";
 import { hourResults } from "./hours";
+import type { BattleParams } from "../../shorts/types";
 
 /**
  * The Shorts queue as one account sees it: what's waiting for a yes or
@@ -65,6 +66,8 @@ export type Posted = {
   privacy: YouTubePrivacy | null;
   youtubeKids: boolean | null;
   views: Partial<Record<"1h" | "24h" | "72h", number>>;
+  /** all the list needs of its parameters: a Ball League match's card, so it's named for the league */
+  params: Pick<BattleParams, "league">;
 };
 
 const privacyOf = (p: string | null): YouTubePrivacy | null => ((YT_PRIVACY as readonly string[]).includes(p ?? "") ? (p as YouTubePrivacy) : null);
@@ -96,10 +99,11 @@ export async function queueOf(userId: string, channelId?: string): Promise<{ wai
       order by v.scheduled_for nulls last, v.decided_at`;
     const posted = await tx<{
       id: string; channel_id: string | null; title: string; format: ShortFormat; posted_at: Date | null; youtube_id: string | null; youtube_verified: boolean; youtube_privacy: string | null;
-      youtube_kids: boolean | null; stats: { checkpoint: "1h" | "24h" | "72h"; views: string }[] | null;
+      youtube_kids: boolean | null; stats: { checkpoint: "1h" | "24h" | "72h"; views: string }[] | null; params: Pick<BattleParams, "league">;
     }[]>`
       select v.id, v.channel_id, v.title, v.format, v.posted_at, v.youtube_id, v.youtube_verified, v.youtube_privacy, v.youtube_kids,
-        (select json_agg(json_build_object('checkpoint', s.checkpoint, 'views', s.views)) from public.video_stats s where s.video_id = v.id) as stats
+        (select json_agg(json_build_object('checkpoint', s.checkpoint, 'views', s.views)) from public.video_stats s where s.video_id = v.id) as stats,
+        case when v.params ? 'league' then jsonb_build_object('league', v.params -> 'league') else '{}'::jsonb end as params
       from public.videos v where v.status = 'posted' ${only} order by v.posted_at desc nulls last limit 30`;
     return {
       waiting: waiting.map((r) => ({
@@ -138,6 +142,7 @@ export async function queueOf(userId: string, channelId?: string): Promise<{ wai
         privacy: privacyOf(r.youtube_privacy),
         youtubeKids: r.youtube_kids,
         views: Object.fromEntries((r.stats ?? []).map((s) => [s.checkpoint, Number(s.views)])),
+        params: r.params,
       })),
     };
   });
@@ -189,13 +194,35 @@ async function bookedTikTok(tx: Tx, userId: string, now: Date, except: string[] 
 }
 
 /**
+ * For a Ball League match, when its league's earlier matches that are
+ * still to post go out: the latest of their times, and of their TikTok
+ * times not sent yet. Earlier is before it in its season, or in a season
+ * before, since a new season's first matches say how the last one ended.
+ * Null for any other Short, or when none is left.
+ */
+async function earlierMatches(tx: Tx, id: string): Promise<{ at: Date | null; tiktok: Date | null } | null> {
+  const [r] = await tx<{ at: Date | null; tiktok: Date | null }[]>`
+    select max(coalesce(v.scheduled_for, v.suggested_for)) as at,
+      max(v.tiktok_at) filter (where v.tiktok_post is not null and v.tiktok_publish_id is null and v.tiktok_error is null) as tiktok
+    from public.league_matches me
+    join public.league_seasons ms on ms.id = me.season_id
+    join public.league_seasons s on s.league_id = ms.league_id
+    join public.league_matches m on m.season_id = s.id and (s.number < ms.number or (s.id = ms.id and m.number < me.number))
+    join public.videos v on v.id = m.video_id
+    where me.video_id = ${id} and v.status in ('approved', 'rendering', 'ready', 'scheduled')`;
+  return r?.at || r?.tiktok ? r : null;
+}
+
+/**
  * A yes: it goes in the render queue, ahead of free accounts on the paid
  * plans. On a plan that posts for you, it keeps its suggested time (or
  * the next free one at its channel's usual hours if that's passed, two
  * hours from that channel's others, and its "why" says the new time), and
  * goes to TikTok then too if the creator made their TikTok choices for
  * it (a little later if another of the account's TikTok posts is within
- * two hours of then).
+ * two hours of then). A Ball League match never goes out before an
+ * earlier match of its league that's still to post: it takes the next
+ * free time at least an hour after it, on YouTube and on TikTok.
  *
  * Who it's for is its YouTube channel's answer, unless the creator chose
  * differently for this Short (`kids`). One made for kids, or going to a
@@ -226,6 +253,14 @@ export async function approve(
         why = [...v.why.filter((w) => !isWhenLine(w)), ...(slot ? [whenLine(slot, tz, true)] : [])];
       }
     }
+    // a league match due before an earlier one of its league: the next free time from that one's, so the matches go out in order
+    const earlier = plan.scheduling ? await earlierMatches(tx, id) : null;
+    if (at && earlier?.at && at.getTime() < earlier.at.getTime() + 3600_000) {
+      const from = new Date(Math.max(now.getTime(), earlier.at.getTime()));
+      const slot = planSlots(1, from, tz, await hourResults(tx, tz, v.channel_id), await takenOn(tx, v.channel_id), Math.random, 0, [], postsPerDay(plan))[0];
+      at = slot?.at ?? null;
+      why = [...v.why.filter((w) => !isWhenLine(w)), ...(slot ? [whenLine(slot, tz, true)] : [])];
+    }
     // the channel it's for: its answer, and YouTube's verdict on it
     const [ch] = v.channel_id
       ? await tx<{ made_for_kids: boolean | null; youtube_kids: boolean | null }[]>`select made_for_kids, youtube_kids from public.channels where id = ${v.channel_id}`
@@ -233,7 +268,9 @@ export async function approve(
     const audience = kids ?? ch?.made_for_kids ?? null;
     const comments = commentsOn({ madeForKids: audience, channelKids: ch?.youtube_kids });
     const post = plan.scheduling && tiktok ? tiktok : null;
-    const tiktokAt = post && at ? tiktokTime(at, await bookedTikTok(tx, userId, now, [id]), tz) : null;
+    // a league match goes to TikTok an hour after its league's earlier one there at the soonest
+    const tiktokFrom = at && earlier?.tiktok ? new Date(Math.max(at.getTime(), earlier.tiktok.getTime() + 3600_000)) : at;
+    const tiktokAt = post && tiktokFrom ? tiktokTime(tiktokFrom, await bookedTikTok(tx, userId, now, [id]), tz) : null;
     await tx`
       update public.videos set status = 'approved', decided_at = now(), scheduled_for = ${at}, why = ${tx.json(why)}, error = null,
         tiktok_post = ${post ? tx.json(post) : null}, tiktok_at = ${tiktokAt}, tiktok_error = null,
@@ -312,8 +349,11 @@ export async function chooseTikTok(userId: string, id: string, choices: TikTokCh
  * nothing goes up by itself, so their times stay as the creator saw them.
  * Each one's "why" says its new time, and a TikTok time not used yet moves
  * with it, two hours from the account's other TikTok posts. One being
- * posted right now is left alone. `within` is a transaction already under
- * way, and the plan it's for. Returns how many moved.
+ * posted right now is left alone. A Ball League's matches keep their
+ * order: a later match of a league with one that's late moves too, and
+ * they take their new times in match order, on TikTok an hour apart at the
+ * least. `within` is a transaction already under way, and the plan it's
+ * for. Returns how many moved.
  */
 export async function retimeLate(userId: string, channelId: string, now = new Date(), within?: { tx: Tx; plan: Plan }): Promise<number> {
   const plan = within?.plan ?? (await billingFor(userId)).plan;
@@ -325,12 +365,20 @@ export async function retimeLate(userId: string, channelId: string, now = new Da
     const [c] = await tx<{ external_id: string; status: string }[]>`
       select external_id, status from public.channels where id = ${channelId} and user_id = ${userId} and platform = 'youtube'`;
     if (c?.status !== "connected" || !postsThroughApi(c.external_id, youtubeApi())) return 0;
-    const late = await tx<{ id: string; why: string[]; tiktok_at: Date | null; tiktok_publish_id: string | null; tiktok_error: string | null }[]>`
-      select id, why, tiktok_at, tiktok_publish_id, tiktok_error from public.videos
-      where user_id = ${userId} and channel_id = ${channelId} and status in ('approved', 'rendering', 'ready')
-        and youtube_id is null and scheduled_for is not null and scheduled_for < ${new Date(now.getTime() + 15 * 60_000)}
-        and (posting_at is null or posting_at < now() - interval '30 minutes')
-      order by scheduled_for, id`;
+    const soon = new Date(now.getTime() + 15 * 60_000);
+    const late = inMatchOrder(await tx<{ id: string; why: string[]; tiktok_at: Date | null; tiktok_publish_id: string | null; tiktok_error: string | null; league: string | null; season: number | null; number: number | null }[]>`
+      select v.id, v.why, v.tiktok_at, v.tiktok_publish_id, v.tiktok_error, s.league_id as league, s.number as season, m.number
+      from public.videos v left join public.league_matches m on m.video_id = v.id left join public.league_seasons s on s.id = m.season_id
+      where v.user_id = ${userId} and v.channel_id = ${channelId} and v.status in ('approved', 'rendering', 'ready')
+        and v.youtube_id is null and v.scheduled_for is not null and (v.posting_at is null or v.posting_at < now() - interval '30 minutes')
+        and (v.scheduled_for < ${soon}
+        -- a later match of a league with an earlier match that's late (in its season, or a season before), so the league goes out in order
+        or exists (select 1 from public.league_matches e join public.league_seasons es on es.id = e.season_id join public.videos w on w.id = e.video_id
+          where es.league_id = s.league_id and (es.number < s.number or (es.id = s.id and e.number < m.number))
+            and w.user_id = ${userId} and w.channel_id = ${channelId}
+            and w.status in ('approved', 'rendering', 'ready') and w.youtube_id is null and w.scheduled_for < ${soon}
+            and (w.posting_at is null or w.posting_at < now() - interval '30 minutes')))
+      order by v.scheduled_for, v.id`);
     if (!late.length) return 0;
     const [p] = await tx<{ timezone: string }[]>`select timezone from public.profiles where id = ${userId}`;
     const tz = validTimezone(p?.timezone);
@@ -338,20 +386,36 @@ export async function retimeLate(userId: string, channelId: string, now = new Da
     const taken = await takenOn(tx, channelId, { review: true, except: ids });
     const slots = planSlots(late.length, now, tz, await hourResults(tx, tz, channelId), taken, Math.random, 0, [], postsPerDay(plan));
     const booked = await bookedTikTok(tx, userId, now, ids);
+    // each league's last TikTok time given here, so its next match goes there an hour after it at the soonest
+    const lastTikTok = new Map<string, number>();
     let moved = 0;
     for (const [i, v] of late.entries()) {
       const slot = slots[i];
       if (!slot) continue;
       const why = [...v.why.filter((w) => !isWhenLine(w)), whenLine(slot, tz, plan.scheduling)];
       // still to go to TikTok (not sent, and not turned down): it goes with its new time
-      const tiktok = v.tiktok_at && !v.tiktok_publish_id && !v.tiktok_error ? tiktokTime(slot.at, booked, tz) : null;
+      const before = v.league ? lastTikTok.get(v.league) : undefined;
+      const from = before === undefined ? slot.at : new Date(Math.max(slot.at.getTime(), before + 3600_000));
+      const tiktok = v.tiktok_at && !v.tiktok_publish_id && !v.tiktok_error ? tiktokTime(from, booked, tz) : null;
       if (tiktok) booked.push(tiktok);
+      if (tiktok && v.league) lastTikTok.set(v.league, tiktok.getTime());
       await tx`update public.videos set scheduled_for = ${slot.at}, why = ${tx.json(why)}, tiktok_at = ${tiktok ?? v.tiktok_at} where id = ${v.id}`;
       moved++;
     }
     return moved;
   };
   return within ? run(within.tx) : asUser(userId, run);
+}
+
+/** Shorts in time order, with each Ball League's matches put in match order (season by season) in the places its matches have. */
+function inMatchOrder<T extends { league: string | null; season: number | null; number: number | null }>(xs: T[]): T[] {
+  const out = [...xs];
+  for (const league of new Set(xs.flatMap((x) => (x.league ? [x.league] : [])))) {
+    const at = xs.flatMap((x, i) => (x.league === league ? [i] : []));
+    const matches = at.map((i) => xs[i]).sort((p, q) => p.season! - q.season! || p.number! - q.number!);
+    at.forEach((i, k) => (out[i] = matches[k]));
+  }
+  return out;
 }
 
 /** A no. A round from the creator's LIVE swiped away lets go of its gifters' names. */

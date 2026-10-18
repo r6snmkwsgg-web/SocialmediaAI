@@ -2,7 +2,8 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
-import { pairProblem, questionProblem, storyProblem, textId, words, wordsId } from "../../shorts/checks";
+import { avoided, pairProblem, questionProblem, storyProblem, textId, words, wordsId } from "../../shorts/checks";
+import { nicheTopics, type ChannelNiche } from "../../shorts/niches";
 import type { Fact, Pair, Tale } from "../../shorts/types";
 import { env } from "../env";
 
@@ -15,7 +16,10 @@ import { env } from "../env";
  * only ones Claude is sure of, and a second call answers each question
  * without being told the answer: only the ones it gets right, is sure of
  * and says can't change are kept. Without Claude set up, all of this
- * gives nothing and the formats use their built-in banks.
+ * gives nothing and the formats use their built-in banks. For a channel
+ * about one niche, Claude writes about that niche's own subjects, each in
+ * an era picked at random, with the niche's rules on who it may name and
+ * which facts it may ask, and nothing on the niche's list of words to avoid.
  */
 
 /** One question to Claude, its answer in the shape asked for, or null. */
@@ -61,8 +65,17 @@ export function claude(until = Infinity): Ask | null {
 
 const pick = <T,>(xs: readonly T[], n: number, rand: () => number) => [...xs].sort(() => rand() - 0.5).slice(0, n);
 
-const AUDIENCE = `The videos are for teens and adults, 16 and over. Never write for young children: no cartoons, toys, pets, fairy tales, colours or shapes, nursery or school-playground topics.
-Never touch violence, weapons, death, illness, sex, dating, drugs, alcohol, smoking, gambling, religion, race, ethnicity, nationality as identity, sexuality, gender identity or politics, and never name a living person or a brand.`;
+const AUDIENCE_BASE = `The videos are for teens and adults, 16 and over. Never write for young children: no cartoons, toys, pets, fairy tales, colours or shapes, nursery or school-playground topics.
+Never touch violence, weapons, death, illness, sex, dating, drugs, alcohol, smoking, gambling, religion, race, ethnicity, nationality as identity, sexuality, gender identity or politics`;
+
+/** Who the videos are for and what they never touch: never a living person or a brand, unless a niche says who and what it may name instead. */
+const audience = (names?: string) => (names ? `${AUDIENCE_BASE}. ${names}` : `${AUDIENCE_BASE}, and never name a living person or a brand.`);
+
+const AUDIENCE = audience();
+
+/** Which quiz facts are allowed: only ones that never change, and nothing about records or champions, unless a niche says what it may ask instead. */
+const factRule = (facts?: string) =>
+  `- Only facts that never change and that you are completely certain of. ${facts ?? `Nothing about records, rankings, "current", "latest", populations, prices, champions or anything counted that could change.`}`;
 
 /** Quiz subjects, a few at a time, so every channel's questions come from all over. */
 export const TOPICS = [
@@ -100,21 +113,24 @@ const SCIENCE_TOPICS = new Set(["space", "physics", "chemistry", "the human body
  * New quiz questions for a channel: written, checked by code, then each
  * one answered again by a second call that isn't told the answer. Only
  * questions both agree on, that it's sure of and that can't change, are
- * kept. `known` is what's been asked before, in any words.
+ * kept. `known` is what's been asked before, in any words. With a niche,
+ * they're about its own subjects, under its rules.
  */
-export async function freshQuestions(ask: Ask | null, known: string[], rand: () => number, count = 12): Promise<Fact[]> {
+export async function freshQuestions(ask: Ask | null, known: string[], rand: () => number, count = 12, niche: ChannelNiche | null = null): Promise<Fact[]> {
   if (!ask) return [];
-  const topics = pick(TOPICS, 3, rand);
+  // a niche's own subjects, each in an era of its own; otherwise a few from everywhere
+  const topics = niche?.quiz ? nicheTopics(niche.quiz, rand) : pick(TOPICS, 3, rand);
+  const about = niche?.quiz ? `for a channel about ${niche.name}, on these subjects: ${topics.join("; ")}` : `about ${topics.join(", ")}`;
   const written = await ask(
     `You write multiple-choice trivia questions for short quiz videos.
-${AUDIENCE}
+${audience(niche?.names)}
 Rules:
-- Only facts that never change and that you are completely certain of. Nothing about records, rankings, "current", "latest", populations, prices, champions or anything counted that could change.
+${factRule(niche?.facts)}
 - Exactly one option is right. The two wrong options are believable but clearly wrong to someone who knows.
 - No sums or arithmetic, and no questions about capital cities: those are asked elsewhere.
 - Don't give the answer away in the question.
 - Mix the levels, with some hard ones.`,
-    `Write ${count} questions about ${topics.join(", ")}. Use those as the topic. Every question must be different from these, which have been asked already:\n${known.slice(-40).map((k) => `- ${k}`).join("\n") || "- (none yet)"}`,
+    `Write ${count} questions ${about}. Use those as the topic. Every question must be different from these, which have been asked already:\n${known.slice(-40).map((k) => `- ${k}`).join("\n") || "- (none yet)"}`,
     QUESTION,
   );
   if (!written) return [];
@@ -127,7 +143,7 @@ Rules:
     const topic = SCIENCE_TOPICS.has(w.topic) ? "science" : w.topic.toLowerCase().slice(0, 30) || "general";
     const f: Fact = { id: wordsId("q", w.q), q: w.q.trim(), a: w.answer.trim(), decoys: [wrong[0], wrong[1]], level, topic };
     // every country's capital is already asked from the data
-    if (words(f.q).has("capital") || questionProblem(f, seen)) continue;
+    if (words(f.q).has("capital") || questionProblem(f, seen) || [f.q, f.a, ...f.decoys].some((t) => avoided(t, niche?.avoid ?? []))) continue;
     seen.push(f.q);
     facts.push(f);
   }
@@ -164,17 +180,18 @@ const PAIRS = z.object({
 
 const THEMES = ["money", "work", "time", "travel", "tech", "food", "home", "social life", "habits", "powers", "sport", "music", "learning", "city life", "the future"] as const;
 
-/** New would-you-rather choices for a channel, checked by code. `known` is what's been asked before. */
-export async function freshPairs(ask: Ask | null, known: string[], rand: () => number, count = 12): Promise<Pair[]> {
+/** New would-you-rather choices for a channel, checked by code. `known` is what's been asked before. With a niche, they're about its own themes, under its rules. */
+export async function freshPairs(ask: Ask | null, known: string[], rand: () => number, count = 12, niche: ChannelNiche | null = null): Promise<Pair[]> {
   if (!ask) return [];
-  const themes = pick(THEMES, 4, rand);
+  const themes = pick(niche?.wyr?.themes ?? THEMES, 4, rand);
+  const about = niche?.wyr ? `for a channel about ${niche.name}, about ${themes.join(", ")}` : `about ${themes.join(", ")}`;
   const written = await ask(
     `You write "would you rather" choices for short videos where viewers comment their pick.
-${AUDIENCE}
+${audience(niche?.names)}
 Rules:
 - Both options equally tempting, or equally hard, so people really split. Short and concrete.
 - No gross-out, no harm to anyone, no "die" or "lose a loved one" choices.`,
-    `Write ${count} choices about ${themes.join(", ")}. Every one must be different from these, which have been asked already:\n${known.slice(-40).map((k) => `- ${k}`).join("\n") || "- (none yet)"}`,
+    `Write ${count} choices ${about}. Every one must be different from these, which have been asked already:\n${known.slice(-40).map((k) => `- ${k}`).join("\n") || "- (none yet)"}`,
     PAIRS,
   );
   if (!written) return [];
@@ -182,7 +199,7 @@ Rules:
   const seen = [...known];
   for (const w of written.pairs) {
     const p = { a: w.a.trim(), b: w.b.trim() };
-    if (pairProblem(p, seen)) continue;
+    if (pairProblem(p, seen) || avoided(`${p.a} ${p.b}`, niche?.avoid ?? [])) continue;
     seen.push(`${p.a} or ${p.b}`);
     out.push({ id: wordsId("wyr", `${p.a} or ${p.b}`), ...p, theme: w.theme.toLowerCase().slice(0, 20), pull: Math.min(3, Math.max(1, Math.round(w.pull))) as 1 | 2 | 3 });
   }

@@ -1,12 +1,14 @@
 import "server-only";
 import type { Plan } from "../billing/plans";
 import { channelNames, hasRoom } from "../shorts/channels";
+import { nicheById, type NicheId } from "../shorts/niches";
 import { postsThroughApi, YT_PRIVACY, type YouTubePrivacy } from "../shorts/youtube";
 import { saveChannel, type Tokens } from "./channels-store";
 import { admin, asUser, withUserLock, type Tx } from "./db";
 import { youtubeApi } from "./env";
 import { rememberTikTok } from "./live";
 import { fitAudience, lockTimes, retimeLate } from "./shorts/queue";
+import { stopIfLeft } from "./shorts/league";
 
 /**
  * The YouTube and TikTok accounts someone has connected. Tokens live
@@ -37,16 +39,18 @@ export type Channel = {
   api: boolean;
   /** YouTube: whether the creator wants new Shorts made for it */
   shortsOn: boolean;
+  /** YouTube: what it's about, once the creator picks; until then it gets a mix of everything */
+  niche: NicheId | null;
   /** when it was first connected, or connected again after being disconnected: the first get Shorts first */
   addedAt: Date;
 };
 
 type Row = {
   id: string; platform: Platform; external_id: string; title: string | null; handle: string | null; avatar_url: string | null; status: Channel["status"];
-  made_for_kids: boolean | null; privacy: string; youtube_kids: boolean | null; shorts_on: boolean; added_at: Date;
+  made_for_kids: boolean | null; privacy: string; youtube_kids: boolean | null; shorts_on: boolean; added_at: Date; niche: string | null;
 };
 
-const columns = (tx: Tx) => tx`c.id, c.platform, c.external_id, c.title, c.handle, c.avatar_url, c.status, c.made_for_kids, c.privacy, c.youtube_kids, c.shorts_on, c.added_at`;
+const columns = (tx: Tx) => tx`c.id, c.platform, c.external_id, c.title, c.handle, c.avatar_url, c.status, c.made_for_kids, c.privacy, c.youtube_kids, c.shorts_on, c.added_at, c.niche`;
 
 function channelOf(r: Row, access = youtubeApi()): Channel {
   return {
@@ -63,6 +67,7 @@ function channelOf(r: Row, access = youtubeApi()): Channel {
     api: r.platform === "youtube" && postsThroughApi(r.external_id, access),
     shortsOn: r.shorts_on,
     addedAt: r.added_at,
+    niche: nicheById(r.niche)?.id ?? null,
   };
 }
 
@@ -113,18 +118,27 @@ export async function hasRoomFor(userId: string, platform: Platform, externalId:
 
 /**
  * An account's first YouTube channel taking over what it had before it had
- * one: its Shorts not on YouTube yet, its look and its morning run. Shorts
- * already on YouTube keep no channel, since which one they're on isn't
- * known. Only when this is the account's only YouTube channel that isn't
- * disconnected; returns how many Shorts it took over. Every statement runs
- * in one transaction, the one it's handed if it's handed one.
+ * one: its Shorts not on YouTube yet, its look, its morning run, what its
+ * Shorts were about, unless the channel says already, and its Ball League,
+ * unless the channel has one of its own. That league then keeps its
+ * matches, which are another cast's, and stops its season, since the
+ * account's own Shorts are about nothing of their own once a channel has
+ * taken them over. Shorts already on YouTube keep no channel, since which
+ * one they're on isn't known. Only when this is the account's only YouTube
+ * channel that isn't disconnected; returns how many Shorts it took over.
+ * Every statement runs in one transaction, the one it's handed if it's
+ * handed one.
  */
 export async function adoptOrphans(userId: string, channelId: string, tx?: Tx): Promise<number> {
   const run = async (tx: Tx) => {
     const active = await tx<{ id: string }[]>`select id from public.channels where user_id = ${userId} and platform = 'youtube' and status <> 'revoked'`;
     if (active.length !== 1 || active[0].id !== channelId) return 0;
+    // never a second cast's matches onto a channel with a league of its own
+    const leagueOwn = tx`exists (select 1 from public.leagues x where x.user_id = ${userId} and x.channel_id = ${channelId})`;
     const moved = await tx`
-      update public.videos set channel_id = ${channelId} where user_id = ${userId} and channel_id is null and youtube_id is null returning id`;
+      update public.videos set channel_id = ${channelId} where user_id = ${userId} and channel_id is null and youtube_id is null
+        and not (params ? 'league' and ${leagueOwn})
+      returning id`;
     await tx`
       update public.content_ledger set channel_id = ${channelId}
       where kind = 'look' and user_id = ${userId} and channel_id is null
@@ -132,6 +146,16 @@ export async function adoptOrphans(userId: string, channelId: string, tx?: Tx): 
     const [had] = await tx`select 1 from public.shorts_runs where user_id = ${userId} and channel_id = ${channelId}`;
     if (had) await tx`delete from public.shorts_runs where user_id = ${userId} and channel_id is null`;
     else await tx`update public.shorts_runs set channel_id = ${channelId} where user_id = ${userId} and channel_id is null`;
+    await tx`
+      update public.channels c set niche = p.niche from public.profiles p
+      where c.id = ${channelId} and c.user_id = ${userId} and p.id = c.user_id and c.niche is null and p.niche is not null`;
+    await tx`
+      update public.leagues set channel_id = ${channelId}
+      where user_id = ${userId} and channel_id is null
+        and not exists (select 1 from public.leagues x where x.user_id = ${userId} and x.channel_id = ${channelId})`;
+    // what its own Shorts were about is the channel's now, so a league left with the account stops where it is
+    await tx`update public.profiles set niche = null where id = ${userId} and niche is not null`;
+    await stopIfLeft({ userId, channelId: null }, tx);
     return moved.length;
   };
   return tx ? run(tx) : admin(run);
@@ -217,16 +241,20 @@ export async function disconnectChannel(userId: string, channelId: string): Prom
 }
 
 /**
- * A YouTube channel's own Shorts settings: whether it gets new Shorts.
- * Only the settings given are written, through what people may change on
- * their own channels. Returns whether it was theirs.
+ * A YouTube channel's own Shorts settings: whether it gets new Shorts, and
+ * what it's about. Only the settings given are written, through what
+ * people may change on their own channels, so saving what it's about never
+ * switches its Shorts off. Leaving the Ball League stops the season it
+ * had on, as the server: its results stay. Returns whether it was theirs.
  */
-export async function setChannelSettings(userId: string, channelId: string, patch: { shortsOn?: boolean }): Promise<boolean> {
-  const set: Record<string, boolean> = {};
+export async function setChannelSettings(userId: string, channelId: string, patch: { shortsOn?: boolean; niche?: NicheId | null }): Promise<boolean> {
+  const set: Record<string, boolean | string | null> = {};
   if (patch.shortsOn !== undefined) set.shorts_on = patch.shortsOn;
+  if (patch.niche !== undefined) set.niche = patch.niche;
   const rows = await asUser(userId, (tx) => (Object.keys(set).length
     ? tx`update public.channels set ${tx(set)} where id = ${channelId} and user_id = ${userId} and platform = 'youtube' returning id`
     : tx`select id from public.channels where id = ${channelId} and user_id = ${userId} and platform = 'youtube'`));
+  if (rows.length && patch.niche !== undefined) await stopIfLeft({ userId, channelId });
   return rows.length > 0;
 }
 

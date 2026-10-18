@@ -1,3 +1,5 @@
+import { avoided } from "../checks";
+import { nicheById } from "../niches";
 import type { Candidate, Context, Pair } from "../types";
 
 /**
@@ -6,7 +8,8 @@ import type { Candidate, Context, Pair } from "../types";
  * the comments are the answer. The choices are grown-up ones (money,
  * work, time, how you'd live); choices Claude writes for a channel
  * (lib/server/shorts/fresh.ts) come first, and these are what's used
- * without it.
+ * without it. A channel about one niche only gets the bank's choices on
+ * its niche's own themes.
  */
 
 const P = (id: string, a: string, b: string, theme: string, pull: 1 | 2 | 3): Pair => ({ id: `wyr-${id}`, a, b, theme, pull });
@@ -94,9 +97,13 @@ export function wyrScore(ps: Pair[]): number {
 }
 
 export function proposeWyr(ctx: Context, tries = 160, count = 5): Candidate | null {
+  const niche = nicheById(ctx.niche);
+  if (niche && !niche.wyr) return null;
+  // in a niche, only the bank's choices on its own themes
+  const bank = niche ? PAIRS.filter((p) => niche.wyr?.bankThemes.includes(p.theme) && !avoided(`${p.a} ${p.b}`, niche.avoid ?? [])) : PAIRS;
   // what was written for this channel comes first; the bank fills in when there isn't enough of it
   const written = (ctx.fresh?.pairs ?? []).filter((p) => !ctx.used.has(p.id));
-  const fresh = written.length >= count + 2 ? written : [...written, ...PAIRS.filter((p) => !ctx.used.has(p.id))];
+  const fresh = written.length >= count + 2 ? written : [...written, ...bank.filter((p) => !ctx.used.has(p.id))];
   if (fresh.length < count) return null;
   let best: { ps: Pair[]; score: number } | null = null;
   for (let t = 0; t < tries; t++) {

@@ -1,5 +1,6 @@
-import { normal } from "../checks";
+import { avoided, normal } from "../checks";
 import { COUNTRIES, DATA } from "../data";
+import { nicheById, type ChannelNiche } from "../niches";
 import type { Candidate, Context, Fact, Question } from "../types";
 
 /**
@@ -8,7 +9,9 @@ import type { Candidate, Context, Fact, Question } from "../types";
  * check, or a sum worked out by the code itself, so a quiz is never wrong.
  * They're for teens and adults: nothing a young child would be asked.
  * Questions Claude writes for a channel (lib/server/shorts/fresh.ts) come
- * first; these are what's used without it.
+ * first; these are what's used without it. A channel about one niche only
+ * asks that niche's kinds, from what was written for it and the bank's
+ * questions on its own topics.
  */
 
 /** capitals, with the country's better-known cities as the wrong answers */
@@ -261,6 +264,18 @@ function pool(kind: QuizKind, ctx: Context): Fact[] {
 }
 
 /**
+ * A niche's questions for one of its kinds: the capitals, or what was
+ * written for the channel with the bank's questions on the niche's own
+ * topics. Never the general banks or sums, so its quizzes are only about it.
+ */
+function nichePool(kind: string, niche: ChannelNiche, ctx: Context): Fact[] {
+  if (kind === "capitals") return [...CAPITALS.map(capital), ...dataCapitals()];
+  const bank = FACTS.filter((f) => niche.quiz?.bankTopics.includes(f.topic) && ![f.q, f.a, ...f.decoys].some((t) => avoided(t, niche.avoid ?? [])));
+  const unused = (ctx.fresh?.questions ?? []).filter((f) => !ctx.used.has(f.id));
+  return unused.length >= 6 ? unused : [...unused, ...bank];
+}
+
+/**
  * How good a set of questions is: easiest first and hardest last, at least
  * one hard one, the right answers not all in the same place, and (in a
  * mixed quiz) not two of a kind in a row.
@@ -277,11 +292,14 @@ export function quizScore(qs: Question[]): number {
   return score;
 }
 
-/** A quiz of the kind asked for, or of any kind that still has enough new questions. */
-export function proposeQuiz(ctx: Context, kind?: QuizKind, tries = 160, count = 5): Candidate | null {
-  for (const k of kind ? [kind] : shuffle([...KINDS], ctx.rand)) {
+/** A quiz of the kind asked for, or of any kind that still has enough new questions: one of its niche's, where it has one. */
+export function proposeQuiz(ctx: Context, kind?: string, tries = 160, count = 5): Candidate | null {
+  const niche = nicheById(ctx.niche);
+  if (niche && !niche.quiz) return null;
+  const kinds = niche?.quiz ? niche.quiz.kinds.map((x) => x.id) : [...KINDS];
+  for (const k of kind ? [kind] : shuffle(kinds, ctx.rand)) {
     const seen = new Set<string>();
-    const facts = pool(k, ctx).filter((f) => !ctx.used.has(f.id) && !seen.has(f.id) && seen.add(f.id));
+    const facts = (niche ? nichePool(k, niche, ctx) : pool(k as QuizKind, ctx)).filter((f) => !ctx.used.has(f.id) && !seen.has(f.id) && seen.add(f.id));
     if (facts.length < count) continue;
     let best: { qs: Question[]; score: number } | null = null;
     for (let t = 0; t < tries; t++) {
@@ -292,7 +310,8 @@ export function proposeQuiz(ctx: Context, kind?: QuizKind, tries = 160, count = 
     }
     const qs = best!.qs;
     const hardest = qs[qs.length - 1];
-    const name = k === "capitals" ? "capitals" : k === "science" ? "science questions" : "questions";
+    const own = niche?.quiz?.kinds.find((x) => x.id === k)?.name;
+    const name = own ?? (k === "capitals" ? "capitals" : k === "science" ? "science questions" : "questions");
     return {
       format: "quiz",
       params: { questions: qs },
@@ -304,7 +323,11 @@ export function proposeQuiz(ctx: Context, kind?: QuizKind, tries = 160, count = 
         `The questions: ${qs.map((q) => `"${q.q}"`).join(", ")}.`,
         `The last and hardest: "${hardest.q}" Don't give away any answers.`,
       ],
-      title: k === "capitals" ? `Name these ${count} capitals in 3 seconds each` : k === "science" ? `${count} science questions, 3 seconds each` : `${count} questions, 3 seconds each. How many can you get?`,
+      title:
+        k === "capitals" ? `Name these ${count} capitals in 3 seconds each`
+        : own ? `${count} ${own}, 3 seconds each`
+        : k === "science" ? `${count} science questions, 3 seconds each`
+        : `${count} questions, 3 seconds each. How many can you get?`,
     };
   }
   return null;

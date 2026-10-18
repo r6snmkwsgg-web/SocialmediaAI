@@ -126,16 +126,18 @@ export function odds(weights: Weight[], allowed: readonly FormatId[] = FORMAT_ID
 }
 
 /**
- * The formats a channel's Shorts are drawn from. Text stories are off
- * until the creator turns them on: templated scrolling text is what
- * YouTube is least keen to pay for.
+ * The formats a channel's Shorts are drawn from: its niche's, once it has
+ * picked one, and otherwise every format. Text stories are in no niche,
+ * and off until the creator turns them on: templated scrolling text is
+ * what YouTube is least keen to pay for.
  */
-export function formatsFor(opts: { textStories: boolean }): FormatId[] {
+export function formatsFor(opts: { textStories: boolean; niche?: { formats: readonly FormatId[] } | null }): FormatId[] {
+  if (opts.niche) return [...opts.niche.formats];
   return FORMAT_IDS.filter((f) => f !== "texts" || opts.textStories);
 }
 
-/** Today's formats: drawn by the odds, never more than two of one kind. */
-export function chooseFormats(n: number, o: Record<FormatId, number>, rand: () => number): FormatId[] {
+/** Today's formats: drawn by the odds, never more than `cap` of one kind. */
+export function chooseFormats(n: number, o: Record<FormatId, number>, rand: () => number, cap = 2): FormatId[] {
   const out: FormatId[] = [];
   const left = { ...o };
   while (out.length < n && Object.values(left).some((p) => p > 0)) {
@@ -149,10 +151,16 @@ export function chooseFormats(n: number, o: Record<FormatId, number>, rand: () =
       if (r <= 0) break;
     }
     out.push(pick);
-    if (out.filter((f) => f === pick).length >= 2) left[pick] = 0;
+    if (out.filter((f) => f === pick).length >= cap) left[pick] = 0;
   }
   return out;
 }
+
+/**
+ * How many of one format a day can have: two, and more only when there are
+ * too few formats to fill the day, as in a niche with two of them.
+ */
+export const formatCap = (n: number, formats: number) => Math.max(2, Math.ceil(n / Math.max(1, formats)));
 
 /**
  * The kinds of thing within a format that can do better or worse: the

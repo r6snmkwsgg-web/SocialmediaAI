@@ -22,6 +22,11 @@ import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
 import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { allowancesOf, makeShorts, shortsNoteOf } from "@/lib/server/shorts/generate";
+import { nichesOf } from "@/lib/server/niches";
+import { standingOf } from "@/lib/server/shorts/league";
+import { postsPerDay } from "@/lib/billing/plans";
+import { matchName, orderHint, OWN_LEAGUE, standingLine, WAITING_NOTE } from "@/lib/shorts/league";
+import type { Spec } from "@/lib/shorts/types";
 import { queueOf, type Coming } from "@/lib/server/shorts/queue";
 import { workerStatus } from "@/lib/server/worker";
 import { decide, editCopy, makeMore, posted, postToTikTok, sendToTikTok, tiktokAccount, tryAgain } from "./actions";
@@ -96,8 +101,13 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
   // nothing's rendering at all right now: say so, rather than leave Shorts looking stuck
   const paused = working && (await workerStatus()).running === 0;
   const per = allow.account.per === "week" ? "this week" : "today";
-  // nothing waiting with Shorts left to make: if there was nothing new to make (for the channel picked), say so rather than look empty
-  const note = !q.waiting.length && left > 0 ? await shortsNoteOf({ userId: me.id, channelId: picked?.id ?? null }) : null;
+  // nothing waiting with Shorts left to make: if there was nothing new to make (for the channel picked, or the ones with Shorts left),
+  // say so rather than look empty. Each channel keeps its own note, named when there's more than one
+  const noted = !q.waiting.length && left > 0
+    ? await Promise.all((picked ? [picked.id] : allow.order.filter((u) => allow.units.get(u)!.left > 0)).map(async (u) => ({ u, text: await shortsNoteOf({ userId: me.id, channelId: u }) })))
+    : [];
+  const notes = noted.filter((x): x is { u: string | null; text: string } => !!x.text);
+  const note = notes.length ? notes.map((x) => <p key={x.u ?? "own"}>{several && !picked && channelOf(x.u) ? `${channelOf(x.u)!.name}: ` : ""}{x.text}</p>) : null;
   const many = (k: number) => (k === 1 ? "one channel" : `${k} channels`);
   const swipe = `Swipe right to ${posts ? "post" : "keep"} one, left for a different one.`;
   const settings = (href: string) => <Link href={href} className={linked}>Settings</Link>;
@@ -123,6 +133,35 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
   );
   // the channels this view shows, for what they're waiting on
   const mine = (picked ? [picked] : shown).filter(isActive);
+  // until a channel picks what it's about, it gets a mix of everything: the ones getting Shorts, and the account's own while it has no channel
+  const niches = await asUser(me.id, (tx) => nichesOf(tx, me.id));
+  const unpicked = mine.filter((c) => allow.order.includes(c.id) && !c.niche);
+  const ownUnpicked = !picked && allow.order.includes(null) && !niches.get(null);
+  const names = (xs: string[]) => (xs.length < 2 ? xs.join("") : `${xs.slice(0, -1).join(", ")} and ${xs.at(-1)}`);
+  // each Ball League channel this view shows, and the account's own Shorts while it has no channel: its season in a line, a
+  // note while its next matches wait for the ones already made, and which to post first when the creator posts them
+  const matchOf = (spec: Spec) => (spec.format === "battle" ? spec.params.league : undefined);
+  const leagueUnits = [...mine.filter((c) => c.niche === "league").map((c) => c.id), ...(!picked && allow.order.includes(null) && niches.get(null)?.id === "league" ? [null] : [])];
+  const leagues = await Promise.all(leagueUnits.map(async (u) => {
+    const standing = await standingOf({ userId: me.id, channelId: u });
+    // a day's worth waiting holds back new matches, and with no more than that, skipping one brings the next, while it gets Shorts
+    const waits = q.waiting.filter((w) => w.channelId === u && matchOf(w.spec)).length;
+    const getting = allow.order.includes(u);
+    // kept for the creator to post themselves, where the order is theirs to keep
+    const kept = q.coming
+      .filter((c) => c.channelId === u && !c.youtubeId && !autoOf(c.channelId) && ["approved", "rendering", "ready"].includes(c.status))
+      .flatMap((c) => {
+        const m = matchOf(c.spec);
+        return m ? [{ season: m.season, number: m.number }] : [];
+      });
+    return {
+      u, line: standingLine(standing, { inLeague: true, who: { name: u ? (channelOf(u)?.name ?? null) : null } }),
+      waiting: getting && waits >= postsPerDay(me.plan), next: getting && waits <= postsPerDay(me.plan), hint: orderHint(kept),
+    };
+  }));
+  // a match whose skip brings its league's next one: its channel is still in the league and gets Shorts, with no more than a day's worth waiting
+  const skipNext = (w: { channelId: string | null; spec: Spec }) => !!matchOf(w.spec) && leagues.some((l) => l.u === w.channelId && l.next);
+  const whose = (u: string | null) => (several && !picked && u ? `${channelOf(u)?.name}: ` : "");
 
   return (
     <>
@@ -149,12 +188,33 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
           {me.plan.scheduling && c.api ? "so its Shorts can post." : "so Hookline can check its Shorts and read their views."}
         </p>
       ))}
+      {unpicked.length > 0 && (
+        <p className="mb-6 border-2 border-dashed border-edge-strong px-4 py-3 text-[14px]">
+          {names(unpicked.map((c) => c.name))} {unpicked.length === 1 ? "gets a mix of everything until you pick what it's about" : "get a mix of everything until you pick what each is about"}.{" "}
+          <Link href={`/app/settings#channel-${unpicked[0].id}`} className={linked}>Pick in Settings</Link>
+        </p>
+      )}
+      {ownUnpicked && (
+        <p className="mb-6 border-2 border-dashed border-edge-strong px-4 py-3 text-[14px]">
+          Your Shorts are a mix of everything until you pick what they&rsquo;re about. <Link href="/app/settings#shorts" className={linked}>Pick in Settings</Link>
+        </p>
+      )}
+      {leagues.map((l) => l.line && (
+        <div key={`league-${l.u ?? "own"}`} className="mb-6 flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 border-2 border-edge px-4 py-3 text-[14px]">
+          <p>
+            {whose(l.u)}
+            {l.line}
+            {l.waiting && <span className="mt-1 block text-muted">{WAITING_NOTE}</span>}
+          </p>
+          <Link href={`/app/shorts/league?channel=${l.u ?? OWN_LEAGUE}`} className={linked}>See the table</Link>
+        </div>
+      ))}
 
       {q.waiting.length ? (
         <SwipeQueue
           items={q.waiting.map((w) => ({
             id: w.id, spec: w.spec, format: formatName(w.spec), title: w.title, description: w.description, why: w.why, suggestedFor: w.suggestedFor?.toISOString() ?? null,
-            channel: card(w.channelId),
+            channel: card(w.channelId), skipNext: skipNext(w),
           }))}
           tag={me.plan.tag}
           tiktok={tiktokDirect}
@@ -212,6 +272,12 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
               <b className="font-semibold">Making videos is paused right now.</b> Yours are safe in line and get made as soon as it&rsquo;s back, by themselves.
             </p>
           )}
+          {leagues.map((l) => l.hint && (
+            <p key={`order-${l.u ?? "own"}`} className="border-b-2 border-edge px-5 py-3 text-[13px] leading-relaxed">
+              {whose(l.u)}
+              {l.hint}
+            </p>
+          ))}
           {q.coming.length === 0 ? (
             <p className="px-5 py-5 text-[14px] text-muted">Shorts you swipe right on show up here while they&rsquo;re made{posts ? " and until they post" : ", ready to download"}.</p>
           ) : (
@@ -234,6 +300,7 @@ export default async function Shorts({ searchParams }: { searchParams: Search })
                         <p className="mt-0.5 font-mono text-[11px] uppercase tracking-[0.14em] text-muted">
                           {nameTag(c.channelId)}
                           {formatName(c.spec)}
+                          {matchOf(c.spec) && <> · {matchName(matchOf(c.spec)!.number)}</>}
                           {c.scheduledFor && <> · {self ? "best time" : "posts"} <LocalTime iso={c.scheduledFor.toISOString()} /></>}
                           {c.madeForKids && <> · made for kids</>}
                         </p>

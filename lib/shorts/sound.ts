@@ -1,5 +1,5 @@
+import { series } from "../battle/series";
 import { soundtrack } from "../battle/sound";
-import { simulate } from "../battle/sim";
 import { timeline } from "../battle/timeline";
 import { playsFrom, replay } from "../live/clip";
 import { BACK, endFrom, endingOf, FPS, frames, QUIZ, quizStep, RACE, RANKING, storyTimes, WYR } from "./timing";
@@ -87,11 +87,17 @@ export function soundFor(spec: Spec): Float32Array {
     return buf;
   }
   if (spec.format === "battle") {
-    const b = simulate(spec.params.a, spec.params.b, spec.params.seed);
-    const tune = soundtrack(b, timeline(b), spec.params.melody ?? "ode");
-    // the fight's own soundtrack, cut to this Short's ending
+    // each fight's own soundtrack from where it starts until the next game does, the last cut to this Short's ending; a game
+    // shown as a card is quiet. A Short of one fight sounds exactly as it always has
+    const { games } = series(spec.params);
     const buf = new Float32Array(Math.ceil(sec(end) * RATE));
-    buf.set(tune.subarray(0, buf.length));
+    games.forEach((g, i) => {
+      if (!g.battle || !g.tl) return;
+      const at = Math.round(sec(g.from) * RATE);
+      const until = i + 1 < games.length ? Math.round(sec(games[i + 1].from) * RATE) : buf.length;
+      const tune = soundtrack(g.battle, g.tl, spec.params.melody ?? "ode");
+      buf.set(tune.subarray(0, Math.max(0, Math.min(until, buf.length) - at)), at);
+    });
     if (loops) whoosh(buf, sec(end - BACK), 0.14);
     return buf;
   }

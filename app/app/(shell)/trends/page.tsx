@@ -9,6 +9,7 @@ import { kidsOf, NICHES, nicheOf, staleLines, staleOf } from "@/lib/trends/niche
 import { account } from "@/lib/server/account";
 import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
+import { channelTrendNiches, nichesOf } from "@/lib/server/niches";
 import { followedNiches, kidsShare, leaderboard, postingTimes, rising, trendChecks } from "@/lib/server/trends";
 import { follow, makeLike } from "./actions";
 
@@ -33,7 +34,11 @@ type Search = Promise<Record<string, string | string[] | undefined>>;
 export default async function Trends({ searchParams }: { searchParams: Search }) {
   const me = await account();
   const q = await searchParams;
-  const niches = await followedNiches(me.id);
+  const [followed, ours] = await Promise.all([followedNiches(me.id), channelTrendNiches(me.id)]);
+  // with none followed, the niches their channels are about; with none of those picked either, every niche
+  const niches = followed.length ? followed : ours.ids;
+  // with no channel, what its own Shorts are about, to say why "make one like this" made nothing
+  const ownNiche = q.error === "niche" && ours.own ? (await asUser(me.id, (tx) => nichesOf(tx, me.id))).get(null) : null;
   const [videos, board, times, [profile], checks, kids] = await Promise.all([
     rising(me.id, niches),
     leaderboard(me.id),
@@ -77,18 +82,51 @@ export default async function Trends({ searchParams }: { searchParams: Search })
           Shorts are off for every channel. <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Switch one on in Settings.</Link>
         </p>
       )}
+      {q.error === "niche" && (
+        <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">
+          {ours.own ? (
+            <>
+              Your Shorts are about {ownNiche?.name ?? "one thing"}, which doesn&rsquo;t make {FORMATS[q.format as FormatId]?.plural ?? "Shorts like that"}.{" "}
+              <Link href="/app/settings#shorts" className="underline decoration-signal decoration-2 underline-offset-4">Change what they&rsquo;re about in Settings</Link> to make one.
+            </>
+          ) : (
+            <>
+              None of your channels make {FORMATS[q.format as FormatId]?.plural ?? "Shorts like that"}.{" "}
+              <Link href="/app/settings" className="underline decoration-signal decoration-2 underline-offset-4">Change what a channel is about in Settings</Link> to make one.
+            </>
+          )}
+        </p>
+      )}
+      {q.error === "writer" && (
+        <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">
+          {configured().claude
+            ? "Claude didn't answer, so nothing new could be written. Try again in a little while."
+            : "Nothing new can be written for that until Claude is set up on this Hookline."}
+        </p>
+      )}
+      {q.error === "waiting" && (
+        <p role="alert" className="mb-6 border-2 border-signal px-4 py-3 text-[15px]">
+          Swipe the Ball League matches waiting first, then make one.{" "}
+          <Link href="/app/shorts" className="underline decoration-signal decoration-2 underline-offset-4">Open your queue</Link>
+        </p>
+      )}
 
       <form action={follow} className="mb-8 flex flex-wrap items-center gap-2" aria-label="Niches to show">
         {NICHES.map((n) => (
           <label key={n.id} className="cursor-pointer has-[:focus-visible]:outline-3 has-[:focus-visible]:outline-signal">
-            <input type="checkbox" name="niche" value={n.id} defaultChecked={niches.includes(n.id)} className="peer sr-only" />
-            <span className="inline-block border-2 border-edge px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.12em] text-muted transition peer-checked:border-fg peer-checked:bg-fg peer-checked:text-surface">
+            <input type="checkbox" name="niche" value={n.id} defaultChecked={followed.includes(n.id)} className="peer sr-only" />
+            {/* outlined: on show because their Shorts are about it, though nobody picked it here */}
+            <span className={`inline-block border-2 px-3 py-1.5 font-mono text-[11px] uppercase tracking-[0.12em] transition peer-checked:border-fg peer-checked:bg-fg peer-checked:text-surface ${!followed.length && ours.ids.includes(n.id) ? "border-fg text-fg" : "border-edge text-muted"}`}>
               {n.name}
             </span>
           </label>
         ))}
         <button type="submit" className={`${button.quiet} ml-1`}>Show these →</button>
-        {!niches.length && <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">Showing every niche</span>}
+        {!followed.length && (
+          <span className="font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
+            {ours.ids.length ? `Showing ${ours.own ? "what your Shorts are about" : "your channels' niches"}. Pick others to see them instead.` : "Showing every niche"}
+          </span>
+        )}
       </form>
 
       <section aria-labelledby="rising" className="mb-12">

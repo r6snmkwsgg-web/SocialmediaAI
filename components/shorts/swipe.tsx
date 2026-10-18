@@ -23,7 +23,12 @@ import { TikTokChoicesForm, type CreatorResult } from "./tiktok";
  */
 export type CardChannel = { name: string; connected: boolean; expired: boolean; auto: boolean; api: boolean; kids: boolean | null; youtubeKids: boolean | null };
 
-export type QueueCard = { id: string; spec: Spec; format: string; title: string; description: string; why: string[]; suggestedFor: string | null; channel: CardChannel | null };
+/**
+ * A Short in the queue. `skipNext` is for a Ball League match whose skip
+ * brings its league's next match: its channel is still in the league and
+ * gets Shorts, with no more than a day's worth waiting for a swipe.
+ */
+export type QueueCard = { id: string; spec: Spec; format: string; title: string; description: string; why: string[]; suggestedFor: string | null; channel: CardChannel | null; skipNext?: boolean };
 
 type Props = {
   items: QueueCard[];
@@ -87,10 +92,12 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
       setDx(0);
       // only a choice that differs from the channel's answer goes with it
       const audience = yes && kids !== channelKids ? kids : null;
+      // a Ball League match swiped away is replaced by the next match, while its channel is still in the league
+      const match = !!cur.skipNext;
       start(async () => {
         const r = await decide(id, yes, tiktok, audience, yes && names);
         if (!r.ok) toast("That didn't save. Try again.", "bad");
-        else if (!yes) toast(r.replaced ? "Skipped. A different one is on its way." : "Skipped.");
+        else if (!yes) toast(r.replaced ? (match ? "Skipped. The next match is on its way." : "Skipped. A different one is on its way.") : "Skipped.");
         else toast(keptNote(r.how ?? "self", r.at ? new Date(r.at).toLocaleString(undefined, { weekday: "short", hour: "numeric", minute: "2-digit" }) : null, r.channel), "good");
         router.refresh();
       });
@@ -136,12 +143,17 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
   const why = useMemo(() => (cur ? whyFor(cur.why, autoPost) : []), [cur, autoPost]);
   // what to call its channel: by name when there are several
   const who = youtube && several ? youtube.name : "your channel";
+  // a Ball League match: which one it is, and that it counts whether or not it's posted
+  const league = cur?.spec.format === "battle" ? cur.spec.params.league : undefined;
 
   if (!cur || !preview) return null;
 
   // which channel it's for, where that's worth saying: there are several, or it isn't connected
   const forLine = youtube && (several || !youtube.connected) && (
     <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">For {youtube.name}</p>
+  );
+  const kicker = league && (
+    <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-signal">Season {league.season} · {league.label}</p>
   );
 
   const onDown = (e: React.PointerEvent) => {
@@ -201,6 +213,7 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
           <>
             <div className="flex flex-col gap-1.5">
               {forLine}
+              {kicker}
               <h2 className="text-[22px] font-semibold leading-snug sm:text-2xl">{cur.title}</h2>
               {cur.suggestedFor && (
                 <p className="font-mono text-[11px] uppercase tracking-[0.16em] text-muted">
@@ -223,6 +236,7 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
         ) : (
           <div className="flex flex-col gap-2">
             {forLine}
+            {kicker}
             <h2 className="text-[22px] font-semibold leading-snug sm:text-2xl">{cur.title}</h2>
             <p className="line-clamp-3 whitespace-pre-line text-[14px] leading-relaxed text-muted">{cur.description}</p>
             <button type="button" onClick={() => setEditing(true)} className={`${button.quiet} self-start`}>
@@ -270,6 +284,13 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
               </label>
             )}
 
+            {league && (
+              <p className="text-[14px] leading-relaxed">
+                This match counts {league.stage === "round" ? "in the table " : ""}whether or not you post it.
+                {cur.skipNext && <> Skip it and the next match comes up, while today&rsquo;s replacements last.</>}
+              </p>
+            )}
+
             <p className="border-l-4 border-signal pl-3 text-[14px]">
               {autoPost ? (
                 cur.suggestedFor ? (
@@ -297,8 +318,8 @@ export function SwipeQueue({ items, tag, tiktok = false, paid = false, several =
             </p>
 
             <div className="flex flex-wrap items-center gap-3">
-              <button type="button" onClick={() => go(false)} className={button.secondary} aria-label="Skip this one and get a different Short">
-                <span aria-hidden="true">←</span> Something else
+              <button type="button" onClick={() => go(false)} className={button.secondary} aria-label={league ? (cur.skipNext ? "Skip this match and get the next one" : "Skip this match") : "Skip this one and get a different Short"}>
+                <span aria-hidden="true">←</span> {league ? "Skip this match" : "Something else"}
               </button>
               <button type="button" onClick={() => go(true)} className={button.primary}>
                 {posts ? "Post it" : "Keep it"} <span aria-hidden="true">→</span>

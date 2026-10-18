@@ -20,13 +20,23 @@ export type Insights = { formats: FormatInsight[]; kinds: KindInsight[]; measure
 const QUIZ: Record<string, string> = { capitals: "Capital city quizzes", science: "Science quizzes", mixed: "Mixed quizzes" };
 const TONE: Record<string, string> = { funny: "Funny stories", sweet: "Sweet stories", twist: "Stories with a twist" };
 const METRIC: Record<string, string> = { population: "population", gdp: "GDP" };
+/** the quiz kinds of a channel about one niche (lib/shorts/niches.ts); its capitals are "Capital city quizzes" like anyone's */
+const NICHE_QUIZ: Record<string, string> = {
+  football: "Football quizzes",
+  f1: "Formula 1 quizzes",
+  nba: "NBA quizzes",
+  cars: "Car quizzes",
+  gaming: "Gaming quizzes",
+  money: "Money quizzes",
+  places: "Geography and history quizzes",
+};
 
 /** A kind of Short as people would say it: "Spike battles", "Science quizzes". */
 export function kindName(group: string): string | null {
   const [format, a] = group.split(":");
   if (!a) return null;
   if (format === "battle") return a in ABILITIES ? `${ABILITIES[a as AbilityId].name} battles` : null;
-  if (format === "quiz") return QUIZ[a] ?? null;
+  if (format === "quiz") return QUIZ[a] ?? NICHE_QUIZ[a] ?? null;
   if (format === "texts") return TONE[a] ?? null;
   if (format === "ranking" && METRIC[a]) return `${METRIC[a][0].toUpperCase()}${METRIC[a].slice(1)} rankings`;
   if (format === "race" && METRIC[a]) return `${METRIC[a][0].toUpperCase()}${METRIC[a].slice(1)} races`;

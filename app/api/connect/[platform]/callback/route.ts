@@ -40,6 +40,9 @@ export async function GET(req: NextRequest, { params }: { params: Promise<{ plat
       // a channel with its question to answer (made for kids or not) before anything posts to it: Settings asks it, and onboarding
       const fresh = (await channelsOf(me.id)).find((x) => x.id === c.id);
       if (fresh?.madeForKids === null && !/^\/app\/welcome/.test(next)) return NextResponse.redirect(`${base}/app/settings?${said}#audience-${c.id}`);
+      // then, for a connect begun in Settings, what it's about, which Settings asks beside its Shorts. From anywhere else it goes
+      // back there: until it's picked it gets a mix of everything, and the queue says so
+      if (fresh && !fresh.niche && /^\/app\/settings(?:[?#]|$)/.test(next)) return NextResponse.redirect(`${base}/app/settings?${said}#channel-${c.id}`);
       return go(said);
     } else if (platform === "tiktok") {
       const t = await tiktokExchange(code, redirect);

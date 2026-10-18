@@ -126,4 +126,10 @@ export const Icons = {
       <path d="M13 2L4 14h7l-1 8 9-12h-7z" />
     </svg>
   ),
+  table: ({ className }: P) => (
+    <svg viewBox="0 0 24 24" className={className} {...base}>
+      <rect x="3" y="4" width="18" height="16" />
+      <path d="M3 9h18M3 14h18M9 4v16" />
+    </svg>
+  ),
 };

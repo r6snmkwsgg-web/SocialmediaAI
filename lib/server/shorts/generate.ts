@@ -8,15 +8,19 @@ import { bankQuestions } from "../../shorts/formats/quiz";
 import { STORIES } from "../../shorts/formats/texts";
 import { bankPairs } from "../../shorts/formats/wyr";
 import { kindName, times as timesUsual } from "../../shorts/insights";
-import { chooseFormats, dryNote, formatReason, formatsFor, kindScore, odds, standout } from "../../shorts/learn";
+import { chooseFormats, dryNote, formatCap, formatReason, formatsFor, kindScore, odds, standout } from "../../shorts/learn";
+import { nicheById, writerNote, type ChannelNiche, type NicheId } from "../../shorts/niches";
 import { atLocal, EXPLORE, localParts, planSlots, validTimezone, whenLine } from "../../shorts/times";
 import type { Candidate, Context, Ending, FormatId, ShortFormat, Spec } from "../../shorts/types";
 import { billingFor } from "../billing";
 import { stopWaiting, takeClip, type TakenClip } from "../clips";
 import { admin, asUser, withUserLock, type Tx } from "../db";
+import { configured } from "../env";
+import { nichesOf } from "../niches";
 import { notify } from "../notify";
 import { hourResults } from "./hours";
 import { claude, freshPairs, freshQuestions, freshStories } from "./fresh";
+import { nextMatches, playMatches, saveMatches, stopIfLeft, waitingFor } from "./league";
 import { claim, lookFor, takenCharts, takenInOtherWords, takenOf } from "./ledger";
 import { plainDescription, writeCopy } from "./titles";
 import { weightsFor } from "./weights";
@@ -38,9 +42,15 @@ import { weightsFor } from "./weights";
  * with its own share of the plan, history, look, times and learning; an
  * account with no channel is one unit by itself, as it always was.
  *
+ * A channel about one niche only gets Shorts about it: its niche's
+ * formats, what Claude writes for it and the chart figure it shows. A
+ * channel in the Ball League gets its season's next matches instead, in
+ * order, while a day's worth aren't still waiting for a swipe.
+ *
  * A round from the creator's own LIVE can be one of a morning's Shorts,
- * at most one a day, for the account's first channel, in its place among
- * the plan's: the day's Shorts are one fewer made ones, never one more.
+ * at most one a day, for the account's first channel that hasn't picked a
+ * niche, in its place among the plan's: the day's Shorts are one fewer
+ * made ones, never one more.
  */
 
 /** replacements for swiped-away Shorts, a day */
@@ -64,16 +74,24 @@ export type Allowance = { per: "week" | "day"; limit: number; made: number; left
  */
 export type Allowances = { account: Allowance & { units: number }; units: Map<string | null, Allowance>; order: (string | null)[] };
 
-/** How a morning try at making Shorts went, as `shorts_runs` keeps it: some made, the plan's allowance used up, nothing new left, or an error. */
-export type Outcome = "made" | "allowance" | "nothing_new" | "failed";
+/**
+ * How a morning try at making Shorts went, as `shorts_runs` keeps it: some
+ * made, the plan's allowance used up, nothing new left, an error, or a Ball
+ * League channel's matches still waiting for a swipe.
+ */
+export type Outcome = "made" | "allowance" | "nothing_new" | "failed" | "waiting";
 /**
  * How many it made, and when fewer than it should have, why: the plan's
- * allowance, nothing new left (`note` says it in words), or, asked for one
- * format, that format is off; and `stopped` when no channel of the
- * account's gets Shorts. `retry` is when the morning run should try this
- * unit again; `channels` is how many units the account has.
+ * allowance, nothing new left (`note` says it in words), Claude writing
+ * nothing for a niche only it writes (`writer`, said in `note` too), or,
+ * asked for one format, that format is off or none of the account's
+ * channels is about something with it (`niche`); `stopped` when no
+ * channel of the account's gets Shorts; and `waiting` when a Ball League
+ * channel's last matches are still waiting for a swipe. `retry` is when
+ * the morning run should try this unit again; `channels` is how many
+ * units the account has.
  */
-export type Made = { made: number; short: null | "allowance" | "dry" | "off" | "stopped"; note: string | null; retry: Date; channels: number };
+export type Made = { made: number; short: null | "allowance" | "dry" | "off" | "stopped" | "niche" | "writer" | "waiting"; note: string | null; retry: Date; channels: number };
 
 /** Midnight today, or `days` from today, wherever they are. */
 function startOfLocalDay(now: Date, tz: string, days = 0): Date {
@@ -147,15 +165,15 @@ export async function pastOf(tx: Tx, unit: Unit): Promise<Past[]> {
       and ${unit.channelId ? tx`channel_id = ${unit.channelId}` : tx`channel_id is null`}`;
 }
 
-/** The channel a unit's Shorts are for, as the database has it. */
-export type UnitChannel = { id: string; title: string | null; status: ChannelRow["status"]; shortsOn: boolean };
+/** The channel a unit's Shorts are for, as the database has it: what it's about, and since when its note has said why its Shorts fell short. */
+export type UnitChannel = { id: string; title: string | null; status: ChannelRow["status"]; shortsOn: boolean; niche: NicheId | null; noteAt: Date | null };
 
 /** A unit's channel, read once wherever its Shorts are made: null for the account's own, or when it isn't one of theirs. */
 export async function unitChannel(tx: Tx, unit: Unit): Promise<UnitChannel | null> {
   if (!unit.channelId) return null;
-  const [c] = await tx<{ id: string; title: string | null; status: ChannelRow["status"]; shorts_on: boolean }[]>`
-    select id, title, status, shorts_on from public.channels where id = ${unit.channelId} and user_id = ${unit.userId} and platform = 'youtube'`;
-  return c ? { id: c.id, title: c.title, status: c.status, shortsOn: c.shorts_on } : null;
+  const [c] = await tx<{ id: string; title: string | null; status: ChannelRow["status"]; shorts_on: boolean; niche: string | null; shorts_note_at: Date | null }[]>`
+    select id, title, status, shorts_on, niche, shorts_note_at from public.channels where id = ${unit.channelId} and user_id = ${unit.userId} and platform = 'youtube'`;
+  return c ? { id: c.id, title: c.title, status: c.status, shortsOn: c.shorts_on, niche: nicheById(c.niche)?.id ?? null, noteAt: c.shorts_note_at } : null;
 }
 
 /**
@@ -177,8 +195,8 @@ type MakeOpts = { origin: "daily" | "replacement"; count?: number; now?: Date; l
 /** How long Claude gets to write a channel's new material; after that the banks fill in, so the morning's Shorts never wait long. */
 export const FRESH_MS = 60_000;
 
-/** Material written for this channel by Claude, for the formats it's making today. Nothing when Claude isn't set up. */
-async function freshFor(formats: FormatId[], history: Past[], rand: () => number): Promise<NonNullable<Context["fresh"]>> {
+/** Material written for this channel by Claude, for the formats it's making today, about its niche if it has one. Nothing when Claude isn't set up. */
+async function freshFor(formats: FormatId[], history: Past[], rand: () => number, niche: ChannelNiche | null): Promise<NonNullable<Context["fresh"]>> {
   const ask = claude(Date.now() + FRESH_MS);
   if (!ask) return {};
   const n = (f: FormatId) => formats.filter((x) => x === f).length;
@@ -188,8 +206,8 @@ async function freshFor(formats: FormatId[], history: Past[], rand: () => number
   const knownPairs = [...bankPairs(), ...asked("wyr").flatMap((p) => ("pairs" in p ? (p.pairs ?? []).map((x) => `${x.a} or ${x.b}`) : []))];
   const knownStories = [...STORIES, ...asked("texts").flatMap((p) => ("story" in p && p.story ? [p.story] : []))].map((s) => s.messages.map((m) => m.text).join(" "));
   const [questions, pairs, stories] = await Promise.all([
-    n("quiz") ? freshQuestions(ask, knownQuestions, rand, Math.min(20, 7 * n("quiz") + 5)) : [],
-    n("wyr") ? freshPairs(ask, knownPairs, rand, Math.min(20, 6 * n("wyr") + 4)) : [],
+    n("quiz") ? freshQuestions(ask, knownQuestions, rand, Math.min(20, 7 * n("quiz") + 5), niche) : [],
+    n("wyr") ? freshPairs(ask, knownPairs, rand, Math.min(20, 6 * n("wyr") + 4), niche) : [],
     n("texts") ? freshStories(ask, knownStories, n("texts") + 1) : [],
   ]);
   return { questions, pairs, stories };
@@ -211,7 +229,11 @@ async function make(userId: string, opts: MakeOpts): Promise<Made> {
 /** A unit's Shorts for now, and with `rounds`, maybe one of them a waiting round from the creator's LIVE. */
 async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise<Made> {
   const now = opts.now ?? new Date();
-  const [profile] = await asUser(userId, (tx) => tx<Profile[]>`select timezone, goal, text_stories, shorts_note_at from public.profiles where id = ${userId}`);
+  const { profile, niches } = await asUser(userId, async (tx) => ({
+    profile: (await tx<Profile[]>`select timezone, goal, text_stories, shorts_note_at from public.profiles where id = ${userId}`)[0],
+    // what each unit is about
+    niches: await nichesOf(tx, userId),
+  }));
   const tz = validTimezone(profile?.timezone);
   const { plan } = await billingFor(userId);
   const allow = await allowancesOf(userId, plan, tz, now);
@@ -219,7 +241,12 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
   const channels = allow.order.length;
   // every channel switched off: nothing until one is switched on
   if (!channels) return { made: 0, short: "stopped", note: null, retry: tomorrow, channels };
-  const unit: Unit = { userId, channelId: opts.channelId !== undefined ? opts.channelId : pickUnit(allow, undefined, opts.origin)!.channelId };
+  // "make one like this" goes to a unit whose niche makes that format, or that hasn't picked one
+  const makes = (id: string | null) => !opts.like || (niches.get(id)?.formats.includes(opts.like) ?? true);
+  const picked = opts.channelId !== undefined ? { channelId: opts.channelId } : pickUnit(allow, makes, opts.origin);
+  // none of the account's channels is about something with that format
+  if (!picked) return { made: 0, short: "niche", note: null, retry: tomorrow, channels };
+  const unit: Unit = { userId, channelId: picked.channelId };
   const room = allow.units.get(unit.channelId);
   // a channel that doesn't get Shorts (disconnected, switched off, or past what the plan has room for) gets none
   if (!room) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
@@ -233,25 +260,40 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
     return { channel, history: await pastOf(tx, unit), weights: await weightsFor(tx, unit.channelId), results: await hourResults(tx, tz, unit.channelId) };
   });
   if (unit.channelId && !channel) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
+  // what it's about: its channel's niche, or the account's own while it has no channel; and since when its note has said why
+  const niche = unit.channelId ? nicheById(channel?.niche) : (niches.get(null) ?? null);
+  const noteSince = unit.channelId ? (channel?.noteAt ?? null) : (profile?.shorts_note_at ?? null);
 
   // what the channel has had, posted or swiped away, and how often: none of it comes round again
   const times = new Map<string, number>();
   for (const h of history) for (const id of contentIds({ format: h.format, params: h.params } as Spec)) times.set(id, (times.get(id) ?? 0) + 1);
   const rand = rng(Math.floor(Math.random() * 2 ** 31));
-  const on = formatsFor({ textStories: !!profile?.text_stories });
-  // "make one like this" for a format the creator has left off (text stories): not without them turning it on
-  if (opts.like && !on.includes(opts.like)) return { made: 0, short: "off", note: null, retry: tomorrow, channels };
+  const on = formatsFor({ textStories: !!profile?.text_stories, niche });
+  // "make one like this" for a format the channel doesn't make: one outside its niche, or text stories the creator has left off
+  if (opts.like && !on.includes(opts.like)) return { made: 0, short: niche ? "niche" : "off", note: null, retry: tomorrow, channels };
+  // the Ball League's schedule decides what comes next; a channel that's left it stops the season it had on, however it was changed
+  if (niche?.id === "league") return makeLeague(unit, { origin: opts.origin, want, plan, tz, now, tomorrow, channels, history, results, rand, noteSince });
+  await stopIfLeft(unit);
   const allowed = opts.like ? [opts.like] : on;
   const o = odds(weights, allowed);
-  // a round from their LIVE first, on a day's own run for the account's first channel (never a replacement or "make one like
-  // this"): with one in hand, one fewer is made. Anything going wrong here only means no round today
-  const round = rounds && opts.origin === "daily" && !opts.like && unit.channelId === allow.order[0] ? await roundFor(userId, now, tz, plan, rand) : null;
-  const formats = opts.like ? [opts.like] : chooseFormats(want - (round ? 1 : 0), o, rand);
+  // a round from their LIVE first, on a day's own run (never a replacement or "make one like this") for the account's first
+  // channel that hasn't picked a niche, since a niche's Shorts are only about it: with one in hand, one fewer is made. Anything
+  // going wrong here only means no round today
+  const clipUnit = allow.order.find((id) => !niches.get(id));
+  const round = rounds && opts.origin === "daily" && !opts.like && unit.channelId === clipUnit ? await roundFor(userId, now, tz, plan, rand) : null;
+  // two of a format a day, and more only when the niche has too few formats to fill the day
+  const n = want - (round ? 1 : 0);
+  const cap = formatCap(n, allowed.length);
+  const formats = opts.like ? [opts.like] : chooseFormats(n, o, rand, cap);
 
   // and what other channels have: the banks' questions, choices and stories, and the charts (a fight is checked as it's claimed)
-  const [taken, charts, look, fresh] = await Promise.all([takenOf(bankIds()), takenCharts(), lookFor(userId, unit.channelId), freshFor(formats, history, rand)]);
-  const used = new Set([...times.keys(), ...taken, ...charts, ...(await takenWritten(fresh))]);
-  const ctx: Context = { rand, used, times, fresh };
+  const [taken, charts, look, fresh] = await Promise.all([takenOf(bankIds()), takenCharts(), lookFor(userId, unit.channelId), freshFor(formats, history, rand, niche)]);
+  const refused = await takenWritten(fresh);
+  // what Claude wrote that another channel already has: the more channels share a niche, the more of it there is
+  const wrote = (fresh.questions?.length ?? 0) + (fresh.pairs?.length ?? 0) + (fresh.stories?.length ?? 0);
+  if (refused.size) console.log(`fresh: ${refused.size} of the ${wrote} written for ${unit.channelId ?? userId}${niche ? ` (${niche.id})` : ""} other channels already have`);
+  const used = new Set([...times.keys(), ...taken, ...charts, ...refused]);
+  const ctx: Context = { rand, used, times, fresh, niche: niche?.id };
   // the round in the channel's look, ending the way a made one does
   const clip = round && { c: finish(round.c, { look, ending: rand() < 0.5 ? "comment" : "loop" }), formatWhy: [], round };
 
@@ -272,15 +314,17 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
         [...contentIds(spec), ...claims.map((x) => x.item)].forEach((id) => used.add(id));
         return c;
       }
-      // someone else's Shorts got there first: make something else
+      // someone else's Shorts got there first: make something else, knowing all they've taken meanwhile, since being
+      // made at the same moment they'd mostly pick the same things
       lost.forEach((id) => used.add(id));
+      for (const id of [...(await takenOf(bankIds())), ...(await takenCharts())]) used.add(id);
     }
     return null;
   };
   const count = (f: FormatId) => made.filter((m) => m.c.format === f).length;
   const firstOf = async (order: FormatId[], capped: boolean): Promise<Candidate | null> => {
     for (const f of order) {
-      if (dry.has(f) || (capped && count(f) >= 2)) continue;
+      if (dry.has(f) || (capped && count(f) >= cap)) continue;
       const c = await take(f);
       if (c) return c;
       dry.add(f);
@@ -288,7 +332,7 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
     return null;
   };
   for (const f of formats) {
-    // a format that's run out of new things: try the others, most likely first, two of a kind at most while others have something
+    // a format that's run out of new things: try the others, most likely first, no more of a kind than a day's share while others have something
     const rest = allowed.filter((x) => x !== f).sort((a, b) => o[b] - o[a]);
     const c = (await firstOf([f], false)) ?? (await firstOf(rest, true)) ?? (await firstOf(rest, false));
     if (!c) break;
@@ -300,22 +344,23 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
   }
   // the day's Shorts: the LIVE round first, so it goes out soonest after its LIVE, then the made ones
   const day: { c: Candidate; formatWhy: string[]; round?: TakenClip }[] = [...(clip ? [clip] : []), ...made];
-  const note = made.length < formats.length ? dryNote([...dry].map((f) => FORMATS[f].plural), day.length, formats.length + (clip ? 1 : 0)) : null;
+  const wanted = formats.length + (clip ? 1 : 0);
+  // a niche only Claude writes for, short of a kind Claude wrote nothing of: it didn't answer (or isn't set up), which isn't running dry
+  const unwritten = niche?.claude === "needs" && made.length < formats.length ? allowed.filter((f) => dry.has(f) && !wroteFor(fresh, f)) : [];
+  const note = unwritten.length
+    ? writerNote(unwritten.map((f) => FORMATS[f].plural), { setUp: configured().claude, made: day.length, wanted })
+    : made.length < formats.length ? dryNote([...dry].map((f) => FORMATS[f].plural), day.length, wanted) : null;
   // "make one like this" asks for one format: that one running out says nothing about the rest, so the queue's note and the bell are left alone
-  if (!opts.like) await noteDry(unit, profile?.shorts_note_at ?? null, note, now);
-  if (!day.length) return { made: 0, short: "dry", note, retry: tomorrow, channels };
+  if (!opts.like) await noteDry(unit, noteSince, note, now);
+  if (!day.length) {
+    // with nothing written, the morning run tries again in an hour; with Claude not set up at all, the next morning, as nothing can come sooner
+    if (unwritten.length) return { made: 0, short: "writer", note, retry: configured().claude ? new Date(now.getTime() + 3600_000) : tomorrow, channels };
+    return { made: 0, short: "dry", note, retry: tomorrow, channels };
+  }
 
   // when to post: the channel's own best hours once it has the results, a starting guess until then, and some at other hours to learn from,
   // two hours apart from the rest of this channel's (another channel's times are its own)
-  const booked = history
-    .filter((h) => ["review", "approved", "rendering", "ready", "scheduled"].includes(h.status))
-    .map((h) => h.scheduled_for ?? h.suggested_for)
-    .filter((d): d is Date => !!d);
-  // posted and still waiting for a 24-hour reading (which comes within three days, or never): an hour being tried counts these too
-  const unmeasured = history
-    .filter((h) => h.status === "posted" && h.measuring && h.posted_at && h.posted_at.getTime() > now.getTime() - 72 * 3600_000)
-    .map((h) => h.posted_at!);
-  const slots = planSlots(day.length, now, tz, results, booked, rand, EXPLORE, unmeasured, postsPerDay(plan));
+  const slots = planSlots(day.length, now, tz, results, bookedOf(history), rand, EXPLORE, unmeasuredOf(history, now), postsPerDay(plan));
 
   const copies = await Promise.all(day.map(({ c }) => writeCopy(c, formatName(c))));
 
@@ -331,11 +376,100 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
       const copy = copies[i];
       await tx`
         insert into public.videos (user_id, channel_id, format, params, key, title, description, why, status, origin, suggested_for)
-        values (${userId}, ${channel?.id ?? null}, ${c.format}, ${tx.json(c.params as never)}, ${c.key}, ${copy?.title ?? c.title}, ${copy?.description ?? plainDescription(c)},
+        values (${userId}, ${channel?.id ?? null}, ${c.format}, ${tx.json(c.params as never)}, ${c.key}, ${copy?.title ?? c.title}, ${copy?.description ?? plainDescription(c, niche)},
           ${tx.json(why)}, 'review', ${opts.origin}, ${at})`;
     }
   });
-  return { made: day.length, short: note ? "dry" : null, note, retry: tomorrow, channels };
+  return { made: day.length, short: unwritten.length ? "writer" : note ? "dry" : null, note, retry: tomorrow, channels };
+}
+
+/** The posting times a unit's kept Shorts and the ones waiting for a swipe already have: new ones keep two hours from these. */
+function bookedOf(history: Past[]): Date[] {
+  return history
+    .filter((h) => ["review", "approved", "rendering", "ready", "scheduled"].includes(h.status))
+    .map((h) => h.scheduled_for ?? h.suggested_for)
+    .filter((d): d is Date => !!d);
+}
+
+/** Posted and still waiting for a 24-hour reading (which comes within three days, or never): an hour being tried counts these too. */
+function unmeasuredOf(history: Past[], now: Date): Date[] {
+  return history
+    .filter((h) => h.status === "posted" && h.measuring && h.posted_at && h.posted_at.getTime() > now.getTime() - 72 * 3600_000)
+    .map((h) => h.posted_at!);
+}
+
+/** The latest time a unit's Ball League Shorts waiting for a swipe, or kept and still to post, have: 0 when none has one. */
+function lastMatchAt(history: Past[]): number {
+  return history
+    .filter((h) => h.format === "battle" && "league" in h.params && ["review", "approved", "rendering", "ready", "scheduled"].includes(h.status))
+    .reduce((t, h) => Math.max(t, (h.scheduled_for ?? h.suggested_for)?.getTime() ?? 0), 0);
+}
+
+/** What a Ball League channel's make goes by, from the unit's own make. */
+type LeagueMake = {
+  origin: MakeOpts["origin"]; want: number; plan: Plan; tz: string; now: Date; tomorrow: Date; channels: number;
+  history: Past[]; results: Awaited<ReturnType<typeof hourResults>>; rand: () => number; noteSince: Date | null;
+};
+
+/**
+ * A Ball League channel's Shorts: its season's next matches, in order,
+ * each one real fight (or a knockout's games) from the seeds its season
+ * began with, saved as it's played so it counts whether or not it's
+ * posted, and given times in match order, after the league's earlier
+ * ones still waiting or to post (a replacement's too, and a new season's
+ * after the final). Only as many are played as fill a day's worth (the
+ * plan's posts a day) waiting for a swipe, so a season never runs on
+ * without the creator, and a swiped-away one always makes room for the
+ * next match. A final saved, the next season begins with the same eight
+ * balls, the same morning if there's room. A league never runs dry, so
+ * any note on why Shorts fell short is cleared.
+ */
+async function makeLeague(unit: Unit, o: LeagueMake): Promise<Made> {
+  const room = postsPerDay(o.plan) - (await waitingFor(unit));
+  if (room <= 0) return { made: 0, short: "waiting", note: null, retry: o.tomorrow, channels: o.channels };
+  const want = Math.min(o.want, room);
+  await noteDry(unit, o.noteSince, null, o.now);
+  const look = await lookFor(unit.userId, unit.channelId);
+  const booked = bookedOf(o.history);
+  let last = lastMatchAt(o.history);
+  let made = 0;
+  while (made < want) {
+    const next = await nextMatches(unit, want - made);
+    const played = await playMatches(unit, next);
+    if (!played.length) break;
+    // a league Short never loops: its opening would make a seam
+    const day = played.map((p) => ({ ...p, c: finish(p.c, { look, ending: "comment" }) }));
+    // the earliest time to the first match, and every one after the league's matches already waiting or to post
+    const from = new Date(Math.max(o.now.getTime(), last));
+    const slots = planSlots(day.length, from, o.tz, o.results, booked, o.rand, EXPLORE, unmeasuredOf(o.history, o.now), postsPerDay(o.plan));
+    const copies = await Promise.all(day.map(({ c }) => writeCopy(c, formatName(c))));
+    await saveMatches(unit, next.season.id, day.map((p, i) => {
+      const slot = slots[i] ?? null;
+      return {
+        ...p,
+        title: copies[i]?.title ?? p.c.title,
+        description: copies[i]?.description ?? plainDescription(p.c),
+        why: [...p.c.why, ...(slot ? [whenLine(slot, o.tz, o.plan.scheduling)] : [])],
+        origin: o.origin,
+        suggestedFor: slot?.at ?? null,
+      };
+    }));
+    for (const s of slots) {
+      if (!s) continue;
+      booked.push(s.at);
+      last = Math.max(last, s.at.getTime());
+    }
+    made += day.length;
+  }
+  return { made, short: null, note: null, retry: o.tomorrow, channels: o.channels };
+}
+
+/** Whether Claude wrote anything for a format it writes for: what a niche only Claude writes for has to go on. */
+function wroteFor(fresh: NonNullable<Context["fresh"]>, f: FormatId): boolean {
+  if (f === "quiz") return !!fresh.questions?.length;
+  if (f === "wyr") return !!fresh.pairs?.length;
+  if (f === "texts") return !!fresh.stories?.length;
+  return true;
 }
 
 /**
@@ -368,33 +502,43 @@ async function takenWritten(fresh: NonNullable<Context["fresh"]>): Promise<Set<s
 }
 
 /**
- * Why the last Shorts couldn't all be made, kept for the queue to show,
- * with a notification the first time it happens; cleared once they can
- * be again. Kept for the account: running dry comes from the content
- * every channel shares, so it's nearly always the same for each of them.
+ * Why a unit's last Shorts couldn't all be made, kept for the queue to
+ * show, with a notification the first time it happens; cleared once they
+ * can be again. Each channel keeps its own, since what one channel is
+ * about can run dry while another's never does; an account with no
+ * channel keeps it on its profile.
  */
 export async function noteDry(unit: Unit, since: Date | null, note: string | null, now: Date): Promise<void> {
-  const { userId } = unit;
+  const { userId, channelId } = unit;
+  const keep = (tx: Tx, text: string | null, at: Date | null) =>
+    channelId
+      ? tx`update public.channels set shorts_note = ${text}, shorts_note_at = ${at} where id = ${channelId} and user_id = ${userId}`
+      : tx`update public.profiles set shorts_note = ${text}, shorts_note_at = ${at} where id = ${userId}`;
   await admin(async (tx) => {
     if (!note) {
-      if (since) await tx`update public.profiles set shorts_note = null, shorts_note_at = null where id = ${userId}`;
+      if (since) await keep(tx, null, null);
       return;
     }
     const at = since ?? now;
-    await tx`update public.profiles set shorts_note = ${note}, shorts_note_at = ${at} where id = ${userId}`;
-    // once for each time it runs dry, however often it's tried
-    await notify(userId, { kind: "failed", title: "No new Shorts to make right now", body: note, href: "/app/shorts", key: `content-dry:${at.toISOString()}` }, tx);
+    await keep(tx, note, at);
+    // once for each time it runs dry, however often it's tried, and for each channel on its own
+    await notify(userId, {
+      kind: "failed",
+      title: "No new Shorts to make right now",
+      body: note,
+      href: channelId ? `/app/shorts?channel=${channelId}` : "/app/shorts",
+      key: channelId ? `content-dry:${channelId}:${at.toISOString()}` : `content-dry:${at.toISOString()}`,
+    }, tx);
   });
 }
 
-/**
- * Why Hookline couldn't make all the Shorts it should have for a unit, last time it tried, if it couldn't. Kept for
- * the account, like `noteDry`, so each of its channels gives the account's.
- */
+/** Why Hookline couldn't make all the Shorts it should have for a unit, last time it tried, if it couldn't: its own note, like `noteDry` keeps. */
 export async function shortsNoteOf(unit: Unit): Promise<string | null> {
-  const { userId } = unit;
-  const [p] = await asUser(userId, (tx) => tx<{ shorts_note: string | null }[]>`select shorts_note from public.profiles where id = ${userId}`);
-  return p?.shorts_note ?? null;
+  const { userId, channelId } = unit;
+  const [r] = await asUser(userId, (tx) => (channelId
+    ? tx<{ shorts_note: string | null }[]>`select shorts_note from public.channels where id = ${channelId} and user_id = ${userId}`
+    : tx<{ shorts_note: string | null }[]>`select shorts_note from public.profiles where id = ${userId}`));
+  return r?.shorts_note ?? null;
 }
 
 /**
@@ -469,9 +613,12 @@ export async function dueForShorts(now = new Date(), limit = 25): Promise<Unit[]
 
 /**
  * One unit's morning try, written down with when to try again: tomorrow
- * once it's had its Shorts or there's nothing new to make; when Free's
- * week frees up (or tomorrow, if sooner) when it's used up; and in an hour
- * when it went wrong.
+ * once it's had its Shorts, there's nothing new to make, or a Ball League
+ * channel's matches are still waiting for a swipe; when Free's week frees
+ * up (or tomorrow, if sooner) when it's used up; and in an hour when it
+ * went wrong, or Claude wrote nothing for a niche only it writes for.
+ * While Claude isn't set up at all, such a niche has nothing new to make,
+ * and is tried the next morning.
  */
 export async function tryDaily(unit: Unit, now = new Date()): Promise<string> {
   const who = unit.channelId ? `${unit.userId} ${unit.channelId}` : unit.userId;
@@ -481,10 +628,13 @@ export async function tryDaily(unit: Unit, now = new Date()): Promise<string> {
   let line: string;
   try {
     const r = await makeDailyShorts(unit, now);
+    // Claude writing nothing is a try that failed, unless it isn't set up, when nothing new can be made until it is
+    const silent = r.short === "writer" && configured().claude;
     // no channel getting Shorts any more is, for this one, an allowance used up until tomorrow
-    outcome = r.made > 0 ? "made" : r.short === "allowance" || r.short === "stopped" ? "allowance" : "nothing_new";
+    outcome = r.made > 0 ? "made" : r.short === "allowance" || r.short === "stopped" ? "allowance" : silent ? "failed" : r.short === "waiting" ? "waiting" : "nothing_new";
     ({ made, retry } = r);
-    line = `${who}: ${outcome === "made" ? `${made} made` : r.short === "stopped" ? "Shorts off" : outcome === "allowance" ? "allowance used" : "nothing new left"}`;
+    const writer = silent ? "Claude wrote nothing" : "Claude isn't set up";
+    line = `${who}: ${outcome === "made" ? `${made} made` : r.short === "stopped" ? "Shorts off" : r.short === "writer" ? writer : r.short === "waiting" ? "matches waiting for a swipe" : outcome === "allowance" ? "allowance used" : "nothing new left"}`;
   } catch (e) {
     outcome = "failed";
     retry = new Date(now.getTime() + 3600_000);

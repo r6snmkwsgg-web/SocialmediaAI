@@ -2,6 +2,7 @@ import type { AbilityId } from "../battle/abilities";
 import type { Melody } from "../battle/sound";
 import type { ClipLog } from "../live/clip";
 import type { Look } from "./look";
+import type { NicheId } from "./niches";
 
 /**
  * A Short, as data. Every format is drawn by code from a handful of
@@ -37,7 +38,52 @@ export type Finish = {
   allowComments?: boolean;
 };
 
-export type BattleParams = { a: AbilityId; b: AbilityId; seed: number; melody?: Melody } & Finish;
+export type BattleParams = {
+  a: AbilityId;
+  b: AbilityId;
+  seed: number;
+  melody?: Melody;
+  /** each side's starting health, where it isn't the abilities' own: a Ball League match's, from its season's table */
+  hp?: [number, number];
+  /** a Ball League knockout's games in turn, by seed, the first being `seed`; null for one the higher-placed ball took when the seeds ran out */
+  games?: (number | null)[];
+  /** how many times faster than real time the fights play: only a final too long for a Short, decided when it's made */
+  speed?: number;
+  /** which of `games` show as a short card instead of in full: drawn ones after the first, when even double speed is too long */
+  cards?: number[];
+  /** what the Ball League says about the match it is */
+  league?: LeagueCard;
+} & Finish;
+
+/**
+ * A line a Ball League Short shows, at most 32 characters. `side` is the
+ * ball it's about (0 on the left, 1 on the right), shown beside it with
+ * its name in its colour, or null for the match itself.
+ */
+export type LeagueLine = { side: 0 | 1 | null; text: string };
+
+/** One side of a Ball League match as it stood before the match: its place in the table (null before it's played) and its record there. */
+export type LeagueSide = { slot: number; name: string; color: string; place: number | null; record: { won: number; drawn: number; lost: number } };
+
+/**
+ * What a Ball League Short says about its match: which one it is, the two
+ * balls, what happened to them before ("previously"), what's at stake
+ * when that's certain, and what the result means afterwards. All of it
+ * comes from real results and the league's rules, so it stays true
+ * whatever comes after.
+ */
+export type LeagueCard = {
+  season: number;
+  /** 1 to 28 the round robin, 29 and 30 the semi-finals, 31 the final */
+  number: number;
+  stage: "round" | "semi" | "final";
+  /** "Match 12 of 31", "Semi-final 1", "The final: first to two" */
+  label: string;
+  sides: [LeagueSide, LeagueSide];
+  previously: LeagueLine[];
+  stakes: LeagueLine | null;
+  after: LeagueLine[];
+};
 
 export type Question = { id: string; q: string; options: string[]; answer: number; topic: string; level: 1 | 2 | 3 };
 export type QuizParams = { questions: Question[] } & Finish;
@@ -131,4 +177,6 @@ export type Context = {
   times?: Map<string, number>;
   /** new material written for this channel, used before the built-in banks */
   fresh?: { questions?: Fact[]; pairs?: Pair[]; stories?: Tale[] };
+  /** what the channel is about, once it's picked: only that niche's kinds, banks and chart figure */
+  niche?: NicheId;
 };

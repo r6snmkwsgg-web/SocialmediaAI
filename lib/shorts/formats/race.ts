@@ -1,7 +1,7 @@
 import { COUNTRIES, DATA, inRegion, latestYear, REGIONS } from "../data";
 import { endFrames, FPS, RACE, raceStep } from "../timing";
 import type { Candidate, Context, Metric, RaceParams, Region } from "../types";
-import { METRICS, where } from "./ranking";
+import { metricsFor, where } from "./ranking";
 
 /**
  * Bar-chart races: the biggest countries by a real figure, year by year,
@@ -83,7 +83,7 @@ export function raceScore(r: { overtakes: number; leaders: number; years: number
 export function proposeRace(ctx: Context): Candidate | null {
   let best: { r: ReturnType<typeof raceParams>; score: number; key: string } | null = null;
   let tried = 0;
-  for (const metric of METRICS) {
+  for (const metric of metricsFor(ctx)) {
     const last = latestYear(metric);
     // GDP before 1990 is missing for too many countries to race fairly
     const first = metric === "gdp" ? 1990 : DATA[metric].years[0];

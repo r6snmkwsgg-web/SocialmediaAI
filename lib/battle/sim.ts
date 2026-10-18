@@ -549,11 +549,18 @@ export class World {
   }
 }
 
-export function simulate(a: AbilityId, b: AbilityId, seed: number): Battle {
+/**
+ * The whole fight for two abilities and a seed. With `hp`, each side
+ * starts with that much health instead of its ability's own, as a Ball
+ * League match does. A ball's random draws come before its health is
+ * set, so nothing else in the fight moves, and without `hp` it's exactly
+ * the fight it always was.
+ */
+export function simulate(a: AbilityId, b: AbilityId, seed: number, hp?: readonly [number, number]): Battle {
   const w = new World(seed);
-  w.add(0, a, ARENA * 0.27, ARENA * (0.42 + w.rand() * 0.16));
-  w.add(1, b, ARENA * 0.73, ARENA * (0.42 + w.rand() * 0.16));
-  const start: [number, number] = [ABILITIES[a].hp, ABILITIES[b].hp];
+  w.add(0, a, ARENA * 0.27, ARENA * (0.42 + w.rand() * 0.16), hp ? { hp: hp[0], maxHp: hp[0] } : {});
+  w.add(1, b, ARENA * 0.73, ARENA * (0.42 + w.rand() * 0.16), hp ? { hp: hp[1], maxHp: hp[1] } : {});
+  const start: [number, number] = hp ? [hp[0], hp[1]] : [ABILITIES[a].hp, ABILITIES[b].hp];
   const frames: Frame[] = [];
   let endFrame = -1;
   let winner: Team | null = null;

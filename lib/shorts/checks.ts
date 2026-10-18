@@ -1,3 +1,4 @@
+import { reading } from "../live/offlimits";
 import { storyTimes, FPS } from "./timing";
 import type { Fact, Pair, Tale } from "./types";
 
@@ -95,7 +96,7 @@ const KID = [
 ];
 
 /** Whether any of the words or phrases are in the text. */
-function has(text: string, list: string[]): boolean {
+function has(text: string, list: readonly string[]): boolean {
   const t = ` ${normal(text)} `;
   return list.some((w) => (w.endsWith("*") ? t.includes(` ${w.slice(0, -1)}`) : t.includes(` ${w} `)));
 }
@@ -105,6 +106,16 @@ export const unsafe = (text: string) => has(text, UNSAFE);
 
 /** Something that reads as being for young children. */
 export const kidCoded = (text: string) => has(text, KID);
+
+/** Something a niche keeps out of its Shorts: any of its words, whole or as the start of one where it ends in *. */
+export const avoided = (text: string, words: readonly string[]) => has(text, words);
+
+/**
+ * Whether the two sides of a choice set people against each other: both
+ * name a country, a people, a faith or who people love (as the LIVE games'
+ * rivalries are read). A place on one side only is just a place to go.
+ */
+export const pitted = (a: string, b: string) => reading(a) !== null && reading(b) !== null;
 
 /** A sum, which only the code works out, never a writer. */
 export const isSum = (text: string) => /\d\s*(x|×|\*|\+|-|÷|\/)\s*\d|\bsquared\b|\bper ?cent\b|%|\btimes\b|\bplus\b|\bminus\b|\bdivided\b|\bsquare root\b/i.test(text);
@@ -129,6 +140,7 @@ export function pairProblem(p: Pick<Pair, "a" | "b">, known: string[] = []): str
   if (sameThing(p.a, p.b)) return "same both sides";
   if ([p.a, p.b].some(unsafe)) return "unsafe";
   if ([p.a, p.b].some(kidCoded)) return "for kids";
+  if (pitted(p.a, p.b)) return "people";
   const both = `${p.a} or ${p.b}`;
   if (known.some((k) => sameThing(k, both))) return "asked before";
   return null;

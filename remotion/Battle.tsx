@@ -2,24 +2,27 @@ import { useMemo } from "react";
 import { AbsoluteFill, Audio, interpolate, spring, staticFile, useCurrentFrame, useVideoConfig } from "remotion";
 import { loadFont } from "@remotion/fonts";
 import { ABILITIES, type AbilityId } from "../lib/battle/abilities";
+import { ordinal } from "../lib/battle/league";
+import { momentOf, series, winnerOf, type Series } from "../lib/battle/series";
 import { ARENA, FPS, simulate, SUDDEN_DEATH, type Battle, type BattleEvent, type BallFrame, type Team } from "../lib/battle/sim";
-import type { Melody } from "../lib/battle/sound";
-import { timeline, type Timeline } from "../lib/battle/timeline";
+import type { Timeline } from "../lib/battle/timeline";
 import { cos, sin } from "../lib/battle/trig";
-import { alpha, isLight, type Look } from "../lib/shorts/look";
-import { endFrames, endingOf } from "../lib/shorts/timing";
-import type { Finish } from "../lib/shorts/types";
-import { Back, Backdrop, caps, face, lookOf, size } from "./shorts/kit";
+import { alpha, isLight, textOn as onColour, type Look } from "../lib/shorts/look";
+import { endFrames, endingOf, LEAGUE_OPEN } from "../lib/shorts/timing";
+import type { BattleParams, LeagueCard, LeagueLine } from "../lib/shorts/types";
+import { Back, Backdrop, caps, face, lookOf, rise, size } from "./shorts/kit";
 
 // shipped with the app (SIL Open Font License), so a render never waits on Google
 const ANTON = "Anton";
 // only in a browser: the page's server render has nothing to load it into
 if (typeof window !== "undefined") loadFont({ family: ANTON, url: staticFile("fonts/Anton-Regular.woff2"), weight: "400" });
 
-export type BattleProps = {
-  a: AbilityId;
-  b: AbilityId;
-  seed: number;
+/**
+ * A battle Short's parameters, and how it's shown: a Ball League match
+ * carries its health, its games, its speed and what the league says
+ * about it (see BattleParams).
+ */
+export type BattleProps = BattleParams & {
   /** the free plan's "made with Hookline" line at the bottom */
   tag: boolean;
   /** a fight already worked out, so the browser doesn't run it twice */
@@ -27,9 +30,7 @@ export type BattleProps = {
   /** the soundtrack: a URL the browser made, or a file next to a server render */
   soundUrl?: string | null;
   soundFile?: string | null;
-  /** the tune its soundtrack plays, made beside it */
-  melody?: Melody;
-} & Finish;
+};
 
 export const W = 1080;
 export const H = 1920;
@@ -40,9 +41,11 @@ const INK = "#0B0B0C";
 const FX = 18;
 /** the arena is drawn 960 pixels wide, whatever size the physics uses */
 export const SCALE = 960 / ARENA;
+/** how long a knockout's later game says which it is, as it starts */
+const LABEL = Math.round(1.2 * FPS);
 
 /** Dark text on light balls, light text on dark ones. */
-function textOn(hex: string): string {
+export function textOn(hex: string): string {
   const n = parseInt(hex.slice(1), 16);
   const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255];
   return 0.299 * r + 0.587 * g + 0.114 * b > 150 ? INK : "#fff";
@@ -55,6 +58,9 @@ export type Sides = [{ name: string; color: string }, { name: string; color: str
 
 /** A battle's sides: each ability's name and colour. */
 export const sidesOf = (b: Battle): Sides => [teamOf(b, 0), teamOf(b, 1)].map((a) => ({ name: a.name, color: a.color })) as Sides;
+
+/** A Ball League match's sides: the two balls of the channel's cast, by name and colour. */
+export const leagueSides = (card: LeagueCard): Sides => card.sides.map((s) => ({ name: s.name, color: s.color })) as Sides;
 
 /** How much bigger a meteor that hits for `hit` is drawn, as on the LIVE: the old 30-damage one is 1, a Universe's about 2. */
 export const meteorSize = (hit: number) => Math.min(2.2, 1 + 0.4 * Math.log10(Math.max(1, hit / 30)));
@@ -210,13 +216,84 @@ export function TugBar({ sides, hp, look, edge = false }: { sides: Sides; hp: [n
   );
 }
 
-/** One moment of the fight, as drawn: the matchup, the health bar, the arena, and the winner once it's over. */
-function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battle; tl: Timeline; frame: number; look: Look; comments: boolean; tag: boolean }) {
-  const { fps } = useVideoConfig();
+/** What a Ball League match's header shows: its card, each side's power, how far the stakes line has faded in, and how fast its fights play. */
+type LeagueHead = { card: LeagueCard; powers: [AbilityId, AbilityId]; stakes: number; speed: number };
+
+/** A name in a ball's own colour, outlined in the look's text colour so it reads on any background. */
+const outlined = (look: Look, px = 3): React.CSSProperties => ({ WebkitTextStroke: `${px}px ${look.text}`, paintOrder: "stroke fill" });
+
+/**
+ * A line the league says, at most 32 characters: the ball it's about, if
+ * any, in a chip of its own colour, then the line itself in `color`. A
+ * line about the ball already named above it (`named`) goes without.
+ */
+function Said({ line, sides, look, px, color, named = null }: { line: LeagueLine; sides: Sides; look: Look; px: number; color: string; named?: Team | null }) {
+  const ball = line.side === null || line.side === named ? null : sides[line.side];
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: Math.round(px * 0.35), fontSize: px, lineHeight: 1.15, whiteSpace: "nowrap" }}>
+      {ball && (
+        <span style={{ background: ball.color, color: textOn(ball.color), padding: `${Math.round(px * 0.06)}px ${Math.round(px * 0.28)}px`, borderRadius: look.round / 2, boxShadow: `0 0 0 3px ${look.text}` }}>
+          {caps(look, ball.name)}
+        </span>
+      )}
+      <span style={{ color }}>{caps(look, line.text)}</span>
+    </div>
+  );
+}
+
+/** A size for a line with its chip that fits across the frame: smaller for a long one, never bigger than `base`. */
+const lineSize = (line: LeagueLine, sides: Sides, base: number, width = 900, named: Team | null = null) =>
+  Math.min(base, width / (0.52 * (line.text.length + (line.side === null || line.side === named ? 0 : sides[line.side].name.length + 2))));
+
+/**
+ * A Ball League match's header, where a battle names its matchup: which
+ * match it is, the two balls in their colours with each one's power and
+ * how it stands (its place and its won, drawn and lost), then what's at
+ * stake, or "Who wins?" when nothing is certain yet.
+ */
+function LeagueHeader({ head, sides, look }: { head: LeagueHead; sides: Sides; look: Look }) {
+  const { card } = head;
+  const spaced = look.face === "anton" ? 3 : 0;
+  // both names the same size, each fitting its half
+  const px = size(look, Math.min(64, 760 / Math.max(sides[0].name.length, sides[1].name.length)));
+  const side = (t: Team) => {
+    const s = card.sides[t];
+    const how = [ABILITIES[head.powers[t]].name, ...(s.place ? [ordinal(s.place), `${s.record.won}-${s.record.drawn}-${s.record.lost}`] : [])].join(" · ");
+    return (
+      <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
+        <div style={{ fontSize: px, lineHeight: 1.04, color: sides[t].color, whiteSpace: "nowrap", ...outlined(look) }}>{caps(look, sides[t].name)}</div>
+        <div style={{ fontSize: size(look, 30), lineHeight: 1.1, color: look.text, opacity: 0.75, letterSpacing: spaced, whiteSpace: "nowrap" }}>{caps(look, how)}</div>
+      </div>
+    );
+  };
+  const stakes = card.stakes ?? { side: null, text: "Who wins?" };
+  return (
+    <div style={{ position: "absolute", left: AX, right: AX, top: 150, display: "flex", flexDirection: "column", alignItems: "center", ...face(look) }}>
+      <div style={{ fontSize: size(look, 34), lineHeight: "40px", color: look.accent, letterSpacing: spaced + 1, whiteSpace: "nowrap" }}>{caps(look, `Season ${card.season} · ${card.label}`)}</div>
+      <div style={{ display: "flex", alignItems: "flex-start", gap: 20, width: "100%", marginTop: 2 }}>
+        {side(0)}
+        <div style={{ fontSize: size(look, 40), lineHeight: `${px * 1.04}px`, color: look.text }}>{caps(look, "vs")}</div>
+        {side(1)}
+      </div>
+      <div style={{ marginTop: 10, opacity: head.stakes }}>
+        <Said line={stakes} sides={sides} look={look} px={size(look, lineSize(stakes, sides, 38))} color={look.text} />
+      </div>
+    </div>
+  );
+}
+
+/**
+ * One moment of one fight, as drawn: who's in it, the health bar and the
+ * arena. A battle names its matchup at the top; a Ball League match has
+ * its own header instead. What goes over the fight (a match's opening, a
+ * gap between games, the ending) is drawn on top of this.
+ */
+function BattleScene({ battle, tl, frame, sides, look, comments, tag, league }: {
+  battle: Battle; tl: Timeline; frame: number; sides: Sides; look: Look; comments: boolean; tag: boolean; league?: LeagueHead;
+}) {
   const simF = Math.min(tl.toSim(frame), battle.frames.length - 1);
   const st = battle.frames[simF];
-  const A = teamOf(battle, 0), B = teamOf(battle, 1);
-  const sides = useMemo(() => sidesOf(battle), [battle]);
+  const [A, B] = sides;
   const seconds = simF / FPS;
 
   // a little shake when something big goes off
@@ -230,15 +307,13 @@ function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battl
   const slow = tl.slowFrom !== null && frame >= tl.slowFrom && frame < tl.outroFrom;
   const sudden = seconds >= SUDDEN_DEATH;
   const outro = frame >= tl.outroFrom;
-  const pop = spring({ frame: frame - tl.outroFrom, fps, config: { damping: 11, mass: 0.7 } });
-  const dim = interpolate(frame - tl.outroFrom, [0, 8], [0, 0.9], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
   const nameSize = size(look, Math.min(150, 1900 / (A.name.length + B.name.length + 4)));
-  const win = battle.winner === null ? null : teamOf(battle, battle.winner);
-  const last = battle.frames[battle.endFrame];
   const F = face(look);
   // the powers' own colours need an outline to read on a light background
   const edge = isLight(look) ? { stroke: look.text, strokeWidth: 3, paintOrder: "stroke" as const } : {};
   const spaced = look.face === "anton" ? 3 : 0;
+  // a long final played faster says so, wherever nothing else is being said over the arena
+  const faster = league && league.speed !== 1 && !sudden && !slow && !outro ? `Played at ${league.speed}x speed` : null;
 
   return (
     <AbsoluteFill>
@@ -257,13 +332,18 @@ function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battl
         </defs>
 
         {/* the matchup, said in the first second */}
-        <text x={W / 2} y={190} textAnchor="middle" fontSize={nameSize} letterSpacing={spaced ? 2 : 0}>
-          <tspan fill={A.color} {...edge}>{caps(look, A.name)}</tspan>
-          <tspan fill={look.text} dx={24}>{caps(look, "vs")}</tspan>
-          <tspan fill={B.color} dx={24} {...edge}>{caps(look, B.name)}</tspan>
-        </text>
-        <text x={W / 2} y={300} textAnchor="middle" fontSize={size(look, 76)} fill={look.text} letterSpacing={spaced * 2}>{caps(look, "Who wins?")}</text>
-        <TugBar sides={sides} hp={st.hp} look={look} />
+        {!league && (
+          <>
+            <text x={W / 2} y={190} textAnchor="middle" fontSize={nameSize} letterSpacing={spaced ? 2 : 0}>
+              <tspan fill={A.color} {...edge}>{caps(look, A.name)}</tspan>
+              <tspan fill={look.text} dx={24}>{caps(look, "vs")}</tspan>
+              <tspan fill={B.color} dx={24} {...edge}>{caps(look, B.name)}</tspan>
+            </text>
+            <text x={W / 2} y={300} textAnchor="middle" fontSize={size(look, 76)} fill={look.text} letterSpacing={spaced * 2}>{caps(look, "Who wins?")}</text>
+          </>
+        )}
+        {/* a league's balls have their own colours, outlined so each reads on any look */}
+        <TugBar sides={sides} hp={st.hp} look={look} edge={!!league} />
 
         <g transform={`translate(${AX + sx} ${AY + sy}) scale(${SCALE})`}>
           <rect width={ARENA} height={ARENA} fill="url(#grid)" />
@@ -273,7 +353,7 @@ function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battl
           <rect x={st.lo} y={st.lo} width={st.size} height={st.size} fill="none" stroke={sudden ? "#FF3B30" : look.text} strokeWidth={8} rx={look.round / SCALE / 2} />
           {st.mines.map((m) => (
             <g key={m.id}>
-              <circle cx={m.x} cy={m.y} r={16} fill={look.bg} stroke={teamOf(battle, m.t).color} strokeWidth={5} />
+              <circle cx={m.x} cy={m.y} r={16} fill={look.bg} stroke={sides[m.t].color} strokeWidth={5} />
               {m.armed && frame % 16 < 8 && <circle cx={m.x} cy={m.y} r={6} fill="#FF3B30" />}
             </g>
           ))}
@@ -287,6 +367,7 @@ function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battl
 
         {sudden && !slow && !outro && <text x={W / 2} y={AY - 22} textAnchor="middle" fontSize={size(look, 44)} fill="#FF3B30" letterSpacing={spaced + 1}>{caps(look, "Sudden death: the walls are closing")}</text>}
         {slow && <text x={W / 2} y={AY - 22} textAnchor="middle" fontSize={size(look, 44)} fill={look.text} letterSpacing={spaced * 2}>{caps(look, "Slow motion")}</text>}
+        {faster && <text x={W / 2} y={AY - 22} textAnchor="middle" fontSize={size(look, 40)} fill={look.text} fillOpacity={0.75} letterSpacing={spaced + 1}>{caps(look, faster)}</text>}
 
         {!outro && (
           <>
@@ -300,47 +381,194 @@ function BattleScene({ battle, tl, frame, look, comments, tag }: { battle: Battl
           <text x={W / 2} y={1840} textAnchor="middle" fontSize={34} fontFamily={ANTON} fontWeight={400} fill={look.text} fillOpacity={0.6} letterSpacing={3}>MADE WITH HOOKLINE</text>
         )}
       </svg>
+      {league && <LeagueHeader head={league} sides={sides} look={look} />}
+    </AbsoluteFill>
+  );
+}
 
-      {outro && (
-        <AbsoluteFill style={{ background: alpha(look.bg, dim), alignItems: "center", justifyContent: "center", flexDirection: "column", ...F }}>
-          <div style={{ transform: `scale(${0.6 + 0.4 * pop})`, textAlign: "center", lineHeight: 0.96 }}>
-            <div style={{ fontSize: size(look, win ? Math.min(230, 1500 / win.name.length) : 230), color: win?.color ?? look.text, WebkitTextStroke: win && isLight(look) ? `4px ${look.text}` : undefined }}>{caps(look, win ? win.name : "Draw")}</div>
-            {win && <div style={{ fontSize: size(look, 170), color: look.text }}>{caps(look, "wins")}</div>}
-            <div style={{ fontSize: size(look, 56), color: look.text, opacity: 0.75, marginTop: 36, letterSpacing: spaced }}>
-              {caps(look, battle.winner === null ? "Nobody left standing" : battle.byTimeout ? `On health, ${Math.ceil(last.hp[battle.winner])} to ${Math.ceil(last.hp[1 - battle.winner])}` : `With ${Math.ceil(last.hp[battle.winner])} HP left`)}
+/**
+ * A Ball League match's opening, over the top of the arena while its
+ * fight starts: what happened before it, there from the first frame and
+ * gone after three seconds, styled like every Short's title.
+ */
+function Previously({ frame, card, sides, look }: { frame: number; card: LeagueCard; sides: Sides; look: Look }) {
+  if (frame >= LEAGUE_OPEN) return null;
+  const k = 1 - rise(frame, LEAGUE_OPEN - 9, 9);
+  return (
+    <div style={{ position: "absolute", left: 0, right: 0, top: AY + 36, display: "flex", flexDirection: "column", alignItems: "center", gap: 14, opacity: k, transform: `translateY(${(1 - k) * -40}px)`, ...face(look) }}>
+      <div style={{ fontSize: size(look, 84), lineHeight: 1.04, padding: "8px 30px", background: look.accent, color: onColour(look.accent), borderRadius: look.round / 2, transform: "rotate(-2deg)" }}>
+        {caps(look, "Previously")}
+      </div>
+      {card.previously.map((line, i) => (
+        <div key={i} style={{ padding: "8px 22px", background: look.text, borderRadius: look.round / 2, transform: `rotate(${i % 2 ? -1.2 : 1.5}deg)` }}>
+          <Said line={line} sides={sides} look={look} px={size(look, lineSize(line, sides, 54, 860))} color={look.bg} />
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The start of a knockout's next game: which game it is, over the top of the arena for a moment. */
+function GameLabel({ n, frame, look }: { n: number; frame: number; look: Look }) {
+  if (frame >= LABEL) return null;
+  const k = 1 - rise(frame, LABEL - 8, 8);
+  return (
+    <div style={{ position: "absolute", left: 0, right: 0, top: AY + 48, display: "flex", justifyContent: "center", opacity: k, ...face(look) }}>
+      <div style={{ fontSize: size(look, 96), lineHeight: 1.04, padding: "8px 32px", background: look.accent, color: onColour(look.accent), borderRadius: look.round / 2, transform: "rotate(-2deg)" }}>
+        {caps(look, `Game ${n}`)}
+      </div>
+    </div>
+  );
+}
+
+/** How a knockout's game went, for the gap after it or the card it's shown as: its number, who took it (null for a draw), and how the match stands. */
+type GameNote = { n: number; who: Team | null; lines: string[] };
+
+function noteOf(s: Series, i: number, sides: Sides, final: boolean): GameNote {
+  const g = s.games[i];
+  const wins = ([0, 1] as const).map((t) => s.games.slice(0, i + 1).filter((x) => x.winner === t).length);
+  // only the final counts games won, and draws don't count
+  const lead = !final || wins[0] + wins[1] === 0 ? null : wins[0] === wins[1] ? `Level at ${wins[0]}-${wins[1]}` : wins[0] > wins[1] ? `${sides[0].name} leads ${wins[0]}-${wins[1]}` : `${sides[1].name} leads ${wins[1]}-${wins[0]}`;
+  const how = g.seed === null ? ["The seeds ran out, so it goes to the higher-placed ball"] : g.winner === null ? ["It's played again"] : [];
+  return { n: i + 1, who: g.winner, lines: [...how, ...(lead ? [lead] : [])] };
+}
+
+/**
+ * Between a knockout's games, the last frame of one dimmed under how it
+ * went and how the match stands; and a game shown as a card the same way,
+ * over the last game fought. `since` is the frames since it began, and a
+ * card always follows a gap or another card, so it's dimmed from the start.
+ */
+function Pause({ p, since, card, sides, look }: { p: GameNote; since: number; card: boolean; sides: Sides; look: Look }) {
+  const k = rise(since, 0, 8);
+  const who = p.who === null ? null : sides[p.who];
+  const spaced = look.face === "anton" ? 3 : 0;
+  return (
+    <AbsoluteFill style={{ background: alpha(look.bg, 0.88 * (card ? 1 : k)), alignItems: "center", justifyContent: "center", flexDirection: "column", gap: 14, padding: "0 90px", textAlign: "center", ...face(look) }}>
+      <div style={{ opacity: k, transform: `scale(${0.85 + 0.15 * k})`, display: "flex", flexDirection: "column", alignItems: "center", gap: 14 }}>
+        <div style={{ fontSize: size(look, 96), lineHeight: 1, color: look.text, letterSpacing: spaced }}>{caps(look, `Game ${p.n}`)}</div>
+        <div style={{ fontSize: size(look, who ? Math.min(150, 1400 / who.name.length) : 150), lineHeight: 1, color: who?.color ?? look.text, ...(who ? outlined(look, 4) : {}) }}>
+          {caps(look, who ? who.name : "A draw")}
+        </div>
+        {p.lines.map((l, i) => (
+          <div key={l} style={{ fontSize: size(look, i === 0 ? 56 : 48), lineHeight: 1.1, color: i === 0 ? look.text : look.accent, opacity: i === 0 ? 0.85 : 1, letterSpacing: spaced }}>{caps(look, l)}</div>
+        ))}
+      </div>
+    </AbsoluteFill>
+  );
+}
+
+/**
+ * How the video ends: who won and the word for it, how the game that
+ * decided it was won (when one fought did), and for a Ball League match
+ * what the result means in the league.
+ */
+type Outcome = { winner: Team | null; word: string; line: string | null; after: LeagueLine[] };
+
+/** A fight's last moment in words: how much health the winner had left, the health either side had when time ran out, or nobody standing. */
+function healthLine(b: Battle): string {
+  const last = b.frames[b.endFrame];
+  if (b.winner === null) return "Nobody left standing";
+  return b.byTimeout ? `On health, ${Math.ceil(last.hp[b.winner])} to ${Math.ceil(last.hp[1 - b.winner])}` : `With ${Math.ceil(last.hp[b.winner])} HP left`;
+}
+
+function outcomeOf(s: Series, league?: LeagueCard): Outcome {
+  const winner = winnerOf(s);
+  const last = s.games[s.games.length - 1];
+  // a semi-final that's only draws goes to the higher-placed ball: it goes through, it doesn't win
+  const through = s.games.length > 1 && s.games.every((g) => g.winner === null);
+  const decided = last.battle && last.winner === winner ? last.battle : null;
+  return { winner, word: through ? "goes through" : "wins", line: decided ? healthLine(decided) : null, after: league?.after ?? [] };
+}
+
+/**
+ * The result, over the fight's last frame: who won, how, what it means in
+ * the league, and only where comments are on, the question for them.
+ * `edge` is how the winner's name is outlined, if it is.
+ */
+function Ending({ since, outcome, sides, look, comments, edge }: { since: number; outcome: Outcome; sides: Sides; look: Look; comments: boolean; edge: React.CSSProperties }) {
+  const { fps } = useVideoConfig();
+  const pop = spring({ frame: since, fps, config: { damping: 11, mass: 0.7 } });
+  const dim = interpolate(since, [0, 8], [0, 0.9], { extrapolateLeft: "clamp", extrapolateRight: "clamp" });
+  const win = outcome.winner === null ? null : sides[outcome.winner];
+  const spaced = look.face === "anton" ? 3 : 0;
+  return (
+    <AbsoluteFill style={{ background: alpha(look.bg, dim), alignItems: "center", justifyContent: "center", flexDirection: "column", ...face(look) }}>
+      <div style={{ transform: `scale(${0.6 + 0.4 * pop})`, textAlign: "center", lineHeight: 0.96 }}>
+        <div style={{ fontSize: size(look, win ? Math.min(230, 1500 / win.name.length) : 230), color: win?.color ?? look.text, ...(win ? edge : {}) }}>{caps(look, win ? win.name : "Draw")}</div>
+        {win && <div style={{ fontSize: size(look, Math.min(170, 1800 / outcome.word.length)), color: look.text }}>{caps(look, outcome.word)}</div>}
+        {outcome.line && <div style={{ fontSize: size(look, 56), color: look.text, opacity: 0.75, marginTop: 36, letterSpacing: spaced }}>{caps(look, outcome.line)}</div>}
+      </div>
+      {outcome.after.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 18, marginTop: 48 }}>
+          {outcome.after.map((line, i) => (
+            <div key={i} style={{ opacity: rise(since, 10 + i * 6, 10) }}>
+              <Said line={line} sides={sides} look={look} px={size(look, lineSize(line, sides, 54, 900, outcome.winner))} color={i === 0 ? look.accent : look.text} named={outcome.winner} />
             </div>
-          </div>
-          <div style={{ position: "absolute", bottom: 300, fontSize: size(look, 72), color: look.text, letterSpacing: spaced }}>{caps(look, "Did you call it?")}</div>
-        </AbsoluteFill>
+          ))}
+        </div>
       )}
+      {comments && <div style={{ position: "absolute", bottom: 300, fontSize: size(look, 72), color: look.text, letterSpacing: spaced }}>{caps(look, "Did you call it?")}</div>}
+    </AbsoluteFill>
+  );
+}
+
+/** Everything a battle Short draws from: its games laid out, its two sides, its look, and for a Ball League match, its card and the balls' powers. */
+type Show = { s: Series; sides: Sides; outcome: Outcome; look: Look; comments: boolean; tag: boolean; league?: LeagueCard; powers: [AbilityId, AbilityId] };
+
+/**
+ * One frame of a battle Short: the fight it falls in, and over it a
+ * league match's opening, a later game's label, how a game went between
+ * games (or as a card), or the ending.
+ */
+function Moment({ s, sides, outcome, look, comments, tag, league, powers, frame }: Show & { frame: number }) {
+  const m = momentOf(s, frame);
+  const g = s.games[m.shown];
+  const opening = m.kind === "fight" && m.game === 0;
+  // what's at stake comes in once the opening's "previously" has gone
+  const head = league && { card: league, powers, speed: s.speed, stakes: opening ? rise(m.local, LEAGUE_OPEN, 10) : 1 };
+  const paused = (m.kind === "gap" || m.kind === "card") && noteOf(s, m.game, sides, league?.stage === "final");
+  // a league's ball colours are outlined on every look; a battle's powers only need it on a light one
+  const edge = league ? outlined(look, 4) : isLight(look) ? { WebkitTextStroke: `4px ${look.text}` } : {};
+  return (
+    <AbsoluteFill>
+      <BattleScene battle={g.battle!} tl={g.tl!} frame={m.local} sides={sides} look={look} comments={comments} tag={tag} league={head} />
+      {league && opening && <Previously frame={m.local} card={league} sides={sides} look={look} />}
+      {m.kind === "fight" && m.game > 0 && <GameLabel n={m.game + 1} frame={m.local} look={look} />}
+      {paused && <Pause p={paused} since={m.kind === "gap" ? m.local - g.tl!.outroFrom : frame - s.games[m.game].from} card={m.kind === "card"} sides={sides} look={look} />}
+      {m.kind === "end" && <Ending since={frame - s.endFrom} outcome={outcome} sides={sides} look={look} comments={comments} edge={edge} />}
     </AbsoluteFill>
   );
 }
 
 export const BattleVideo: React.FC<BattleProps> = (p) => {
   const frame = useCurrentFrame();
-  const battle = useMemo(() => p.battle ?? simulate(p.a, p.b, p.seed), [p.battle, p.a, p.b, p.seed]);
-  const tl = useMemo(() => timeline(battle), [battle]);
+  const { a, b, seed, hp, games, speed, cards, battle, league } = p;
+  // a fight already worked out is the one game; otherwise each game is run from its seed
+  const s = useMemo(() => series({ a, b, seed, hp, games, speed, cards }, battle ? () => battle : simulate), [a, b, seed, hp, games, speed, cards, battle]);
+  const sides = useMemo(() => (league ? leagueSides(league) : sidesOf(s.games[0].battle!)), [league, s]);
+  const outcome = useMemo(() => outcomeOf(s, league), [s, league]);
   const look = lookOf(p);
   const ending = endingOf(p);
-  const comments = p.allowComments !== false;
-  const total = tl.outroFrom + endFrames("battle", ending);
+  const total = s.endFrom + endFrames("battle", ending);
   const sound = p.soundUrl ?? (p.soundFile ? staticFile(p.soundFile) : null);
+  const show: Show = { s, sides, outcome, look, comments: p.allowComments !== false, tag: p.tag, league, powers: [a, b] };
 
   return (
     <AbsoluteFill style={{ background: look.bg }}>
       {sound && <Audio src={sound} />}
-      <BattleScene battle={battle} tl={tl} frame={frame} look={look} comments={comments} tag={p.tag} />
+      <Moment {...show} frame={frame} />
       {ending === "loop" && (
         <Back frame={frame} total={total} look={look}>
-          <BattleScene battle={battle} tl={tl} frame={0} look={look} comments={comments} tag={p.tag} />
+          <Moment {...show} frame={0} />
         </Back>
       )}
     </AbsoluteFill>
   );
 };
 
-/** How long the video is, for the player and the renderer: the fight, then its ending. */
-export function battleDuration(p: Pick<BattleProps, "a" | "b" | "seed" | "battle" | "ending" | "allowComments">): number {
-  return timeline(p.battle ?? simulate(p.a, p.b, p.seed)).outroFrom + endFrames("battle", endingOf(p));
+/** How long the video is, for the player and the renderer: its games one after another, then its ending. */
+export function battleDuration(p: Pick<BattleProps, "a" | "b" | "seed" | "hp" | "games" | "speed" | "cards" | "battle" | "ending" | "allowComments">): number {
+  const { battle } = p;
+  return series(p, battle ? () => battle : simulate).endFrom + endFrames("battle", endingOf(p));
 }

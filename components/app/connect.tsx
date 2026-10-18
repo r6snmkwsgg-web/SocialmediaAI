@@ -3,6 +3,7 @@ import type { Channel, Platform } from "@/lib/server/channels";
 import { isActive, uploadsTo } from "@/lib/shorts/channels";
 import { KIDS_GUIDE, YT_PRIVACY, YT_PRIVACY_LABEL, type YouTubePrivacy } from "@/lib/shorts/youtube";
 import { Icons } from "./icons";
+import { NichePicker } from "./niche-picker";
 import { button, Pill } from "./ui";
 
 /**
@@ -11,9 +12,9 @@ import { button, Pill } from "./ui";
  * Settings and Earnings. Each YouTube channel is listed with where it
  * stands, and says who it's for (made for kids or not, asked with nothing
  * picked, since YouTube needs the creator to say) and who sees new Shorts;
- * nothing posts to it until that's answered. Where the plan has room for
- * more than one channel, each also says whether it gets Shorts. TikTok is
- * one account.
+ * nothing posts to it until that's answered. In Settings each also says
+ * what it's about and, where the plan has room for more than one channel,
+ * whether it gets Shorts. TikTok is one account.
  */
 
 const ABOUT: Record<Platform, { name: string; why: string; whyBeforeAudit?: string; whySelf?: string; whyNoProfile?: string; whyLive?: string }> = {
@@ -148,14 +149,16 @@ function Audience({ channel, action, next, posts }: { channel: Channel; action?:
 }
 
 /**
- * Whether a YouTube channel gets new Shorts, shown where the plan has room
- * for more than one channel, more are connected than it has room for, or
- * it's switched off (so it can be switched on again). One switched on past
- * the plan's room says why it gets none. The form carries `shortsShown`
- * beside the checkbox, so a save from a form without the checkbox never
- * switches Shorts off.
+ * A YouTube channel's own Shorts settings, under every channel that's
+ * still theirs: what it's about, and whether it gets new Shorts. That one
+ * shows where the plan has room for more than one channel, more are
+ * connected than it has room for, or it's switched off (so it can be
+ * switched on again). One switched on past the plan's room says why it
+ * gets none. The form carries `shortsShown` beside the checkbox, so a save
+ * from a form without the checkbox never switches Shorts off, and picking
+ * no niche leaves the one it has.
  */
-function ChannelShorts({ channel, action, room, active, getting, plan, posts, saved }: {
+function ChannelShorts({ channel, action, room, active, getting, plan, posts, saved, claude }: {
   channel: Channel;
   action: (form: FormData) => Promise<void>;
   /** how many YouTube channels the plan makes Shorts for, and how many the account has that aren't disconnected */
@@ -167,23 +170,29 @@ function ChannelShorts({ channel, action, room, active, getting, plan, posts, sa
   posts: boolean;
   /** this channel's settings were just saved */
   saved: boolean;
+  /** Claude is set up, so the niches only it writes for can be picked */
+  claude: boolean;
 }) {
-  if (!(room > 1 || active > room || !channel.shortsOn)) return null;
+  const switchable = room > 1 || active > room || !channel.shortsOn;
   const beyond = channel.shortsOn && !getting.includes(channel.id);
   return (
     <div id={`channel-${channel.id}`} className="scroll-mt-40 border-t-2 border-edge px-4 py-4">
-      <form action={action} className="flex flex-col gap-4">
+      <form action={action} className="flex flex-col gap-5">
         <input type="hidden" name="id" value={channel.id} />
-        <input type="hidden" name="shortsShown" value="1" />
-        <label className="flex items-start gap-3">
-          <input type="checkbox" name="shortsOn" defaultChecked={channel.shortsOn} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
-          <span className="flex flex-col gap-1">
-            <span className="text-[15px] font-semibold">Make Shorts for this channel</span>
-            <span className="max-w-2xl text-[13px] leading-relaxed text-muted">
-              Each day, in its own look, at its own best times. Off: no new ones. {uploadsTo(channel, posts) ? "Shorts you've kept still post." : "Shorts you've kept stay for you to post."}
-            </span>
-          </span>
-        </label>
+        {switchable && (
+          <>
+            <input type="hidden" name="shortsShown" value="1" />
+            <label className="flex items-start gap-3">
+              <input type="checkbox" name="shortsOn" defaultChecked={channel.shortsOn} className="mt-1 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
+              <span className="flex flex-col gap-1">
+                <span className="text-[15px] font-semibold">Make Shorts for this channel</span>
+                <span className="max-w-2xl text-[13px] leading-relaxed text-muted">
+                  Each day, in its own look, at its own best times. Off: no new ones. {uploadsTo(channel, posts) ? "Shorts you've kept still post." : "Shorts you've kept stay for you to post."}
+                </span>
+              </span>
+            </label>
+          </>
+        )}
         {beyond && (
           <p className="border-l-4 border-signal pl-3 text-[13px] leading-relaxed">
             No new Shorts on {plan}.{" "}
@@ -193,6 +202,7 @@ function ChannelShorts({ channel, action, room, active, getting, plan, posts, sa
             {room < PLANS.creator.channels ? ", or move to Creator" : ""}.
           </p>
         )}
+        <NichePicker current={channel.niche} claude={claude} />
         <div className="flex items-center gap-4">
           <button type="submit" className={button.secondary}>Save</button>
           {saved && <span role="status" className="font-mono text-[11px] uppercase tracking-[0.14em] text-muted">Saved</span>}
@@ -247,6 +257,7 @@ export function ConnectList({
   getting = [],
   saved,
   audience,
+  claude = false,
   youtubeApi = false,
   posts = false,
   tiktokProfile = false,
@@ -268,6 +279,8 @@ export function ConnectList({
   saved?: string;
   /** saves a YouTube channel's answers; without it, the question points to Settings */
   audience?: (form: FormData) => Promise<void>;
+  /** Claude is set up on this Hookline, so a channel can be about a niche only Claude writes for */
+  claude?: boolean;
   /** Hookline posts to YouTube for everyone (its API audit has passed) */
   youtubeApi?: boolean;
   /** their plan posts Shorts for them; on Free they post their own */
@@ -304,7 +317,7 @@ export function ConnectList({
                 {p === "youtube" && isActive(c) && (
                   <>
                     <Audience channel={c} action={audience} next={next} posts={posts} />
-                    {settings && <ChannelShorts channel={c} action={settings} room={room} active={active} getting={getting} plan={plan} posts={posts} saved={saved === c.id} />}
+                    {settings && <ChannelShorts channel={c} action={settings} room={room} active={active} getting={getting} plan={plan} posts={posts} saved={saved === c.id} claude={claude} />}
                   </>
                 )}
                 {p === "youtube" && !isActive(c) && (

@@ -2,6 +2,9 @@ import { createElement } from "react";
 import { renderToString } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { Thumbnail } from "@remotion/player";
+import { ABILITIES } from "@/lib/battle/abilities";
+import { ordinal } from "@/lib/battle/league";
+import { series, winnerOf } from "@/lib/battle/series";
 import { rng, type Team } from "@/lib/battle/sim";
 import { timeline } from "@/lib/battle/timeline";
 import { PLANS } from "@/lib/billing/plans";
@@ -13,10 +16,11 @@ import { DEFAULT_SIDE_GIFTS } from "@/lib/live/rivals";
 import { fingerprint, type RecordedWorld } from "@/lib/live/tape";
 import { finish, FORMATS } from "@/lib/shorts/formats";
 import { clipCandidate, withNames } from "@/lib/shorts/formats/clip";
+import { demoLeague } from "@/lib/shorts/formats/league-demo";
 import { BASE_LOOKS, lookNumber } from "@/lib/shorts/look";
 import { soundFor } from "@/lib/shorts/sound";
-import { frames } from "@/lib/shorts/timing";
-import { ENDINGS, FORMAT_IDS, type Spec } from "@/lib/shorts/types";
+import { frames, LEAGUE_OPEN } from "@/lib/shorts/timing";
+import { ENDINGS, FORMAT_IDS, type BattleParams, type Candidate, type Spec } from "@/lib/shorts/types";
 import { ShortVideo } from "@/remotion/shorts/Short";
 
 /**
@@ -185,4 +189,108 @@ describe("a round from a LIVE", () => {
     expect(soundFor(broken).every((v) => v === 0)).toBe(true);
     expect(soundFor(broken).length).toBe(soundFor(spec).length);
   });
+});
+
+/** What a drawing says, as words: its text without the markup, apostrophes and all. */
+const said = (html: string) => html.replace(/<[^>]+>/g, " ").replace(/&#x27;/g, "'").replace(/&amp;/g, "&").replace(/\s+/g, " ").toLowerCase();
+
+describe("a Ball League match", () => {
+  // a made-up league's round robin match and final, as the morning run makes them
+  const demo = demoLeague();
+  const made = (spec: Spec, o: { look?: number; comments?: boolean; cards?: number[] } = {}): Extract<Spec, { format: "battle" }> => {
+    const c = finish({ ...spec, key: "", score: 0, why: [], facts: [], title: "" } as Candidate, { look: lookNumber(o.look ?? 0), ending: "comment", allowComments: o.comments });
+    return { format: "battle", params: { ...(c.params as BattleParams), ...(o.cards ? { cards: o.cards } : {}) } };
+  };
+  /** every moment worth drawing: the opening, what's at stake, each game's start, the gaps and cards between them, and the ending */
+  const moments = (spec: Extract<Spec, { format: "battle" }>) => {
+    const s = series(spec.params);
+    const between = s.games.flatMap((g, i) => [g.from + 5, ...(g.tl ? (i < s.games.length - 1 ? [g.from + g.tl.outroFrom + 20] : []) : [g.from + 40])]);
+    return [0, 20, LEAGUE_OPEN + 20, ...between, s.endFrom + 30, frames(spec) - 1];
+  };
+
+  it("draws at every moment, in any look, with comments on or off, and a final with a drawn game as a card", async () => {
+    const { match, final } = await demo;
+    const drawn = series((final as Extract<Spec, { format: "battle" }>).params).games.findIndex((g, i) => i > 0 && g.winner === null);
+    for (const [spec, cards] of [[match, undefined], [final, undefined], [final, [drawn]]] as const) {
+      for (const look of [0, 2, 331]) {
+        for (const comments of [true, false]) {
+          const one = made(spec, { look, comments, cards: cards ? [...cards] : undefined });
+          for (const frame of moments(one)) expect(draw(one, frame), `look ${look} frame ${frame}`).not.toMatch(/server rendering errored/);
+        }
+      }
+    }
+  }, 60_000);
+
+  it("opens on what happened before, then says what's at stake, and ends on what the result means", async () => {
+    const { match } = await demo;
+    const spec = made(match);
+    const card = spec.params.league!;
+    const first = said(draw(spec, 0));
+    expect(first).toContain(`season ${card.season} · ${card.label}`.toLowerCase());
+    expect(first).toContain("previously");
+    for (const l of card.previously) expect(first).toContain(l.text.toLowerCase());
+    expect(card.stakes).not.toBeNull();
+    // the stakes line takes over once the opening's gone
+    const after = said(draw(spec, LEAGUE_OPEN + 20));
+    expect(after).not.toContain("previously");
+    expect(after).toContain(card.stakes!.text.toLowerCase());
+    // the balls by name, each with its power, place and record, never the powers' own names in their place
+    for (const s of card.sides) expect(after).toContain(s.name.toLowerCase());
+    expect(after).toContain(`${ABILITIES[spec.params.a].name} · ${ordinal(card.sides[0].place!)} · ${card.sides[0].record.won}-${card.sides[0].record.drawn}-${card.sides[0].record.lost}`.toLowerCase());
+    const end = said(draw(spec, frames(spec) - 1));
+    for (const l of card.after) expect(end).toContain(l.text.toLowerCase());
+    expect(end).toContain(card.sides[winnerOf(series(spec.params))!].name.toLowerCase());
+    expect(end).toContain("did you call it?");
+  });
+
+  it("never asks for a comment where comments are off, and a battle doesn't either", async () => {
+    const { match, final } = await demo;
+    for (const spec of [made(match, { comments: false }), made(final, { comments: false })]) {
+      for (const frame of moments(spec)) expect(draw(spec, frame), `frame ${frame}`).not.toMatch(/comment|did you call it/i);
+    }
+    const battle = finish(FORMATS.battle.propose({ rand: rng(4), used: new Set() })!, { ending: "comment", allowComments: false });
+    const b = { format: battle.format, params: battle.params } as Spec;
+    expect(draw(b, frames(b) - 1)).not.toMatch(/did you call it/i);
+    const asked = finish(FORMATS.battle.propose({ rand: rng(4), used: new Set() })!, { ending: "comment" });
+    const a = { format: asked.format, params: asked.params } as Spec;
+    expect(draw(a, frames(a) - 1)).toMatch(/did you call it/i);
+  });
+
+  it("plays a final's games in turn, says how each went and how it stands, and ends on its champion", async () => {
+    const { final } = await demo;
+    const spec = made(final);
+    const card = spec.params.league!;
+    const s = series(spec.params);
+    const name = (t: Team) => card.sides[t].name.toLowerCase();
+    // the speed it plays at, while a fight's on
+    expect(spec.params.speed).toBeGreaterThan(1);
+    expect(said(draw(spec, LEAGUE_OPEN + 20))).toContain(`played at ${spec.params.speed}x speed`);
+    // after each game but the last: who took it, or a draw played again, and the score in games won
+    const wins: [number, number] = [0, 0];
+    s.games.slice(0, -1).forEach((g, i) => {
+      if (g.winner !== null) wins[g.winner]++;
+      const gap = said(draw(spec, g.from + g.tl!.outroFrom + 30));
+      expect(gap).toContain(`game ${i + 1}`);
+      expect(gap).toContain(g.winner === null ? "a draw" : name(g.winner));
+      if (g.winner === null) expect(gap).toContain("it's played again");
+      const lead = wins[0] === wins[1] ? `level at ${wins[0]}-${wins[1]}` : wins[0] > wins[1] ? `${name(0)} leads ${wins[0]}-${wins[1]}` : `${name(1)} leads ${wins[1]}-${wins[0]}`;
+      expect(gap).toContain(lead);
+      // and the next one starts with its number
+      expect(said(draw(spec, s.games[i + 1].from + 5))).toContain(`game ${i + 2}`);
+    });
+    const end = said(draw(spec, frames(spec) - 1));
+    const champion = winnerOf(s)!;
+    expect(end).toContain(name(champion));
+    expect(end).toContain(`season ${card.season} champion`);
+    expect(end).toMatch(/won the final 2-[01]/);
+    // a drawn game shown as a card says so, over the last game fought
+    const drawn = s.games.findIndex((g, i) => i > 0 && g.winner === null);
+    const carded = made(final, { cards: [drawn] });
+    const at = series(carded.params).games[drawn];
+    expect(at.battle).toBeNull();
+    const shown = said(draw(carded, at.from + 40));
+    expect(shown).toContain(`game ${drawn + 1}`);
+    expect(shown).toContain("a draw");
+    expect(shown).toContain("it's played again");
+  }, 30_000);
 });

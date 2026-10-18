@@ -12,8 +12,16 @@ import type { Candidate, Context } from "../types";
 
 export const matchupId = (a: AbilityId, b: AbilityId) => `battle:${[a, b].sort().join(":")}`;
 
-/** One fight, in the order the sides are drawn: no other channel ever gets it. */
-export const fightId = (a: AbilityId, b: AbilityId, seed: number) => `battle:${a}:${b}:${seed}`;
+/**
+ * One fight, in the order the sides are drawn: no other channel ever gets
+ * it. A fight where the sides start with other health than their own (a
+ * Ball League match) is another fight, so the health is in its id; with
+ * their own, it's the same fight and the same id as ever.
+ */
+export function fightId(a: AbilityId, b: AbilityId, seed: number, hp?: readonly [number, number]): string {
+  const own = !hp || (hp[0] === ABILITIES[a].hp && hp[1] === ABILITIES[b].hp);
+  return `battle:${a}:${b}:${seed}${own ? "" : `:${hp[0]}-${hp[1]}`}`;
+}
 
 export const MELODY_IDS = Object.keys(MELODIES) as Melody[];
 
@@ -48,7 +56,7 @@ export function proposeBattle(ctx: Context, matchups = 6, runs = 40): Candidate 
       least ? `A fight nobody's seen before: your channel has had every matchup, so ${A.name} vs ${B.name} comes round again` : `${A.name} vs ${B.name} hasn't been on your channel before`,
     ],
     facts: [
-      "A ball battle Short: two balls with different powers bounce around an arena and fight until one is knocked out. It's a real physics simulation; nobody picks the winner.",
+      "A ball battle Short: two balls with different powers bounce around an arena and fight until one is knocked out. It's a real physics simulation. Hookline ran 240 fights and this is the most exciting one.",
       `${A.name}: ${A.line} ${B.name}: ${B.line}`,
       `${d.leadChanges} lead changes${d.comeback ? ", and the winner comes back from well behind" : ""}. Don't say who wins.`,
     ],

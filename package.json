@@ -18,6 +18,7 @@
     "data": "tsx scripts/fetch-data.mts",
     "stills": "tsx scripts/stills.ts",
     "replay-check": "tsx scripts/replay-check.ts",
+    "league-balance": "tsx scripts/league-balance.ts",
     "og": "tsx scripts/og.ts",
     "icons": "tsx scripts/icons.ts",
     "screens": "tsx scripts/screens.ts"

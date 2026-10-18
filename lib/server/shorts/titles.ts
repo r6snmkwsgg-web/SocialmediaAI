@@ -2,6 +2,7 @@ import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { zodOutputFormat } from "@anthropic-ai/sdk/helpers/zod";
 import { z } from "zod";
+import type { ChannelNiche } from "../../shorts/niches";
 import type { Candidate } from "../../shorts/types";
 import { env } from "../env";
 
@@ -112,9 +113,18 @@ export function tidy(c: Copy): Copy | null {
   };
 }
 
-/** The description to use when nothing wrote one. It only asks for comments where comments are on. A round from a LIVE says so. */
-export function plainDescription(c: Candidate): string {
+/**
+ * The description to use when nothing wrote one. It only asks for comments
+ * where comments are on. A round from a LIVE says so. A channel's niche adds
+ * its own hashtags after #shorts. A Ball League match says which season
+ * it's from, and that it's a real fight with a real table.
+ */
+export function plainDescription(c: Candidate, niche: Pick<ChannelNiche, "tags"> | null = null): string {
   const comments = c.params.allowComments !== false;
+  if (c.format === "battle" && c.params.league) {
+    const ask = comments ? " Who did you pick? Comment before the end." : "";
+    return `Season ${c.params.league.season} of the Ball League. Every game is a real physics fight, and the table is real results.${ask}\n\n#shorts #ballleague #ballbattle`;
+  }
   const ask: Record<Candidate["format"], string> = comments
     ? {
         battle: "Who did you pick? Comment before the end.",
@@ -143,5 +153,5 @@ export function plainDescription(c: Candidate): string {
     race: "#shorts #barchartrace #data",
     clip: "#shorts #ballbattle #live",
   };
-  return `${ask[c.format]}\n\n${tags[c.format]}`;
+  return `${ask[c.format]}\n\n${niche ? tags[c.format].replace("#shorts", `#shorts ${niche.tags}`) : tags[c.format]}`;
 }

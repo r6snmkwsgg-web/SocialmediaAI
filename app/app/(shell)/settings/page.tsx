@@ -1,8 +1,11 @@
 import type { Metadata } from "next";
 import { ConnectList } from "@/components/app/connect";
+import { NichePicker } from "@/components/app/niche-picker";
 import { SettingsTabs } from "@/components/app/settings-tabs";
 import { button, Card, CardHead, PageHead } from "@/components/app/ui";
 import { gettingShorts } from "@/lib/shorts/channels";
+import { isActive } from "@/lib/shorts/channels";
+import { nicheById } from "@/lib/shorts/niches";
 import { CONNECT_WAIT } from "@/lib/shorts/quota";
 import { account } from "@/lib/server/account";
 import { channelsOf, shortsChannelsOf } from "@/lib/server/channels";
@@ -22,6 +25,8 @@ const NOTES: Record<string, { text: string; bad?: boolean }> = {
   audienceError: { text: "Pick whether the channel is made for kids, then save.", bad: true },
   already: { text: "That channel was already connected. To add a different one, connect again and pick its account when Google asks." },
   settings: { text: "That didn't save. Try again.", bad: true },
+  niche: { text: "Pick what this channel is about, then save.", bad: true },
+  nicheAccount: { text: "Pick what your Shorts are about, then save.", bad: true },
   tiktok: { text: "TikTok is connected." },
   channels: { text: "Your plan has room for one YouTube channel. Disconnect it to connect a different one, or move to Creator for up to five.", bad: true },
   channelsFull: { text: "Creator has room for five channels, and all five are connected. Disconnect one to add another.", bad: true },
@@ -55,8 +60,11 @@ export default async function Settings({ searchParams }: { searchParams: Search 
   const q = await searchParams;
   // YouTube's channels, with disconnected ones while they have Shorts, and TikTok's one account (and any from before)
   const [youtube, tiktok] = await Promise.all([shortsChannelsOf(me.id), channelsOf(me.id).then((cs) => cs.filter((x) => x.platform === "tiktok"))]);
-  const [{ text_stories: stories }] = await asUser(me.id, (tx) => tx<{ text_stories: boolean }[]>`select text_stories from public.profiles where id = ${me.id}`);
+  const [{ text_stories: stories, niche: own }] = await asUser(me.id, (tx) => tx<{ text_stories: boolean; niche: string | null }[]>`
+    select text_stories, niche from public.profiles where id = ${me.id}`);
   const c = configured();
+  // with no YouTube channel, what the account's own Shorts are about is picked here, in Shorts
+  const channelless = !youtube.some(isActive);
   // the channel just connected
   const fresh = youtube.find((x) => x.id === q.channel);
   const moved = q.connected === "youtube" ? Number(q.moved) || 0 : 0;
@@ -70,13 +78,22 @@ export default async function Settings({ searchParams }: { searchParams: Search 
     (q.connected === "youtube" && fresh && !fresh.api ? "youtubeSelf" : undefined) ??
     (typeof q.connected === "string" ? q.connected : undefined) ??
     (q.error === "channels" && me.plan.channels > 1 ? "channelsFull" : undefined) ??
+    (q.error === "niche" && !q.channel ? "nicheAccount" : undefined) ??
     (typeof q.error === "string" ? q.error : undefined);
+  // what new Shorts will be about, once that's saved: for a channel, or the account's own
+  const about = q.saved === "niche" ? nicheById(typeof q.niche === "string" ? q.niche : null) : null;
+  // saved away from the Ball League, with how many matches the season that stopped had played
+  const stopped = q.saved === "niche-stopped" ? Number(q.played) || 0 : 0;
   // Shorts whose time passed before the channel was back (or was connected) got new times, two hours apart
   const note = moved
     ? { text: `YouTube is connected. ${moved} Short${moved === 1 ? " whose time had passed has a new time" : "s whose time had passed have new times"}.` }
-    : key
-      ? NOTES[key]
-      : undefined;
+    : about
+      ? { text: q.channel ? `Saved. New Shorts for ${fresh?.name ?? "this channel"} will be about ${about.name}.` : `Saved. Your new Shorts will be about ${about.name}.` }
+      : stopped
+        ? { text: `Saved. The Ball League season that was on stopped after ${stopped} match${stopped === 1 ? "" : "es"}. Its results stay.` }
+        : key
+        ? NOTES[key]
+        : undefined;
 
   return (
     <>
@@ -120,15 +137,17 @@ export default async function Settings({ searchParams }: { searchParams: Search 
           </form>
         </Card>
 
-        <Card>
+        <Card id="shorts" className="scroll-mt-40">
           <CardHead title="Shorts" />
-          <form action={saveShorts} className="flex flex-col gap-4 px-5 py-5">
+          <form action={saveShorts} className="flex flex-col gap-5 px-5 py-5">
+            {channelless && <NichePicker current={nicheById(own)?.id ?? null} claude={c.claude} account />}
             <label className="flex items-start gap-3">
               <input type="checkbox" name="textStories" defaultChecked={stories} className="mt-1 h-5 w-5 accent-[var(--color-signal)]" />
               <span className="flex flex-col gap-1">
                 <span className="text-[15px] font-semibold">Make text stories too</span>
                 <span className="max-w-2xl text-[13px] leading-relaxed text-muted">
                   Made-up text conversations, labelled as stories. They&rsquo;re off unless you turn them on, because YouTube is the least keen to pay for videos of scrolling text.
+                  {" "}They&rsquo;re in no niche, so they&rsquo;re only made {channelless ? "while your Shorts aren't about one thing" : "for channels that haven't picked what they're about"}.
                 </span>
               </span>
             </label>
@@ -151,8 +170,9 @@ export default async function Settings({ searchParams }: { searchParams: Search 
               disconnect={disconnect}
               settings={saveChannelSettings}
               getting={gettingShorts(youtube, me.plan.channels).map((x) => x.id)}
-              saved={q.saved === "channel" && typeof q.channel === "string" ? q.channel : undefined}
+              saved={(q.saved === "channel" || q.saved === "niche" || q.saved === "niche-stopped") && typeof q.channel === "string" ? q.channel : undefined}
               audience={saveAudience}
+              claude={c.claude}
               youtubeApi={c.youtubeAudited}
               tiktokProfile={c.tiktokProfile}
               posts={me.plan.scheduling}

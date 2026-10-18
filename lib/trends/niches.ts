@@ -19,6 +19,10 @@ export const NICHES: Niche[] = [
   { id: "facts", name: "Facts", query: "facts you didn't know", format: null },
   { id: "gaming", name: "Gaming", query: "gaming", format: null },
   { id: "football", name: "Football", query: "football skills", format: null },
+  // to watch beside the channels about them (lib/shorts/niches.ts)
+  { id: "f1", name: "Formula 1", query: "formula 1", format: null },
+  { id: "nba", name: "NBA", query: "nba", format: null },
+  { id: "cars", name: "Cars", query: "cars", format: null },
 ];
 
 export const nicheOf = (id: string) => NICHES.find((n) => n.id === id);

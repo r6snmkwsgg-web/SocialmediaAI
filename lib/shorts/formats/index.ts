@@ -1,3 +1,4 @@
+import { seedsOf } from "../../battle/series";
 import { words } from "../checks";
 import type { Look } from "../look";
 import type { Candidate, Context, Ending, FormatId, ShortFormat, Spec } from "../types";
@@ -18,8 +19,13 @@ export const FORMATS: Record<FormatId, { name: string; plural: string; propose: 
   race: { name: "Bar chart race", plural: "bar chart races", propose: (ctx) => proposeRace(ctx) },
 };
 
-/** What the app calls a stored Short's kind: its format's name, or for a round from the creator's own LIVE, where it's from. */
-export function formatName(spec: { format: ShortFormat }): string {
+/**
+ * What the app calls a stored Short's kind: its format's name, or for a
+ * round from the creator's own LIVE, where it's from, and for a match of
+ * a channel's Ball League, the league.
+ */
+export function formatName(spec: { format: ShortFormat; params?: unknown }): string {
+  if (spec.format === "battle" && typeof spec.params === "object" && spec.params !== null && "league" in spec.params) return "Ball League";
   return spec.format === "clip" ? "From your LIVE" : FORMATS[spec.format].name;
 }
 
@@ -58,7 +64,8 @@ export function contentIds(spec: Spec): string[] {
 /**
  * What a Short takes from everyone: once a channel has it, no other
  * channel ever gets it (the content ledger). A battle's is the fight
- * itself, a matchup and its seed, so battles never run out. A chart's is
+ * itself, a matchup and its seed, so battles never run out, and a Ball
+ * League knockout's is every one of its games' fights. A chart's is
  * how it comes out: a countdown's countries in order, a race's top
  * countries at the start and the finish. Questions, choices and stories
  * come with the words that carry their meaning, so they're caught in
@@ -69,8 +76,10 @@ export function ledgerClaims(spec: Spec): { item: string; words?: string[] }[] {
   if (!spec.params) return [];
   const said = (text: string | undefined) => (text ? { words: [...words(text)] } : {});
   switch (spec.format) {
-    case "battle":
-      return spec.params.a && spec.params.b ? [{ item: fightId(spec.params.a, spec.params.b, spec.params.seed) }] : [];
+    case "battle": {
+      const { a, b, hp } = spec.params;
+      return a && b ? seedsOf(spec.params).flatMap((seed) => (seed === null ? [] : [{ item: fightId(a, b, seed, hp) }])) : [];
+    }
     case "ranking":
       return spec.params.items?.length ? [{ item: rankingOrderId(spec.params) }] : [];
     case "race":

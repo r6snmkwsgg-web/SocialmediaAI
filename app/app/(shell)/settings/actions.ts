@@ -8,9 +8,11 @@ import { disconnectChannel, setAudience, setChannelSettings } from "@/lib/server
 import { admin, asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { safeNext } from "@/lib/server/http";
+import { seasonOn, stopIfLeft } from "@/lib/server/shorts/league";
 import { removeVideos } from "@/lib/server/storage";
 import { supabaseAdmin } from "@/lib/server/supabase-admin";
 import { channelSettingsFrom } from "@/lib/shorts/channels";
+import { nicheFrom } from "@/lib/shorts/niches";
 import { validTimezone } from "@/lib/shorts/times";
 import { YT_PRIVACY } from "@/lib/shorts/youtube";
 
@@ -29,13 +31,24 @@ export async function saveProfile(form: FormData) {
   redirect("/app/settings?saved=1");
 }
 
-/** Which kinds of Short to make: text stories are off until switched on here. */
+/**
+ * Which kinds of Short to make: text stories are off until switched on
+ * here. With no YouTube channel, also what the account's own Shorts are
+ * about; picking none leaves what they're about as it is. Leaving the Ball
+ * League stops the season that was on, and says after how many matches.
+ */
 export async function saveShorts(form: FormData) {
   const me = await requireUser();
   const on = form.get("textStories") === "on";
-  await asUser(me.id, (tx) => tx`update public.profiles set text_stories = ${on} where id = ${me.id}`);
-  revalidatePath("/app/settings");
-  redirect("/app/settings?saved=1");
+  const about = nicheFrom(form, configured().claude);
+  if (!about) redirect("/app/settings?error=niche#shorts");
+  const own = { userId: me.id, channelId: null };
+  const was = about.niche && about.niche !== "league" ? await seasonOn(own) : null;
+  await asUser(me.id, (tx) => tx`update public.profiles set text_stories = ${on}${about.niche ? tx`, niche = ${about.niche}` : tx``} where id = ${me.id}`);
+  if (about.niche) await stopIfLeft(own);
+  revalidatePath("/app", "layout");
+  if (was?.played) redirect(`/app/settings?saved=niche-stopped&played=${was.played}#shorts`);
+  redirect(about.niche ? `/app/settings?saved=niche&niche=${about.niche}#shorts` : "/app/settings?saved=1");
 }
 
 /** Disconnecting keeps the channel and its Shorts; its keys, and the figures read with them, go. */
@@ -49,14 +62,25 @@ export async function disconnect(form: FormData) {
   redirect(done ? `/app/settings?disconnected=${done.platform}${done.cleared ? "&cleared=1" : ""}` : "/app/settings");
 }
 
-/** A YouTube channel's own Shorts settings: whether it gets new Shorts, read only where the form showed its checkbox. */
+/**
+ * A YouTube channel's own Shorts settings: what it's about, and whether it
+ * gets new Shorts, read only where the form showed its checkbox. Picking
+ * no niche leaves the one it has; one it can't have here is refused.
+ * Leaving the Ball League stops the season that was on, and says after
+ * how many matches.
+ */
 export async function saveChannelSettings(form: FormData) {
   const me = await requireUser();
   const id = z.uuid().safeParse(form.get("id"));
-  if (!id.success || !(await setChannelSettings(me.id, id.data, channelSettingsFrom(form)))) redirect("/app/settings?error=settings");
+  if (!id.success) redirect("/app/settings?error=settings");
+  const about = nicheFrom(form, configured().claude);
+  if (!about) redirect(`/app/settings?error=niche&channel=${id.data}#channel-${id.data}`);
+  const was = about.niche && about.niche !== "league" ? await seasonOn({ userId: me.id, channelId: id.data }) : null;
+  if (!(await setChannelSettings(me.id, id.data, { ...channelSettingsFrom(form), ...about }))) redirect("/app/settings?error=settings");
   revalidatePath("/app", "layout");
-  // back where they were, with the channel saying it's saved
-  redirect(`/app/settings?saved=channel&channel=${id.data}#channel-${id.data}`);
+  // back where they were, with the channel saying it's saved, and what its new Shorts will be about or the season that stopped
+  const saved = was?.played ? `niche-stopped&played=${was.played}` : about.niche ? `niche&niche=${about.niche}` : "channel";
+  redirect(`/app/settings?saved=${saved}&channel=${id.data}#channel-${id.data}`);
 }
 
 const audience = z.object({

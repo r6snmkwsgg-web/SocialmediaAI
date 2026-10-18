@@ -1,5 +1,6 @@
-import { FPS, simulate } from "../battle/sim";
-import { OUTRO, timeline } from "../battle/timeline";
+import { series } from "../battle/series";
+import { FPS } from "../battle/sim";
+import { OUTRO } from "../battle/timeline";
 import { clipOutro } from "../live/clip";
 import type { Ending, Message, ShortFormat, Spec } from "./types";
 
@@ -19,6 +20,9 @@ const s = (seconds: number) => Math.round(seconds * FPS);
 
 /** how long the title stays over the opening */
 export const TITLE = s(1.5);
+
+/** how long a Ball League match's "previously" stays over its opening, before what's at stake takes over */
+export const LEAGUE_OPEN = s(3);
 
 export const QUIZ = { intro: 0, show: s(0.5), think: s(3), reveal: s(1.3), outro: s(2.6) };
 export const quizStep = QUIZ.show + QUIZ.think + QUIZ.reveal;
@@ -84,11 +88,16 @@ export function storyTimes(messages: Message[]): { typingFrom: number | null; at
   });
 }
 
-/** The frame each format's ending starts on. A LIVE round's comes from its record alone, so a clip's length never needs it played back. */
+/**
+ * The frame each format's ending starts on. A battle's comes after its
+ * games (a Ball League knockout can have several, one after another). A
+ * LIVE round's comes from its record alone, so a clip's length never
+ * needs it played back.
+ */
 export function endFrom(spec: Spec): number {
   switch (spec.format) {
     case "battle":
-      return timeline(simulate(spec.params.a, spec.params.b, spec.params.seed)).outroFrom;
+      return series(spec.params).endFrom;
     case "quiz":
       return QUIZ.intro + spec.params.questions.length * quizStep;
     case "wyr":

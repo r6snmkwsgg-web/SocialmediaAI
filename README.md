@@ -164,8 +164,9 @@ pnpm db:migrate               # the migrations (--local for a plain Postgres, --
 pnpm live:bridge              # the LIVE bridge from source
 pnpm bridge:build             # the bridge as one program
 pnpm render fibonacci spike   # one battle Short as an MP4 in out/, the best of 60 runs
-pnpm stills                   # every Short format at five moments, as pictures in out/stills
+pnpm stills                   # every Short format at five moments, as pictures in out/stills (pnpm stills out/stills league for the Ball League)
 pnpm replay-check             # plays LIVE rounds back in headless Chromium (CHROME_PATH) and checks they match Node
+pnpm league-balance           # plays Ball League seasons and prints each power's titles, the draws and how long finals run
 pnpm og                       # the share images in public/og
 pnpm icons                    # the home-screen icons, from app/icon.svg
 pnpm data                     # fetches the World Bank figures in data/ again
@@ -185,11 +186,11 @@ TEST_DATABASE_URL=postgres://postgres:<password>@127.0.0.1:5432/hookline_test pn
 
 ## Where things are
 
-- `app/` the pages and routes: the website at the top, the signed-in app under `app/app/`, the operator's view under `app/admin/`, and webhooks, OAuth and the cron jobs under `app/api/`
+- `app/` the pages and routes: the website at the top, the signed-in app under `app/app/` (a channel's Ball League at `app/app/(shell)/shorts/league/`), the operator's view under `app/admin/`, and webhooks, OAuth and the cron jobs under `app/api/`
 - `components/` the website (`site/`), the app (`app/`), the LIVE games (`live/`) and the Shorts player and queue (`shorts/`)
-- `lib/battle/` the ball battle: the simulation (`sim.ts`) and its own trig (`trig.ts`), picking the best run, the timeline and the soundtrack
+- `lib/battle/` the ball battle: the simulation (`sim.ts`) and its own trig (`trig.ts`), picking the best run, the timeline and the soundtrack, and the Ball League: its seasons, table and what each match says (`league.ts`), and a final's games in one Short (`series.ts`)
 - `lib/live/` the LIVE games: TikTok's events, the rules, the show round after round, the vote, settings and session numbers
-- `lib/shorts/` the Shorts formats (`formats/`), real data, timing, sound, the learning loop and posting times
+- `lib/shorts/` the Shorts formats (`formats/`), real data, timing, sound, the learning loop and posting times, and what a channel can be about (`niches.ts`)
 - `lib/trends/` and `lib/earnings/` the logic behind those sections
 - `lib/server/` everything that touches the database or another service, on the server only
 - `remotion/` the videos, used by both the browser player and the renderer

@@ -9,13 +9,22 @@ const TABS = [
   { href: "/app/shorts/library", label: "Library", icon: Icons.grid },
 ];
 
-/** Shorts' three views: what's waiting, when things post, and everything so far. A single Short's page has its own way back. */
-export function ShortsTabs() {
+/** A channel's Ball League: its table and its matches. */
+const LEAGUE = { href: "/app/shorts/league", label: "League", icon: Icons.table };
+
+/**
+ * Shorts' views: what's waiting, when things post, and everything so far,
+ * and with a channel in the Ball League (`league`), its table. A single
+ * Short's page has its own way back.
+ */
+export function ShortsTabs({ league = false }: { league?: boolean }) {
   const path = usePathname();
-  if (!TABS.some((t) => t.href === path)) return null;
+  // the league's page keeps its tab even once nothing's in the league, so its seasons can still be looked back on
+  const tabs = league || path === LEAGUE.href ? [...TABS, LEAGUE] : TABS;
+  if (!tabs.some((t) => t.href === path)) return null;
   return (
     <nav aria-label="Shorts" className="mb-8 flex gap-1 overflow-x-auto border-b-2 border-edge">
-      {TABS.map((t) => {
+      {tabs.map((t) => {
         const on = path === t.href;
         return (
           <Link
@@ -24,7 +33,8 @@ export function ShortsTabs() {
             aria-current={on ? "page" : undefined}
             className={`-mb-[2px] flex shrink-0 items-center gap-2 border-b-2 px-3 py-2.5 font-mono text-[11px] uppercase tracking-[0.16em] ${on ? "border-signal text-fg" : "border-transparent text-muted hover:text-fg"}`}
           >
-            <t.icon className="h-4 w-4" />
+            {/* four tabs fit a phone without their icons */}
+            <t.icon className={`h-4 w-4 ${tabs.length > 3 ? "hidden sm:block" : ""}`} />
             {t.label}
           </Link>
         );
