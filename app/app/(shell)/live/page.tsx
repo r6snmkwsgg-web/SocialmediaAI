@@ -21,8 +21,10 @@ import { channelNames, unitsOf } from "@/lib/shorts/channels";
 import { account, type Goal } from "@/lib/server/account";
 import { channelsOf } from "@/lib/server/channels";
 import { clipsAllowed, clipsOf, type LiveClips } from "@/lib/server/clips";
+import { asUser } from "@/lib/server/db";
 import { configured } from "@/lib/server/env";
 import { lastLiveOf, liveSettingsOf, overlayKeyOf, sessionsOf, tiktokUsernamesOf, type LiveSession } from "@/lib/server/live";
+import { nichesOf } from "@/lib/server/niches";
 import { youtubeLiveOf } from "@/lib/server/ytlive";
 import { checkLive, checkYouTubeLive, newKey, pickLiveChannel, recheckLive, recheckYouTubeLive, saveLive, saveNames } from "./actions";
 
@@ -48,9 +50,10 @@ const link = "text-fg underline decoration-signal decoration-2 underline-offset-
 
 /**
  * Why none of their rounds can become a Short right now, the first reason that applies, or null when they can: `shorts` is
- * whether any of their channels gets Shorts. The game picked is the form's to say.
+ * whether any of their channels gets Shorts, and `picked` whether every one that does is about one thing, since a round only
+ * goes to one that gets a mix of everything. The game picked is the form's to say.
  */
-function clipsNote(checking: boolean, accounts: string[], noUsername: boolean, goal: Goal | null, shorts: boolean): React.ReactNode {
+function clipsNote(checking: boolean, accounts: string[], noUsername: boolean, goal: Goal | null, shorts: boolean, picked: boolean): React.ReactNode {
   if (!checking) return "Hookline can't check TikTok usernames yet, so no LIVE counts as yours and no round becomes a Short for now.";
   if (!accounts.length && noUsername) {
     return <><a href={`/api/connect/tiktok?next=${encodeURIComponent("/app/live")}`} className={link}>Connect TikTok again</a> and allow your profile, so Hookline can tell a LIVE is yours.</>;
@@ -60,6 +63,7 @@ function clipsNote(checking: boolean, accounts: string[], noUsername: boolean, g
     return <>Your Shorts are off while Hookline is set to LIVE games only. Set what you use Hookline for to Both in <Link href="/app/settings" className={link}>Settings</Link> to get your best rounds as Shorts.</>;
   }
   if (!shorts) return <>Shorts are off for every channel, so no round becomes a Short. Switch one on in <Link href="/app/settings" className={link}>Settings</Link>.</>;
+  if (picked) return "Rounds only become Shorts on a channel that gets a mix of everything, and every channel that gets Shorts is about one thing, so no round becomes a Short.";
   return null;
 }
 
@@ -191,10 +195,14 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
   const connectYouTube = `/api/connect/youtube?next=${encodeURIComponent("/app/live?on=youtube")}`;
   const at = (users: string[]) => users.map((u) => `@${u}`).join(", ");
   // what came of each LIVE's rounds: the column shows while rounds can become Shorts, and while a LIVE here has one. With every
-  // channel's Shorts off, no morning makes any, so none can
+  // channel's Shorts off, no morning makes any, so none can. A morning gives a round to the first channel getting Shorts that
+  // isn't about one thing (generate.ts), so with every one about one thing, none can either
   const clipped = await clipsOf(me.id, sessions.map((s) => s.id));
-  const shorts = unitsOf(channels, me.plan.channels).length > 0;
-  const clipsOn = clipsAllowed(settings, me.profile.goal, checking) && shorts;
+  const units = unitsOf(channels, me.plan.channels);
+  const shorts = units.length > 0;
+  const niches = await asUser(me.id, (tx) => nichesOf(tx, me.id));
+  const picked = shorts && units.every((id) => niches.get(id));
+  const clipsOn = clipsAllowed(settings, me.profile.goal, checking) && shorts && !picked;
   const shortsColumn = clipsOn || [...clipped.values()].some((c) => c.shortId);
   // with YouTube LIVEs listed, each row says what its gifts were
   const onYouTube = sessions.some((s) => s.platform === "youtube");
@@ -296,7 +304,7 @@ export default async function Live({ searchParams }: { searchParams: Search }) {
           abilities={LIVE_ABILITIES.map((id) => ({ id, name: ABILITIES[id].name, color: ABILITIES[id].color, line: ABILITIES[id].line }))}
           allowed={{ games: me.plan.games, customMenus: me.plan.customMenus, planName: me.plan.name }}
           upsell={sellLive(me.profile.liveCheck, me.profile.ytLiveCheck, youtubeOn)}
-          clips={{ shorts: me.plan.shorts, note: clipsNote(checking, accounts, noUsername, me.profile.goal, shorts) }}
+          clips={{ shorts: me.plan.shorts, note: clipsNote(checking, accounts, noUsername, me.profile.goal, shorts, picked) }}
           action={saveLive}
         />
       </Card>

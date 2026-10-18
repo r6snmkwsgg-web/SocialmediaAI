@@ -5,7 +5,7 @@ export const metadata: Metadata = { title: "Privacy", description: "What Hooklin
 
 export default function Privacy() {
   return (
-    <LegalPage title="Privacy" updated="October 17, 2026">
+    <LegalPage title="Privacy" updated="October 18, 2026">
       <p>This page says what Hookline keeps about you, why, who else sees it, and how to delete it. If anything here is unclear, write to <Contact />.</p>
 
       <h2>What we keep</h2>
