@@ -8,8 +8,9 @@
  * Needs the app running with HOOKLINE_DEV_LOGIN=1 (it signs in as a new
  * test account), and a database. The app's screens show that account's
  * real state: a new account's empty states, its first Shorts, and so on.
- * With SCREENS_ADMIN set to an email in ADMIN_EMAILS, it signs in as that
- * too and takes the admin page.
+ * A second new account picks Ball League for its Shorts, so the league
+ * page shows its first real matches. With SCREENS_ADMIN set to an email in
+ * ADMIN_EMAILS, it signs in as that too and takes the admin page.
  */
 import { mkdirSync } from "node:fs";
 import { chromium, type Browser, type BrowserContext, type Page } from "playwright";
@@ -43,6 +44,17 @@ async function shoot(page: Page, name: string, full = true) {
   console.log(`${OUT}/${name}.jpg`);
 }
 
+/** Scrolls down the page and back up, so what loads as it comes into view (the demo phones) is there for a full-page shot. */
+async function scrollThrough(page: Page) {
+  const height = await page.evaluate(() => document.body.scrollHeight);
+  for (let y = 0; y < height; y += 700) {
+    await page.evaluate((top) => window.scrollTo(0, top), y);
+    await page.waitForTimeout(250);
+  }
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await settle(page, 2500);
+}
+
 async function site(browser: Browser) {
   for (const [size, tag] of [[DESKTOP, "desktop"], [PHONE, "phone"]] as const) {
     const ctx = await browser.newContext({ viewport: size, deviceScaleFactor: tag === "phone" ? 2 : 1 });
@@ -50,13 +62,14 @@ async function site(browser: Browser) {
     for (const [path, name] of [["/", "home"], ["/shorts", "shorts"], ["/live", "live"], ["/trends", "trends"], ["/login", "login"], ["/privacy", "privacy"], ["/terms", "terms"]]) {
       await page.goto(BASE + path, { waitUntil: "domcontentloaded" });
       await settle(page, 3500);
+      await scrollThrough(page);
       await shoot(page, `${tag}-site-${name}`);
     }
     await ctx.close();
   }
 }
 
-async function signUp(ctx: BrowserContext): Promise<Page> {
+async function signUp(ctx: BrowserContext, shots = true): Promise<Page> {
   const page = await ctx.newPage();
   await page.goto(`${BASE}/login`, { waitUntil: "domcontentloaded" });
   await page.fill("#dev-email", `screens-${Date.now()}@hookline.local`);
@@ -64,12 +77,12 @@ async function signUp(ctx: BrowserContext): Promise<Page> {
   await page.waitForURL(/welcome/);
   await page.waitForSelector("button[value=both]");
   await settle(page, 1000);
-  await shoot(page, "desktop-app-welcome", false);
+  if (shots) await shoot(page, "desktop-app-welcome", false);
   await page.click("button[value=both]");
   await page.waitForURL(/step=connect/);
   await page.waitForSelector("text=Skip for now");
   await settle(page, 1000);
-  await shoot(page, "desktop-app-welcome-connect", false);
+  if (shots) await shoot(page, "desktop-app-welcome-connect", false);
   await page.click("text=Skip for now");
   await page.waitForURL((u) => u.pathname === "/app");
   return page;
@@ -147,6 +160,31 @@ async function app(browser: Browser) {
   }
 }
 
+/** A new account that picks Ball League before its first Shorts: the league page with the season the morning started. */
+async function league(browser: Browser) {
+  const ctx = await browser.newContext({ viewport: DESKTOP });
+  ctx.setDefaultTimeout(90_000);
+  const page = await signUp(ctx, false);
+  await page.goto(`${BASE}/app/settings`, { waitUntil: "domcontentloaded" });
+  const pick = page.locator('input[name="niche"][value="league"]').first();
+  if (!(await pick.count())) return console.warn("league: no Ball League in Settings' picker");
+  await pick.check();
+  await pick.locator("xpath=ancestor::form").locator('button[type="submit"]').first().click();
+  await settle(page, 2500);
+  // the queue's first visit makes the morning's Shorts, which starts the season
+  await page.goto(`${BASE}/app/shorts`, { waitUntil: "domcontentloaded" });
+  await settle(page, 6000);
+  await page.goto(`${BASE}/app/shorts/league`, { waitUntil: "domcontentloaded" });
+  await settle(page, 3500);
+  await shoot(page, "desktop-app-shorts-league");
+  const phone = await browser.newContext({ viewport: PHONE, deviceScaleFactor: 2, storageState: await ctx.storageState() });
+  const pp = await phone.newPage();
+  await pp.goto(`${BASE}/app/shorts/league`, { waitUntil: "domcontentloaded" });
+  await settle(pp, 3500);
+  await shoot(pp, "phone-app-shorts-league", false);
+  await Promise.all([ctx.close(), phone.close()]);
+}
+
 /** Each game at the size it's streamed: counting down, mid-round, and the vote between rounds. */
 async function games(browser: Browser) {
   const ctx = await browser.newContext({ viewport: { width: 1080, height: 1920 } });
@@ -170,6 +208,11 @@ async function games(browser: Browser) {
     }
     await page.close();
   }
+  // the same game on a YouTube stream, where Super Chats take the gifts' place
+  const yt = await ctx.newPage();
+  await yt.goto(`${BASE}/live/play?src=youtube&demo=1&clean=1&game=battle`, { waitUntil: "domcontentloaded" });
+  await settle(yt, 11500);
+  await shoot(yt, "live-youtube-battle-playing", false);
   await ctx.close();
 }
 
@@ -179,6 +222,7 @@ async function main() {
   try {
     if (wanted("site")) await site(browser);
     if (wanted("app")) await app(browser);
+    if (wanted("app")) await league(browser);
     if (wanted("games")) await games(browser);
   } finally {
     await browser.close();
