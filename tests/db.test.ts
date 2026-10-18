@@ -1653,9 +1653,9 @@ describe.skipIf(!safe)("the database", () => {
       // TikTok choices for a Short that hasn't gone yet, and one that has
       const choices = db.sql().json({ privacy: "SELF_ONLY", comment: false, duet: false, stitch: false, disclose: false, yourBrand: false, branded: false });
       const [waiting, sent] = await db.admin((tx) => tx<{ id: string }[]>`
-        insert into public.videos (user_id, channel_id, format, params, key, title, status, tiktok_post, tiktok_at, tiktok_publish_id)
-        values (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Waits for TikTok', 'ready', ${choices}, now() + interval '2 hours', null),
-          (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Went to TikTok', 'posted', ${choices}, now() - interval '2 hours', 'pub-w2ch')
+        insert into public.videos (user_id, channel_id, format, params, key, title, status, tiktok_post, tiktok_at, tiktok_publish_id, created_at)
+        values (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Waits for TikTok', 'ready', ${choices}, now() + interval '2 hours', null, ${now}),
+          (${d.user}, ${y}, 'wyr', '{}', 'wyr', 'Went to TikTok', 'posted', ${choices}, now() - interval '2 hours', 'pub-w2ch', ${now})
         returning id`);
 
       // nobody signed in deletes a channel, even their own, and nobody else disconnects it
