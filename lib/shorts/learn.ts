@@ -126,6 +126,49 @@ export function odds(weights: Weight[], allowed: readonly FormatId[] = FORMAT_ID
 }
 
 /**
+ * How far each format's odds lean toward what's rising on YouTube Shorts
+ * right now (Trends' "Formats right now"): a typical rising Short's views an
+ * hour in that format against the middle allowed format's, square-rooted so
+ * a trend nudges the day rather than takes it over, and kept between 0.8
+ * and 1.5. A format with fewer than TREND_MIN rising Shorts in the window,
+ * or with no trends at all, stays at 1: a couple of videos isn't a trend.
+ * The channel's own results still decide most of it (`odds`); this only
+ * tilts which of its formats come up today.
+ */
+export const TREND_MIN = 3;
+export function trendLean(
+  growth: Partial<Record<FormatId, { typical: number | null; videos: number }>>,
+  allowed: readonly FormatId[] = FORMAT_IDS
+): Record<FormatId, number> {
+  const out = Object.fromEntries(allowed.map((f) => [f, 1])) as Record<FormatId, number>;
+  const rated = allowed
+    .map((f) => ({ f, g: growth[f] }))
+    .filter((x): x is { f: FormatId; g: { typical: number; videos: number } } => !!x.g && x.g.typical !== null && x.g.typical > 0 && x.g.videos >= TREND_MIN);
+  if (rated.length < 2) return out;
+  const mid = median(rated.map((x) => x.g.typical));
+  if (!mid) return out;
+  for (const { f, g } of rated) out[f] = Math.min(1.5, Math.max(0.8, Math.sqrt(g.typical / mid)));
+  return out;
+}
+
+/** The day's odds with the trend lean applied, still never below a fifth of the best and still adding up to 1. */
+export function withTrends(o: Record<FormatId, number>, lean: Partial<Record<FormatId, number>>): Record<FormatId, number> {
+  const ids = Object.keys(o) as FormatId[];
+  const raw = Object.fromEntries(ids.map((f) => [f, o[f] * (lean[f] ?? 1)])) as Record<FormatId, number>;
+  const best = Math.max(...Object.values(raw));
+  for (const f of ids) raw[f] = Math.max(raw[f], best / 5);
+  const sum = Object.values(raw).reduce((a, b) => a + b, 0);
+  for (const f of ids) raw[f] /= sum;
+  return raw;
+}
+
+/** In plain words, for the queue, when a format is coming up more because it's rising: null when the lean is too small to mention. */
+export function trendReason(plural: string, lean: number | undefined): string | null {
+  if (!lean || lean < 1.15) return null;
+  return `${plural[0].toUpperCase()}${plural.slice(1)} are rising on YouTube Shorts right now, so you get a few more of them while it lasts`;
+}
+
+/**
  * The formats a channel's Shorts are drawn from: its niche's, once it has
  * picked one, and otherwise every format. Text stories are in no niche,
  * and off until the creator turns them on: templated scrolling text is

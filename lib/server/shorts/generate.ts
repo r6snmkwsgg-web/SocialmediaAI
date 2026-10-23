@@ -8,7 +8,7 @@ import { bankQuestions } from "../../shorts/formats/quiz";
 import { STORIES } from "../../shorts/formats/texts";
 import { bankPairs } from "../../shorts/formats/wyr";
 import { kindName, times as timesUsual } from "../../shorts/insights";
-import { chooseFormats, dryNote, formatCap, formatReason, formatsFor, kindScore, odds, standout } from "../../shorts/learn";
+import { chooseFormats, dryNote, formatCap, formatReason, formatsFor, kindScore, odds, standout, trendLean, trendReason, withTrends } from "../../shorts/learn";
 import { nicheById, writerNote, type ChannelNiche, type NicheId } from "../../shorts/niches";
 import { atLocal, EXPLORE, localParts, planSlots, validTimezone, whenLine } from "../../shorts/times";
 import type { Candidate, Context, Ending, FormatId, ShortFormat, Spec } from "../../shorts/types";
@@ -18,6 +18,7 @@ import { admin, asUser, withUserLock, type Tx } from "../db";
 import { configured } from "../env";
 import { nichesOf } from "../niches";
 import { notify } from "../notify";
+import { formatGrowth } from "../trends";
 import { hourResults } from "./hours";
 import { claude, freshPairs, freshQuestions, freshStories } from "./fresh";
 import { nextMatches, playMatches, saveMatches, stopIfLeft, waitingFor } from "./league";
@@ -255,9 +256,15 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
   if (want <= 0) return { made: 0, short: "allowance", note: null, retry: new Date(Math.min(room.frees.getTime(), tomorrow.getTime())), channels };
 
   // what this channel has had, what it's learned and when its Shorts did best: each channel's own
-  const { channel, history, weights, results } = await asUser(userId, async (tx) => {
+  const { channel, history, weights, results, growth } = await asUser(userId, async (tx) => {
     const channel = await unitChannel(tx, unit);
-    return { channel, history: await pastOf(tx, unit), weights: await weightsFor(tx, unit.channelId), results: await hourResults(tx, tz, unit.channelId) };
+    return {
+      channel,
+      history: await pastOf(tx, unit),
+      weights: await weightsFor(tx, unit.channelId),
+      results: await hourResults(tx, tz, unit.channelId),
+      growth: await formatGrowth(tx),
+    };
   });
   if (unit.channelId && !channel) return { made: 0, short: "allowance", note: null, retry: tomorrow, channels };
   // what it's about: its channel's niche, or the account's own while it has no channel; and since when its note has said why
@@ -275,7 +282,9 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
   if (niche?.id === "league") return makeLeague(unit, { origin: opts.origin, want, plan, tz, now, tomorrow, channels, history, results, rand, noteSince });
   await stopIfLeft(unit);
   const allowed = opts.like ? [opts.like] : on;
-  const o = odds(weights, allowed);
+  // the channel's own results first, then a lean toward what's rising on YouTube Shorts right now
+  const lean = trendLean(growth, allowed);
+  const o = withTrends(odds(weights, allowed), lean);
   // a round from their LIVE first, on a day's own run (never a replacement or "make one like this") for the account's first
   // channel that hasn't picked a niche, since a niche's Shorts are only about it: with one in hand, one fewer is made. Anything
   // going wrong here only means no round today
@@ -340,7 +349,8 @@ async function makeDay(userId: string, opts: MakeOpts, rounds: boolean): Promise
     const s = standout(c.key, weights);
     const name = s && kindName(s.name);
     const kindWhy = s && name ? [`${name} have averaged ${timesUsual(s.score)} your usual first day (${s.samples} posted)`] : [];
-    made.push({ c, formatWhy: [formatReason(formatPlural(c), weights.find((w) => w.kind === "format" && w.name === c.format)), ...kindWhy] });
+    const rising = opts.like ? null : trendReason(formatPlural(c), (lean as Partial<Record<string, number>>)[c.format]);
+    made.push({ c, formatWhy: [formatReason(formatPlural(c), weights.find((w) => w.kind === "format" && w.name === c.format)), ...(rising ? [rising] : []), ...kindWhy] });
   }
   // the day's Shorts: the LIVE round first, so it goes out soonest after its LIVE, then the made ones
   const day: { c: Candidate; formatWhy: string[]; round?: TakenClip }[] = [...(clip ? [clip] : []), ...made];

@@ -4,7 +4,7 @@ import { lift, median } from "../shorts/learn";
 import { quotaResetsAt } from "../shorts/quota";
 import { localParts, validTimezone } from "../shorts/times";
 import type { FormatId } from "../shorts/types";
-import { admin, asUser } from "./db";
+import { admin, asUser, type Tx } from "./db";
 import { configured } from "./env";
 import { QuotaWait } from "./quota";
 import { YouTubeError, youtubeGet } from "./youtube";
@@ -212,18 +212,30 @@ export async function rising(userId: string, niches: string[], limit = 24): Prom
 
 export type Leader = { format: string; typical: number | null; videos: number; mine: { score: number; samples: number } | null };
 
+/**
+ * Each of Hookline's formats on YouTube Shorts over the last three days:
+ * how a typical rising Short in it is growing (views an hour) and how many
+ * rising Shorts that's from. Trends' "Formats right now" shows it, and the
+ * morning run leans toward the rising ones (`trendLean`). Every signed-in
+ * user can read the trends, so it runs in their own transaction.
+ */
+export async function formatGrowth(tx: Tx): Promise<Partial<Record<FormatId, { typical: number | null; videos: number }>>> {
+  const t = await tx<{ format: string; views_per_hour: number }[]>`select format, views_per_hour from public.trend_videos where published_at > now() - interval '72 hours'`;
+  const by = new Map<string, number[]>();
+  for (const r of t) by.set(r.format, [...(by.get(r.format) ?? []), r.views_per_hour]);
+  return Object.fromEntries([...by].map(([f, v]) => [f, { typical: middle(v), videos: v.length }]));
+}
+
 /** Each format: how a typical rising Short in it is growing on YouTube now, and how it does on their channel. `updated` is the latest check of any niche. */
 export async function leaderboard(userId: string): Promise<{ rows: Leader[]; updated: Date | null }> {
   return asUser(userId, async (tx) => {
-    const t = await tx<{ format: string; views_per_hour: number }[]>`select format, views_per_hour from public.trend_videos where published_at > now() - interval '72 hours'`;
+    const growth = await formatGrowth(tx);
     const w = await tx<{ name: string; score: number; samples: number }[]>`select name, score, samples from public.weights where kind = 'format'`;
     const [u] = await tx<{ at: Date | null }[]>`select max(checked_at) as at from public.trend_checks`;
-    const by = new Map<string, number[]>();
-    for (const r of t) by.set(r.format, [...(by.get(r.format) ?? []), r.views_per_hour]);
-    const formats: string[] = ["battle", "quiz", "wyr", "texts", "ranking", "race"];
+    const formats: FormatId[] = ["battle", "quiz", "wyr", "texts", "ranking", "race"];
     const rows = formats.map((f) => {
       const mine = w.find((x) => x.name === f);
-      return { format: f, typical: middle(by.get(f) ?? []), videos: by.get(f)?.length ?? 0, mine: mine ? { score: mine.score, samples: mine.samples } : null };
+      return { format: f, typical: growth[f]?.typical ?? null, videos: growth[f]?.videos ?? 0, mine: mine ? { score: mine.score, samples: mine.samples } : null };
     });
     rows.sort((a, b) => (b.typical ?? -1) - (a.typical ?? -1));
     return { rows, updated: u?.at ?? null };
