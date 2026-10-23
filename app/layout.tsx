@@ -10,7 +10,7 @@ const martian = Martian_Mono({ subsets: ["latin"], variable: "--font-martian", d
 
 export const metadata: Metadata = {
   metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000"),
-  title: { default: "Hookline: content that makes itself, lives that pay", template: "%s · Hookline" },
+  title: { default: "Hookline: your channel runs itself", template: "%s · Hookline" },
   description: "Shorts made and posted for you, games your TikTok LIVE chat plays with gifts, what's rising on Shorts, and what you earned, in one place.",
   openGraph: { type: "website", siteName: "Hookline", images: ["/og/home.png"] },
   twitter: { card: "summary_large_image" },

@@ -10,9 +10,9 @@ import { DemoLabel } from "./chrome";
 
 const ROWS = [
   { format: "Quiz", title: "Name these 5 capitals in 3 seconds each", rate: "8.4K", age: "6h" },
-  { format: "Ball battle", title: "Spike vs Sword: who wins?", rate: "6.1K", age: "11h" },
-  { format: "Bar chart race", title: "The 10 biggest economies in Asia, 1990 to 2023", rate: "3.9K", age: "19h" },
-  { format: "Would you rather", title: "Would you rather: 5 choices you can't skip", rate: "2.7K", age: "1d" },
+  { format: "Bar chart race", title: "The 10 biggest economies in Asia, 1990 to 2023", rate: "6.1K", age: "11h" },
+  { format: "Would you rather", title: "Would you rather: 5 choices you can't skip", rate: "3.9K", age: "19h" },
+  { format: "Ball battle", title: "Spike vs Sword: who wins?", rate: "2.7K", age: "1d" },
 ];
 
 export function ExampleTrends() {

@@ -37,14 +37,14 @@ export default async function Login({ searchParams }: { searchParams: Search }) 
         </Link>
         <div className="flex flex-col gap-6">
           <h1 className="font-display text-[clamp(3.2rem,7vw,6.4rem)] uppercase leading-[0.9] tracking-[0.01em]">
-            Content that makes itself.<br />
-            <span className="text-signal">Lives that pay.</span>
+            Your channel<br />
+            <span className="text-signal">runs itself.</span>
           </h1>
           <ul className="grid max-w-md grid-cols-2 gap-x-6 gap-y-3 font-mono text-[11px] uppercase tracking-[0.16em] text-paper/70">
-            <li><span className="text-signal">01</span> Shorts made for you</li>
-            <li><span className="text-signal">02</span> Games for your LIVE</li>
-            <li><span className="text-signal">03</span> What&rsquo;s taking off</li>
-            <li><span className="text-signal">04</span> What you earned</li>
+            <li><span className="text-signal">01</span> Follows the trends</li>
+            <li><span className="text-signal">02</span> Makes your Shorts</li>
+            <li><span className="text-signal">03</span> Posts it for you</li>
+            <li><span className="text-signal">04</span> Runs your LIVE</li>
           </ul>
         </div>
         <p className="hidden font-mono text-[10px] uppercase tracking-[0.18em] text-dim lg:block">You approve everything before it posts.</p>

@@ -15,9 +15,9 @@ import { frames } from "../lib/shorts/timing";
 import type { OgProps } from "../remotion/Og";
 
 async function main() {
-  const [battle, quiz, , , , race] = demoShorts();
+  const [battle, quiz, , , ranking, race] = demoShorts();
   const cards: Record<string, OgProps> = {
-    home: { kicker: "Shorts · LIVE games · Trends · Earnings", lines: ["Content that makes itself.", "Lives that pay."], spec: battle.spec, frame: Math.round(frames(battle.spec) * 0.45) },
+    home: { kicker: "Trends · Shorts · Posting · LIVE", lines: ["Your channel", "runs itself."], spec: ranking.spec, frame: Math.round(frames(ranking.spec) * 0.7) },
     shorts: { kicker: "Shorts", lines: ["You swipe.", "It posts."], spec: quiz.spec, frame: 45 + 141 + 15 + 90 + 10 },
     live: { kicker: "For TikTok LIVE", lines: ["Your chat plays.", "Gifts do the rest."], spec: battle.spec, frame: Math.round(frames(battle.spec) * 0.7) },
     trends: { kicker: "Trends", lines: ["Catch it while", "it's rising."], spec: race.spec, frame: Math.round(frames(race.spec) * 0.6) },

@@ -35,7 +35,7 @@ export const RemotionRoot: React.FC = () => (
       fps={FPS}
       // long enough that the frozen frame inside isn't clipped to the card's own length
       durationInFrames={60 * FPS}
-      defaultProps={{ kicker: "Hookline", lines: ["Content that makes itself.", "Lives that pay."], spec: { format: "battle", params: { a: "fibonacci", b: "spike", seed: 1 } }, frame: 300 } satisfies OgProps}
+      defaultProps={{ kicker: "Hookline", lines: ["Your channel", "runs itself."], spec: { format: "battle", params: { a: "fibonacci", b: "spike", seed: 1 } }, frame: 300 } satisfies OgProps}
     />
   </>
 );

@@ -22,7 +22,7 @@ export default function TrendsSite() {
     <main className="overflow-x-clip">
       <SiteHeader current="/trends" />
       <section>
-        <div className="mx-auto grid max-w-7xl items-center gap-14 px-4 pb-20 pt-14 sm:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:pb-28 lg:pt-20">
+        <div className="mx-auto grid max-w-7xl grid-cols-[minmax(0,1fr)] items-center gap-14 px-4 pb-20 pt-14 sm:px-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:pb-28 lg:pt-20">
           <div className="flex flex-col gap-7">
             <Eyebrow>Trends</Eyebrow>
             <h1 className="font-display text-[clamp(3.6rem,9vw,7.6rem)] uppercase leading-[0.9]">
