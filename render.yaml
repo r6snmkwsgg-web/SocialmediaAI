@@ -1,0 +1,24 @@
+# The render worker on Render (NEXT.md, section 7). New, Blueprint, pick this
+# repo, and Render builds worker/Dockerfile and starts `pnpm worker`.
+#
+# Its settings come from the environment group `hookline-worker`, the same
+# values as Vercel, TOKEN_KEY included. Make the group before the Blueprint
+# (Render, Environment Groups), since nothing secret goes in this file.
+#
+# Deploys are manual: a worker on old code fails against new tables, so an
+# update with a migration goes suspend, migrate, deploy the app and the worker
+# together, resume (NEXT.md, section 7, step 5).
+services:
+  - type: worker
+    name: hookline-worker
+    runtime: docker
+    dockerfilePath: ./worker/Dockerfile
+    dockerContext: .
+    branch: main
+    autoDeployTrigger: "off"
+    # 1 CPU, 2 GB: rendering needs at least 2 GB
+    plan: 1c-2g
+    # next to Vercel's default region (iad1) and Supabase's us-east-1
+    region: virginia
+    envVars:
+      - fromGroup: hookline-worker

@@ -14,6 +14,7 @@ CLIs installed in this container: vercel 65.2.0, supabase 2.122.0, stripe 1.55.1
 
 ## 2. What's already connected
 
+- [ ] Vercel CLI logged in (two device links expired unused; reply "ready" for a fresh one)
 - [ ] Vercel CLI linked to project `socialmedia-ai`
 - [ ] Env var names listed and compared with `.env.example`
 
@@ -58,7 +59,9 @@ CLIs installed in this container: vercel 65.2.0, supabase 2.122.0, stripe 1.55.1
 
 ## 7. Worker on Render (NEXT.md 7)
 
-- [ ] `render.yaml` added
+- [x] `render.yaml` added (worker, Docker, 1c-2g, Virginia, manual deploys, settings from env group `hookline-worker`)
+- [ ] `render.yaml` validated with `render blueprints validate` (needs the Render login)
+- [ ] Env group `hookline-worker` made through Render's API, values straight from `.env.local`
 - [ ] Worker created on Render (paid instance, your call)
 - [ ] Worker env vars set
 - [ ] Logs say "ready"
