@@ -81,7 +81,7 @@ export async function newKey() {
 /** Their answers to "can you earn gifts on a TikTok LIVE?": a box left unticked is a no. */
 export async function checkLive(form: FormData) {
   const me = await requireUser();
-  const c: LiveCheck = { adult: form.get("adult") === "on", canGoLive: form.get("canGoLive") === "on", computer: form.get("computer") === "on" };
+  const c: LiveCheck = { canGoLive: form.get("canGoLive") === "on", computer: form.get("computer") === "on" };
   await asUser(me.id, (tx) => tx`update public.profiles set live_check = ${tx.json(c)} where id = ${me.id}`);
   revalidatePath("/app", "layout");
   redirect("/app/live#go-live");
@@ -99,7 +99,7 @@ export async function recheckLive() {
 export async function checkYouTubeLive(form: FormData) {
   const me = await requireUser();
   const on = (name: string) => form.get(name) === "on";
-  const c: YtLiveCheck = { adult: on("adult"), canGoLive: on("canGoLive"), computer: on("computer"), superChat: on("superChat") };
+  const c: YtLiveCheck = { canGoLive: on("canGoLive"), computer: on("computer"), superChat: on("superChat") };
   await asUser(me.id, (tx) => tx`update public.profiles set yt_live_check = ${tx.json(c)} where id = ${me.id}`);
   revalidatePath("/app", "layout");
   redirect("/app/live?on=youtube#go-live");

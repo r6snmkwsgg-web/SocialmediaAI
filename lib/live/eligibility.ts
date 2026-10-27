@@ -7,7 +7,9 @@ import { z } from "zod";
  * LIVE through TikTok LIVE Studio or OBS; the phone app can't show them.
  * Hookline asks rather than checks, and when someone can't earn gifts yet
  * it says so plainly and points them at Shorts instead of selling them
- * games they can't make money with.
+ * games they can't make money with. Age isn't asked here: the terms
+ * everyone agrees to after signing up say the LIVE games are for 18 and
+ * over, and TikTok and YouTube hold to their own age rules on gifts.
  *
  * YouTube Live is asked the same way, with its own questions. The games
  * run on Super Chats there, which YouTube gives only to people 18 and over
@@ -17,8 +19,6 @@ import { z } from "zod";
  */
 
 export const liveCheckSchema = z.object({
-  /** 18 or older */
-  adult: z.boolean(),
   /** their TikTok can go LIVE already (usually from 1,000 followers) */
   canGoLive: z.boolean(),
   /** they'll go LIVE from a computer, with LIVE Studio or OBS */
@@ -33,8 +33,6 @@ export function parseLiveCheck(raw: unknown): LiveCheck | null {
 }
 
 export const ytLiveCheckSchema = z.object({
-  /** 18 or older */
-  adult: z.boolean(),
   /** their channel can go live: verified, with no live streaming restrictions */
   canGoLive: z.boolean(),
   /** they'll go live from a computer, with OBS or another streaming app */
@@ -56,7 +54,6 @@ export type LiveFit = { asked: false } | { asked: true; ok: boolean; reasons: st
 export function liveFit(c: LiveCheck | null): LiveFit {
   if (!c) return { asked: false };
   const reasons: string[] = [];
-  if (!c.adult) reasons.push("TikTok only lets people 18 and over go LIVE and get gifts.");
   if (!c.canGoLive) reasons.push("TikTok usually opens up LIVE once an account has about 1,000 followers.");
   if (!c.computer) reasons.push("The games go on your LIVE through TikTok LIVE Studio or OBS on a computer. The phone app can't show them.");
   return { asked: true, ok: reasons.length === 0, reasons };
@@ -66,11 +63,9 @@ export function liveFit(c: LiveCheck | null): LiveFit {
 export function ytLiveFit(c: YtLiveCheck | null): LiveFit {
   if (!c) return { asked: false };
   const reasons: string[] = [];
-  if (!c.adult) reasons.push("YouTube only lets people 18 and over get Super Chats, and the games run on them.");
   if (!c.canGoLive) reasons.push("Your channel needs live streaming switched on first. YouTube asks for a verified channel, and the first time it can take a day.");
   if (!c.computer) reasons.push("The games go on your stream through OBS or another app on a computer. The YouTube phone app can't show them.");
-  // Super Chat is only for 18 and over, so someone younger isn't told to switch it on
-  if (!c.superChat && c.adult) reasons.push("The games run on Super Chats, which come with the YouTube Partner Program. Switch Super Chat on for your channel first.");
+  if (!c.superChat) reasons.push("The games run on Super Chats, which come with the YouTube Partner Program. Switch Super Chat on for your channel first.");
   return { asked: true, ok: reasons.length === 0, reasons };
 }
 

@@ -331,55 +331,54 @@ describe("whose LIVE a session heard", () => {
 });
 
 describe("who can earn from the LIVE games", () => {
-  it("is ready only with all three", () => {
+  it("is ready only with both: a TikTok that can go LIVE, and a computer. Age is the terms' to say, not a question here", () => {
     expect(liveFit(null)).toEqual({ asked: false });
-    expect(liveFit({ adult: true, canGoLive: true, computer: true })).toEqual({ asked: true, ok: true, reasons: [] });
-    const teen = liveFit({ adult: false, canGoLive: false, computer: true });
-    expect(teen).toMatchObject({ asked: true, ok: false });
-    expect(teen.asked && teen.reasons).toHaveLength(2);
-    expect(teen.asked && teen.reasons[0]).toMatch(/18/);
-    expect(liveFit({ adult: true, canGoLive: true, computer: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/computer/)] });
+    expect(liveFit({ canGoLive: true, computer: true })).toEqual({ asked: true, ok: true, reasons: [] });
+    const neither = liveFit({ canGoLive: false, computer: false });
+    expect(neither).toMatchObject({ asked: true, ok: false });
+    expect(neither.asked && neither.reasons).toHaveLength(2);
+    expect(neither.asked && neither.reasons.join(" ")).not.toMatch(/18/);
+    expect(liveFit({ canGoLive: true, computer: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/computer/)] });
   });
 
   it("offers the paid LIVE games only to someone who can earn with them, or hasn't said", () => {
     expect(sellLive(null)).toBe(true);
-    expect(sellLive({ adult: true, canGoLive: true, computer: true })).toBe(true);
-    expect(sellLive({ adult: false, canGoLive: true, computer: true })).toBe(false);
+    expect(sellLive({ canGoLive: true, computer: true })).toBe(true);
+    expect(sellLive({ canGoLive: false, computer: true })).toBe(false);
   });
 
   it("says what TikTok needs for gifts, and never what anything will earn", () => {
-    const answers = [null, { adult: true, canGoLive: true, computer: true }, { adult: false, canGoLive: false, computer: true }];
+    const answers = [null, { canGoLive: true, computer: true }, { canGoLive: false, computer: true }];
     for (const c of answers) expect(giftsLine(c)).not.toMatch(/\bwill\b|earn|income|money|—/i);
     expect(giftsLine(null)).toMatch(/18 or older/);
     expect(giftsLine(answers[2])).toMatch(/can't get gifts on a TikTok LIVE yet/);
   });
 
   it("reads saved answers, and nothing else", () => {
-    expect(parseLiveCheck({ adult: true, canGoLive: false, computer: true })).toEqual({ adult: true, canGoLive: false, computer: true });
-    expect(parseLiveCheck({ adult: "yes" })).toBeNull();
+    expect(parseLiveCheck({ canGoLive: false, computer: true })).toEqual({ canGoLive: false, computer: true });
+    // an answer saved when age was still asked reads without it
+    expect(parseLiveCheck({ adult: false, canGoLive: true, computer: true })).toEqual({ canGoLive: true, computer: true });
+    expect(parseLiveCheck({ canGoLive: "yes" })).toBeNull();
     expect(parseLiveCheck(null)).toBeNull();
   });
 });
 
 describe("who can play on YouTube Live", () => {
-  const all: YtLiveCheck = { adult: true, canGoLive: true, computer: true, superChat: true };
+  const all: YtLiveCheck = { canGoLive: true, computer: true, superChat: true };
 
-  it("lets everyone with all four play, and says why not, in order: under 18, a channel that can't go live, no computer, no Super Chat", () => {
+  it("lets everyone with all three play, and says why not, in order: a channel that can't go live, no computer, no Super Chat", () => {
     expect(ytLiveFit(null)).toEqual({ asked: false });
     expect(ytLiveFit(all)).toEqual({ asked: true, ok: true, reasons: [] });
     const starts = (f: ReturnType<typeof ytLiveFit>) => f.asked && f.reasons.map((r) => r.split(" ").slice(0, 3).join(" "));
-    expect(starts(ytLiveFit({ adult: true, canGoLive: false, computer: false, superChat: false }))).toEqual(["Your channel needs", "The games go", "The games run"]);
-    // Super Chat is only for 18 and over, so someone younger is never told to switch it on
-    expect(starts(ytLiveFit({ adult: false, canGoLive: false, computer: false, superChat: false }))).toEqual(["YouTube only lets", "Your channel needs", "The games go"]);
-    expect(ytLiveFit({ ...all, adult: false })).toMatchObject({ ok: false, reasons: ["YouTube only lets people 18 and over get Super Chats, and the games run on them."] });
+    expect(starts(ytLiveFit({ canGoLive: false, computer: false, superChat: false }))).toEqual(["Your channel needs", "The games go", "The games run"]);
     expect(ytLiveFit({ ...all, canGoLive: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/verified channel/)] });
     expect(ytLiveFit({ ...all, computer: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/OBS/)] });
     expect(ytLiveFit({ ...all, superChat: false })).toMatchObject({ ok: false, reasons: [expect.stringMatching(/Partner Program/)] });
   });
 
   it("offers the paid games to someone who can get TikTok gifts or YouTube Super Chats, or hasn't answered TikTok's questions, and only reads YouTube's while YouTube Live is on", () => {
-    const tiktokYes = { adult: true, canGoLive: true, computer: true };
-    const tiktokNo = { adult: true, canGoLive: false, computer: true };
+    const tiktokYes = { canGoLive: true, computer: true };
+    const tiktokNo = { canGoLive: false, computer: true };
     const youtubeNo = { ...all, superChat: false };
     expect(sellLive(null, null, true)).toBe(true);
     expect(sellLive(tiktokYes, youtubeNo, true)).toBe(true);
@@ -397,15 +396,15 @@ describe("who can play on YouTube Live", () => {
     expect(giftsLine(null, { ...all, superChat: false }, true)).toMatch(/You told us you can't get Super Chats on YouTube yet, so the LIVE games can't bring you any there for now\.$/);
     expect(giftsLine(null, { ...all, superChat: false }, false)).not.toMatch(/Super Chat/);
     const lines = [
-      giftsLine(null, all, true), giftsLine(null, { ...all, adult: false }, true),
-      ...(["adult", "canGoLive", "computer", "superChat"] as const).flatMap((k) => (ytLiveFit({ ...all, [k]: false }) as { reasons: string[] }).reasons),
+      giftsLine(null, all, true), giftsLine(null, { ...all, superChat: false }, true),
+      ...(["canGoLive", "computer", "superChat"] as const).flatMap((k) => (ytLiveFit({ ...all, [k]: false }) as { reasons: string[] }).reasons),
     ];
     for (const l of lines) expect(l).not.toMatch(/\$|\bwill\b|earn|income|money|—/i);
   });
 
   it("reads saved YouTube answers, and nothing else", () => {
     expect(parseYtLiveCheck(all)).toEqual(all);
-    expect(parseYtLiveCheck({ adult: true, canGoLive: true, computer: true })).toBeNull();
+    expect(parseYtLiveCheck({ canGoLive: true, computer: true })).toBeNull();
     expect(parseYtLiveCheck("yes")).toBeNull();
   });
 

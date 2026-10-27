@@ -5,7 +5,7 @@ export const metadata: Metadata = { title: "Terms", description: "The deal, in p
 
 export default function Terms() {
   return (
-    <LegalPage title="Terms" updated="October 16, 2026">
+    <LegalPage title="Terms" updated="October 27, 2026">
       <p>By using Hookline you agree to these terms. They&rsquo;re short on purpose. Questions go to <Contact />.</p>
 
       <h2>What Hookline does</h2>
@@ -15,7 +15,8 @@ export default function Terms() {
       <ul>
         <li>You need to be 13 or older to use Hookline.</li>
         <li>If you&rsquo;re under 18, a parent or guardian has to agree to these terms with you. Any paid plan is theirs: they buy it, with their own card, and they&rsquo;re responsible for it.</li>
-        <li>TikTok decides who can go LIVE and get gifts, by its own age rules (18 or older today), so the LIVE games only earn gifts for streamers TikTok allows.</li>
+        <li>The LIVE games are for people 18 or older. By using them, you confirm you&rsquo;re 18 or older.</li>
+        <li>TikTok and YouTube also decide who can go live and get gifts or Super Chats, by their own age rules (18 or older today), so the LIVE games only earn for streamers they allow.</li>
       </ul>
 
       <h2>You&rsquo;re in charge of your channels</h2>
@@ -38,7 +39,7 @@ export default function Terms() {
       <p>We work to keep Hookline running, but it&rsquo;s provided as it is, and platforms can change or stop their APIs. We&rsquo;re not liable for lost views, income or data beyond what the law requires; where we are liable, it&rsquo;s limited to what you paid in the last three months. We may suspend accounts that break these terms.</p>
 
       <h2>Changes</h2>
-      <p>If these terms change in a way that matters, we&rsquo;ll say so in the app before the change applies.</p>
+      <p>If these terms change in a way that matters, we&rsquo;ll ask you to agree to them again in the app before the change applies.</p>
     </LegalPage>
   );
 }

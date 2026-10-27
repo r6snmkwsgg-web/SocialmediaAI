@@ -9,6 +9,7 @@ import { toView } from "@/components/app/notes";
 import { Palette, PaletteButton } from "@/components/app/palette";
 import { Toaster } from "@/components/app/toast";
 import { PLANS } from "@/lib/billing/plans";
+import { TERMS_VERSION } from "@/lib/legal";
 import { account } from "@/lib/server/account";
 import { notificationsOf } from "@/lib/server/notify";
 import { seenAll } from "./notifications/actions";
@@ -19,7 +20,8 @@ import { seenAll } from "./notifications/actions";
  */
 export default async function Shell({ children }: { children: React.ReactNode }) {
   const me = await account();
-  if (!me.profile.onboardedAt) redirect("/app/welcome");
+  // set up, and agreed to the terms as they are now
+  if (!me.profile.onboardedAt || me.profile.termsVersion !== TERMS_VERSION) redirect("/app/welcome");
   const t = (await cookies()).get("hl_theme")?.value;
   const theme = t === "light" || t === "dark" ? t : "system";
   const notes = await notificationsOf(me.id, { limit: 8 });

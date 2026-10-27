@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { Wordmark } from "@/components/brand";
 import { TimezoneField } from "@/components/app/client-bits";
 import { ConnectList } from "@/components/app/connect";
@@ -8,8 +9,9 @@ import { CONNECT_WAIT } from "@/lib/shorts/quota";
 import { account } from "@/lib/server/account";
 import { channelsOf, type Platform } from "@/lib/server/channels";
 import { configured } from "@/lib/server/env";
+import { TERMS_VERSION } from "@/lib/legal";
 import { saveAudience } from "../(shell)/settings/actions";
-import { finish, pickGoal } from "./actions";
+import { agreeToTerms, finish, pickGoal } from "./actions";
 
 export const metadata: Metadata = { title: "Welcome" };
 
@@ -27,6 +29,9 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
   const q = await searchParams;
   const step = q.step === "connect" && me.profile.goal ? 2 : 1;
   const goal = me.profile.goal;
+  const termsOk = me.profile.termsVersion === TERMS_VERSION;
+  // set up before, but these terms haven't been agreed to: only that to do
+  if (me.profile.onboardedAt && !termsOk) return <AgainTerms needed={q.terms === "needed"} />;
 
   return (
     <div className="mx-auto flex min-h-dvh max-w-3xl flex-col px-4 py-6 sm:px-8 sm:py-10">
@@ -43,6 +48,7 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
           <h1 id="goal" className="font-display text-[clamp(2.6rem,7vw,4.4rem)] uppercase leading-[0.92]">What do you want Hookline to do?</h1>
           <form action={pickGoal} className="mt-8 flex flex-col gap-3">
             <TimezoneField />
+            <AgreeBox checked={termsOk} needed={q.terms === "needed"} />
             {GOALS.map((g) => (
               <button
                 key={g.id}
@@ -64,6 +70,41 @@ export default async function Welcome({ searchParams }: { searchParams: Search }
       ) : (
         <Connect goal={goal ?? "both"} userId={me.id} plan={me.plan} quota={q.error === "quota"} />
       )}
+    </div>
+  );
+}
+
+/** The agreement picking a goal needs: the browser won't send the form without it, and the server checks again. */
+function AgreeBox({ checked = false, needed }: { checked?: boolean; needed: boolean }) {
+  return (
+    <div className="mb-2">
+      <label className="flex items-start gap-3 text-[15px] leading-snug">
+        <input type="checkbox" name="terms" required defaultChecked={checked} className="mt-0.5 h-5 w-5 shrink-0 accent-[var(--color-signal)]" />
+        <span>
+          I agree to the <Link href="/terms" target="_blank" className="underline underline-offset-2">Terms</Link> and the{" "}
+          <Link href="/privacy" target="_blank" className="underline underline-offset-2">Privacy Policy</Link>.
+        </span>
+      </label>
+      {needed && <p role="alert" className="mt-2 text-[14px] text-signal">Tick the box to agree to the terms first.</p>}
+    </div>
+  );
+}
+
+/** Someone set up before these terms: agree to them, then straight back to the app. */
+function AgainTerms({ needed }: { needed: boolean }) {
+  return (
+    <div className="mx-auto flex min-h-dvh max-w-3xl flex-col px-4 py-6 sm:px-8 sm:py-10">
+      <header className="mb-10 sm:mb-14">
+        <span className="text-[26px] leading-none"><Wordmark /></span>
+      </header>
+      <section aria-labelledby="terms">
+        <h1 id="terms" className="font-display text-[clamp(2.4rem,6vw,3.8rem)] uppercase leading-[0.92]">Our terms have changed</h1>
+        <p className="mt-4 max-w-xl text-[15px] leading-relaxed text-muted">Read what&rsquo;s new, then agree to keep using Hookline.</p>
+        <form action={agreeToTerms} className="mt-8 flex flex-col gap-5">
+          <AgreeBox needed={needed} />
+          <button type="submit" className={`${button.primary} w-fit`}>Agree and continue</button>
+        </form>
+      </section>
     </div>
   );
 }

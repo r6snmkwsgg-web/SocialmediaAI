@@ -137,13 +137,11 @@ function CantPlay({ reasons, next, recheck }: { reasons: string[]; next: string;
 }
 
 const TIKTOK_QUESTIONS = [
-  { name: "adult", label: "I'm 18 or older" },
   { name: "canGoLive", label: "My TikTok can go LIVE", sub: "TikTok usually opens it up at about 1,000 followers" },
   { name: "computer", label: "I'll go LIVE from a computer", sub: "The games run in TikTok LIVE Studio or OBS, not the phone app" },
 ];
 
 const YOUTUBE_QUESTIONS = [
-  { name: "adult", label: "I'm 18 or older" },
   { name: "canGoLive", label: "My channel can go live", sub: "YouTube asks for a verified channel with no live streaming restrictions. The first time, it can take a day to switch on." },
   { name: "computer", label: "I'll go live from a computer", sub: "The game goes on your stream through OBS or another streaming app. The YouTube phone app can't show it." },
   { name: "superChat", label: "My channel has Super Chat", sub: "It comes with the YouTube Partner Program, for people 18 and over in the places YouTube offers it." },

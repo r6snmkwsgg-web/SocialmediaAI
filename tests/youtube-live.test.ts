@@ -401,14 +401,14 @@ describe("what the LIVE page hears on YouTube", () => {
 
   it("gives the real YouTube game as the test panel's address only to someone shown YouTube's setup", () => {
     const key = "w2ytlive-key-0001";
-    const yes = { adult: true, canGoLive: true, computer: true, superChat: true };
+    const yes = { canGoLive: true, computer: true, superChat: true };
     // as the LIVE page decides it: the setup shows once they've answered and can play
     const href = (check: typeof yes | null) => {
       const fit = ytLiveFit(check);
       return tryItHref(key, "youtube", fit.asked && fit.ok, "rivals");
     };
     // not answered yet, or any answer that keeps them off YouTube Live: the game in YouTube's look with no key, so nothing is read
-    for (const check of [null, { ...yes, adult: false }, { ...yes, canGoLive: false }, { ...yes, computer: false }, { ...yes, superChat: false }]) {
+    for (const check of [null, { ...yes, canGoLive: false }, { ...yes, computer: false }, { ...yes, superChat: false }]) {
       expect(href(check)).toBe("/live/play?src=youtube&game=rivals");
     }
     // someone shown the setup gets their own game, which reads their own stream's chat
